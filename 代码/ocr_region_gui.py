@@ -41,6 +41,8 @@ from red_dragon_calculator import (
 SECTION_NAME_RE = re.compile(r"^\s*(当前效果|牌库中|手牌中|战场|其他)\s*[（(]?\s*\d*\s*[）)]?\s*$")
 COST_ONLY_RE = re.compile(r"^\s*(\d+)\s*费?\s*$")
 COMMA_ZONE_RE = re.compile(r"^\s*(\d+)\s*[,，、]\s*(\d+)\s*血?\s*(.+)$")
+STAR_ONLY_RE = re.compile(r"^[*★☆＊]+\s*$")
+STAR_COST_RE = re.compile(r"^[*★☆＊]+\s*(.+)$")
 
 _MANUAL_CARD_CONFIGS, _MANUAL_MIN_COMMON_CHARS = load_card_config()
 
@@ -61,6 +63,7 @@ def parse_manual_zone_lines(text: str) -> Tuple[List[Tuple[Optional[int], str, O
     - “4 鲨鱼之灵”（费用 卡名）；
     - “4 鲨鱼之灵 3”（费用 卡名 血量，随从栏）；
     - “4,3 鲨鱼之灵”（费用,血量 卡名，兼容旧写法）；
+    - “* 殒命暗影”（* 表示无费用特殊卡，如殒命暗影）；
     - 纯卡名（自动取卡库默认费用，支持简称/错字模糊匹配，如 刀油 -> 斯卡布斯·刀油）；
     - OCR 式两行一组（“3” 换行 “晦鳞巢母”）。
     """
@@ -80,6 +83,9 @@ def parse_manual_zone_lines(text: str) -> Tuple[List[Tuple[Optional[int], str, O
             pending_cost = int(cost_only.group(1))
             continue
 
+        if STAR_ONLY_RE.match(line):
+            continue
+
         comma_match = COMMA_ZONE_RE.match(line)
 
         if comma_match:
@@ -90,6 +96,13 @@ def parse_manual_zone_lines(text: str) -> Tuple[List[Tuple[Optional[int], str, O
                     int(comma_match.group(2)),
                 )
             )
+            pending_cost = None
+            continue
+
+        star_cost = STAR_COST_RE.match(line)
+
+        if star_cost:
+            entries.append((None, star_cost.group(1).strip(), None))
             pending_cost = None
             continue
 
@@ -111,6 +124,17 @@ def parse_manual_zone_lines(text: str) -> Tuple[List[Tuple[Optional[int], str, O
         cost = pending_cost if pending_cost is not None else _fuzzy_default_cost(line)
 
         if cost is None:
+            matched_name, matched_config = match_name_for_parser(
+                line,
+                _MANUAL_CARD_CONFIGS,
+                _MANUAL_MIN_COMMON_CHARS,
+            )
+
+            if matched_config is not None and matched_config.no_cost:
+                entries.append((None, line, None))
+                pending_cost = None
+                continue
+
             warnings.append(f"缺少费用且卡库无默认费用：{line}（该行已跳过）")
             pending_cost = None
             continue
@@ -642,6 +666,7 @@ class MainWindow(QWidget):
             "手牌栏：费用 卡名（如 4 鲨鱼之灵）\n"
             "随从栏：费用 卡名 血量（如 4 鲨鱼之灵 3）\n"
             "状态栏：卡名 数量（如 狐人老千 2，数量=叠加层数）\n"
+            "殒命暗影写：* 殒命暗影（* 表示无费用，会自动标记）\n"
             "卡名支持简称和错字，会用内置模糊识别自动匹配；填好后点“解析并应用”。"
         )
         manual_help.setWordWrap(True)
@@ -654,7 +679,7 @@ class MainWindow(QWidget):
         manual_hand_layout.setContentsMargins(0, 0, 0, 0)
         manual_hand_layout.addWidget(QLabel("手牌栏"))
         self.manualHandEdit = QTextEdit()
-        self.manualHandEdit.setPlaceholderText("例：\n4 鲨鱼之灵\n2 狐狸老千\n4 刀油")
+        self.manualHandEdit.setPlaceholderText("例：\n4 鲨鱼之灵\n2 狐狸老千\n4 刀油\n* 殒命暗影")
         self.manualHandEdit.setFixedHeight(150)
         manual_hand_layout.addWidget(self.manualHandEdit)
         manual_hand_panel.setLayout(manual_hand_layout)
@@ -815,6 +840,13 @@ class MainWindow(QWidget):
         for card, health in zip(result.battlefield_cards, board_healths):
             if health is not None:
                 card.health = health
+
+        # 手动输入里写了“* 殒命暗影”的手牌，自动标记为殒命暗影
+        result.deadly_shadow_hand_indexes = [
+            index
+            for index, card in enumerate(result.cards, start=1)
+            if card.name == "殒命暗影"
+        ]
 
         self.setResult(
             ocr_text=section_text,

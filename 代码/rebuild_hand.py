@@ -105,6 +105,7 @@ class HandRebuildResult:
     expected_hand_count: Optional[int] = None
     expected_battlefield_count: Optional[int] = None
     other_count: Optional[int] = None
+    deadly_shadow_hand_indexes: List[int] = field(default_factory=list)
     current_effect_cards: List[HandCard] = field(default_factory=list)
     deck_cards: List[HandCard] = field(default_factory=list)
     cards: List[HandCard] = field(default_factory=list)

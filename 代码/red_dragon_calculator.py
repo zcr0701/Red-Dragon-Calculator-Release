@@ -3679,7 +3679,13 @@ def state_from_rebuild_result(
             elif card.card_type == "weapon":
                 weapon_card = card
 
-    for hand_index in deadly_shadow_hand_indexes or []:
+    merged_shadow_indexes = list(deadly_shadow_hand_indexes or [])
+
+    for result_index in getattr(result, "deadly_shadow_hand_indexes", []) or []:
+        if result_index not in merged_shadow_indexes:
+            merged_shadow_indexes.append(result_index)
+
+    for hand_index in merged_shadow_indexes:
         zero_based_index = hand_index - 1
 
         if zero_based_index < 0 or zero_based_index >= len(hand_cards):
