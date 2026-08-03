@@ -580,11 +580,17 @@ def make_card_from_rebuild_entry(card_entry) -> Optional[CardInstance]:
     if name not in CARD_DATABASE:
         return None
 
-    return make_card(
+    card = make_card(
         name=name,
         cost=getattr(card_entry, "cost", None),
         use_runtime_cost=True
     )
+    health = getattr(card_entry, "health", None)
+
+    if health is not None:
+        card.health = int(health)
+
+    return card
 
 
 def mark_as_deadly_shadow(card: CardInstance) -> CardInstance:

@@ -8,7 +8,7 @@
     },
     {
       "name": "伺机待发",
-      "aliases": [],
+      "aliases": ["伺机"],
       "description": ""
     },
     {
@@ -34,12 +34,12 @@
     },
     {
       "name": "黑水弯刀",
-      "aliases": [],
+      "aliases": ["黑水", "弯刀"],
       "description": ""
     },
     {
       "name": "邪恶短刀",
-      "aliases": [],
+      "aliases": ["短刀"],
       "description": "1费1/2武器，无效果"
     },
     {
@@ -49,7 +49,7 @@
     },
     {
       "name": "狐人老千",
-      "aliases": [],
+      "aliases": ["狐", "狐人", "狐狸老千"],
       "description": ""
     },
     {
@@ -64,7 +64,7 @@
     },
     {
       "name": "锯齿骨刺",
-      "aliases": [],
+      "aliases": ["骨刺"],
       "description": ""
     },
     {
@@ -74,7 +74,7 @@
     },
     {
       "name": "晦鳞巢母",
-      "aliases": [],
+      "aliases": ["巢母", "晦鳞"],
       "description": ""
     },
     {
@@ -84,22 +84,22 @@
     },
     {
       "name": "乐队经理精英牛头人酋长",
-      "aliases": [],
+      "aliases": ["牛", "牛头人酋长", "精英牛头人酋长", "乐队经理"],
       "description": ""
     },
     {
       "name": "舞动全场（ft.迦罗娜）",
-      "aliases": [],
+      "aliases": ["舞动全场", "舞动"],
       "description": ""
     },
     {
       "name": "幻觉药水",
-      "aliases": [],
+      "aliases": ["药水"],
       "description": ""
     },
     {
       "name": "生命的缚誓者阿莱克丝塔萨",
-      "aliases": [],
+      "aliases": ["红龙", "阿莱克丝塔萨", "缚誓者"],
       "description": ""
     },
     {
@@ -109,17 +109,17 @@
     },
     {
       "name": "斯卡布斯·刀油",
-      "aliases": [],
+      "aliases": ["刀油", "斯卡布斯"],
       "description": ""
     },
     {
       "name": "鲨鱼之灵",
-      "aliases": [],
+      "aliases": ["鲨鱼", "鱼"],
       "description": ""
     },
     {
       "name": "暗影施法者",
-      "aliases": [],
+      "aliases": ["暗施", "施法者"],
       "description": ""
     },
     {

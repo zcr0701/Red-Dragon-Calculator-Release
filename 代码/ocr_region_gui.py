@@ -3,6 +3,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 from PyQt5.QtCore import Qt, QRect, QThread, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPen
@@ -21,7 +22,13 @@ from PyQt5.QtWidgets import (
 )
 
 from ocr_interface import OCRInterface
-from rebuild_hand import CARD_COSTS, format_result, rebuild_hand_from_text
+from rebuild_hand import (
+    CARD_COSTS,
+    format_result,
+    load_card_config,
+    match_name_for_parser,
+    rebuild_hand_from_text,
+)
 from red_dragon_calculator import (
     ETC_BAND,
     beam_search_paths,
@@ -32,16 +39,29 @@ from red_dragon_calculator import (
 
 
 SECTION_NAME_RE = re.compile(r"^\s*(当前效果|牌库中|手牌中|战场|其他)\s*[（(]?\s*\d*\s*[）)]?\s*$")
-COST_ONLY_RE = re.compile(r"^\s*(\d+)\s*费?(?:\s*[,，、]\s*\d+\s*血?)?\s*$")
-ZONE_LINE_RE = re.compile(r"^\s*(\d+)\s*费?(?:\s*[,，、]\s*\d+\s*血?)?\s*(.+)$")
+COST_ONLY_RE = re.compile(r"^\s*(\d+)\s*费?\s*$")
+COMMA_ZONE_RE = re.compile(r"^\s*(\d+)\s*[,，、]\s*(\d+)\s*血?\s*(.+)$")
+
+_MANUAL_CARD_CONFIGS, _MANUAL_MIN_COMMON_CHARS = load_card_config()
 
 
-def parse_manual_zone_lines(text: str):
-    """把手动输入区的一行行文字转成 [(cost, name)]。
+def _fuzzy_default_cost(name: str) -> Optional[int]:
+    matched_name, _ = match_name_for_parser(
+        name,
+        _MANUAL_CARD_CONFIGS,
+        _MANUAL_MIN_COMMON_CHARS,
+    )
+    return CARD_COSTS.get(matched_name)
 
-    支持三种写法：
-    - “3费 晦鳞巢母” / “4,3 鲨鱼之灵”（费用在前，卡名在后）；
-    - 纯卡名（自动取卡库默认费用，如 狐人老千 -> 2）；
+
+def parse_manual_zone_lines(text: str) -> Tuple[List[Tuple[Optional[int], str, Optional[int]]], List[str]]:
+    """把手动输入区的一行行文字转成 [(cost, name, health)]。
+
+    支持格式：
+    - “4 鲨鱼之灵”（费用 卡名）；
+    - “4 鲨鱼之灵 3”（费用 卡名 血量，随从栏）；
+    - “4,3 鲨鱼之灵”（费用,血量 卡名，兼容旧写法）；
+    - 纯卡名（自动取卡库默认费用，支持简称/错字模糊匹配，如 刀油 -> 斯卡布斯·刀油）；
     - OCR 式两行一组（“3” 换行 “晦鳞巢母”）。
     """
     entries = []
@@ -60,35 +80,83 @@ def parse_manual_zone_lines(text: str):
             pending_cost = int(cost_only.group(1))
             continue
 
-        with_cost = ZONE_LINE_RE.match(line)
+        comma_match = COMMA_ZONE_RE.match(line)
 
-        if with_cost:
-            entries.append((int(with_cost.group(1)), with_cost.group(2).strip()))
+        if comma_match:
+            entries.append(
+                (
+                    int(comma_match.group(1)),
+                    comma_match.group(3).strip(),
+                    int(comma_match.group(2)),
+                )
+            )
             pending_cost = None
             continue
 
-        cost = CARD_COSTS.get(line) if pending_cost is None else pending_cost
+        tokens = line.split()
+
+        if tokens and tokens[0].isdigit() and len(tokens) >= 2:
+            cost = int(tokens[0])
+            health = None
+            name_parts = tokens[1:]
+
+            if len(tokens) >= 3 and tokens[-1].isdigit():
+                health = int(tokens[-1])
+                name_parts = tokens[1:-1]
+
+            entries.append((cost, " ".join(name_parts), health))
+            pending_cost = None
+            continue
+
+        cost = pending_cost if pending_cost is not None else _fuzzy_default_cost(line)
 
         if cost is None:
             warnings.append(f"缺少费用且卡库无默认费用：{line}（该行已跳过）")
             pending_cost = None
             continue
 
-        entries.append((cost, line))
+        entries.append((cost, line, None))
         pending_cost = None
 
     return entries, warnings
 
 
-def build_manual_section_text(hand_text: str, board_text: str, effect_text: str):
-    """把手动输入区拼成 rebuild_hand_from_text 认识的区段文本。"""
+def parse_manual_effect_lines(text: str) -> Tuple[List[Tuple[str, int]], List[str]]:
+    """状态栏格式：每行“中文名 数量”，如“狐人老千 2”（数量 = 叠加层数）。"""
+    entries = []
+    warnings = []
+
+    for raw in text.splitlines():
+        line = raw.strip()
+
+        if not line or SECTION_NAME_RE.match(line):
+            continue
+
+        tokens = line.split()
+        layers = 1
+
+        if len(tokens) >= 2 and tokens[-1].isdigit():
+            layers = max(1, int(tokens[-1]))
+            line = " ".join(tokens[:-1])
+
+        entries.append((line, layers))
+
+    return entries, warnings
+
+
+def build_manual_section_text(
+    hand_text: str,
+    board_text: str,
+    effect_text: str,
+) -> Tuple[str, List[str], List[Optional[int]]]:
+    """把手动输入区拼成 rebuild_hand_from_text 认识的区段文本。
+
+    返回 (区段文本, 警告, 随从血量列表)：
+    随从血量列表与战场条目一一对应，调用方解析后可直接写回结果。
+    """
     hand_entries, hand_warnings = parse_manual_zone_lines(hand_text)
     board_entries, board_warnings = parse_manual_zone_lines(board_text)
-    effect_entries = [
-        line.strip()
-        for line in effect_text.splitlines()
-        if line.strip()
-    ]
+    effect_entries, effect_warnings = parse_manual_effect_lines(effect_text)
     lines = []
 
     def append_zone(title: str, entries):
@@ -97,7 +165,7 @@ def build_manual_section_text(hand_text: str, board_text: str, effect_text: str)
 
         lines.append(f"{title}({len(entries)})")
 
-        for cost, name in entries:
+        for cost, name, _health in entries:
             if cost is None:
                 lines.append(name)
             else:
@@ -109,12 +177,18 @@ def build_manual_section_text(hand_text: str, board_text: str, effect_text: str)
 
     if effect_entries:
         lines.append(f"当前效果({len(effect_entries)})")
-        lines.extend(effect_entries)
+
+        for name, layers in effect_entries:
+            lines.append(name)
+
+            if layers > 1:
+                lines.append(str(layers))
 
     # 解析器用“其他(x)”作为最后一个区段的结束标记，加一个空区避免边界警告。
     lines.append("其他(0)")
 
-    return "\n".join(lines), hand_warnings + board_warnings
+    board_healths = [health for _cost, _name, health in board_entries]
+    return "\n".join(lines), hand_warnings + board_warnings + effect_warnings, board_healths
 
 
 class OCRWorker(QThread):
@@ -564,9 +638,11 @@ class MainWindow(QWidget):
         manual_layout = QVBoxLayout()
         manual_layout.setContentsMargins(0, 4, 0, 4)
         manual_help = QLabel(
-            "手动输入格式：每个区逐行填卡牌，可写“费用 卡名”（如 3费 晦鳞巢母、4,3 鲨鱼之灵），"
-            "也可以只写卡名（自动取卡库默认费用），或按 OCR 格式两行一组（费用行+卡名行）。"
-            "填好后点“解析并应用”，会复用现有正则规则生成数据。"
+            "手动输入格式（每行一张牌）：\n"
+            "手牌栏：费用 卡名（如 4 鲨鱼之灵）\n"
+            "随从栏：费用 卡名 血量（如 4 鲨鱼之灵 3）\n"
+            "状态栏：卡名 数量（如 狐人老千 2，数量=叠加层数）\n"
+            "卡名支持简称和错字，会用内置模糊识别自动匹配；填好后点“解析并应用”。"
         )
         manual_help.setWordWrap(True)
         manual_layout.addWidget(manual_help)
@@ -578,7 +654,7 @@ class MainWindow(QWidget):
         manual_hand_layout.setContentsMargins(0, 0, 0, 0)
         manual_hand_layout.addWidget(QLabel("手牌栏"))
         self.manualHandEdit = QTextEdit()
-        self.manualHandEdit.setPlaceholderText("例：\n0费 狐人老千\n4费 斯卡布斯·刀油\n5费 暗影施法者")
+        self.manualHandEdit.setPlaceholderText("例：\n4 鲨鱼之灵\n2 狐狸老千\n4 刀油")
         self.manualHandEdit.setFixedHeight(150)
         manual_hand_layout.addWidget(self.manualHandEdit)
         manual_hand_panel.setLayout(manual_hand_layout)
@@ -588,7 +664,7 @@ class MainWindow(QWidget):
         manual_board_layout.setContentsMargins(0, 0, 0, 0)
         manual_board_layout.addWidget(QLabel("战场（随从栏）"))
         self.manualBoardEdit = QTextEdit()
-        self.manualBoardEdit.setPlaceholderText("例：\n4费 鲨鱼之灵")
+        self.manualBoardEdit.setPlaceholderText("例：\n4 鲨鱼之灵 3\n2 狐 2\n4 刀油 3")
         self.manualBoardEdit.setFixedHeight(150)
         manual_board_layout.addWidget(self.manualBoardEdit)
         manual_board_panel.setLayout(manual_board_layout)
@@ -598,7 +674,7 @@ class MainWindow(QWidget):
         manual_effect_layout.setContentsMargins(0, 0, 0, 0)
         manual_effect_layout.addWidget(QLabel("当前效果（可选）"))
         self.manualEffectEdit = QTextEdit()
-        self.manualEffectEdit.setPlaceholderText("例：\n斯卡布斯·刀油\n锯齿骨刺")
+        self.manualEffectEdit.setPlaceholderText("例：\n狐人老千 2")
         self.manualEffectEdit.setFixedHeight(150)
         manual_effect_layout.addWidget(self.manualEffectEdit)
         manual_effect_panel.setLayout(manual_effect_layout)
@@ -700,18 +776,17 @@ class MainWindow(QWidget):
 
     def fill_manual_example(self):
         self.manualHandEdit.setPlainText(
-            "3费 晦鳞巢母\n"
-            "5费 暗影施法者\n"
-            "0费 伪造的幸运币\n"
-            "4费 斯卡布斯·刀油\n"
-            "4费 乐队经理精英牛头人酋长\n"
-            "0费 伺机待发\n"
-            "0费 狐人老千\n"
-            "2费 锯齿骨刺\n"
-            "0费 暗影步"
+            "4 鲨鱼之灵\n"
+            "2 狐狸老千\n"
+            "4 刀油"
         )
-        self.manualBoardEdit.setPlainText("4费 鲨鱼之灵")
-        self.manualEffectEdit.setPlainText("")
+        self.manualBoardEdit.setPlainText(
+            "4 鲨鱼之灵 3\n"
+            "2 狐 2\n"
+            "4 刀油 3\n"
+            "5 暗影施法者 2"
+        )
+        self.manualEffectEdit.setPlainText("狐人老千 2")
         self.statusLabel.setText("状态：已填入示例，可点击“解析并应用”")
 
     def clear_manual_input(self):
@@ -721,7 +796,7 @@ class MainWindow(QWidget):
         self.statusLabel.setText("状态：手动输入区已清空")
 
     def apply_manual_input(self):
-        section_text, zone_warnings = build_manual_section_text(
+        section_text, zone_warnings, board_healths = build_manual_section_text(
             hand_text=self.manualHandEdit.toPlainText(),
             board_text=self.manualBoardEdit.toPlainText(),
             effect_text=self.manualEffectEdit.toPlainText()
@@ -736,6 +811,10 @@ class MainWindow(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "解析失败", str(e))
             return
+
+        for card, health in zip(result.battlefield_cards, board_healths):
+            if health is not None:
+                card.health = health
 
         self.setResult(
             ocr_text=section_text,

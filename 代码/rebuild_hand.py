@@ -91,6 +91,7 @@ class HandCard:
     name: str
     recognized_name: str
     count: int = 1
+    health: Optional[int] = None
     match_score: float = 1.0
     matched_by: str = "raw"
     description: str = ""
@@ -399,7 +400,8 @@ def make_card_entry(
     card_configs: List[CardConfigItem],
     min_common_chars: int,
     result: HandRebuildResult,
-    count: int = 1
+    count: int = 1,
+    health: Optional[int] = None
 ) -> HandCard:
     matched_name, match_score, matched_by, description = match_card_name(
         recognized_name=recognized_name,
@@ -417,6 +419,7 @@ def make_card_entry(
         name=matched_name,
         recognized_name=recognized_name,
         count=max(1, int(count)),
+        health=health,
         match_score=match_score,
         matched_by=matched_by,
         description=description,
