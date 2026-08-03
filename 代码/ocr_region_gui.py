@@ -286,9 +286,9 @@ class CalculationWorker(QThread):
         if self.beam_mode:
             search_mode_text = "beam束搜索"
         elif self.forward_mining:
-            search_mode_text = "反向符号链证明（含自动挖掘）"
+            search_mode_text = "双向符号链证明（含自动挖掘）"
         else:
-            search_mode_text = "反向符号链证明"
+            search_mode_text = "双向符号链证明"
         lines = [
             f"计算参数：{self.mana_crystals}水晶 / {self.mana}法力 / 链条步数上限 {self.max_depth} / 路径上限 {self.max_paths} / 搜索龙数上限 {self.max_alex_count} / 搜索龙数下限 {self.min_alex_count} / 搜索方式：{search_mode_text}",
         ]
@@ -644,8 +644,8 @@ class MainWindow(QWidget):
         self.forwardMineCheck = QCheckBox("自动挖掘")
         self.forwardMineCheck.setChecked(True)
         self.forwardMineCheck.setToolTip(
-            "反向符号链搜索时自动用束搜索发现模板外的新线路，再反推成符号链证明（默认开启）。"
-            "束宽不足会自动升级（1000→2500→5000）直到摸到搜索下限；追求速度可取消勾选。"
+            "双向符号链搜索时自动用束搜索发现模板外的新线路，再反推成符号链证明（默认开启）。"
+            "束宽不足会自动升级（2000→2500→5000）直到摸到搜索下限；追求速度可取消勾选。"
         )
         mana_layout.addWidget(self.forwardMineCheck)
         mana_layout.addStretch()

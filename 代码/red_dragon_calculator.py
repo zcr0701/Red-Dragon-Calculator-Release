@@ -4852,7 +4852,7 @@ def reverse_symbolic_prove_paths(
                     if prune_stats is not None:
                         prune_stats["已证明龙数"] = best_alex_count
                         prune_stats[f"当前搜索 {target_alex_count}龙"] = "存在"
-                        prune_stats["证明方式"] = "反向符号链条证明"
+                        prune_stats["证明方式"] = "双向符号链条证明"
 
                     if found_callback:
                         found_callback(sort_path_states(all_proved_states)[:max_paths], target_alex_count)
@@ -4877,7 +4877,7 @@ def reverse_symbolic_prove_paths(
             if prune_stats is not None:
                 prune_stats["已证明龙数"] = best_alex_count
                 prune_stats[f"当前搜索 {target_alex_count}龙"] = "存在"
-                prune_stats["证明方式"] = "反向符号链条证明"
+                prune_stats["证明方式"] = "双向符号链条证明"
         else:
             if prune_stats is not None:
                 prune_stats["全局正向搜索已禁用"] = prune_stats.get("全局正向搜索已禁用", 0) + 1
@@ -5509,7 +5509,7 @@ def main() -> int:
             state,
             states,
             params={
-                "搜索方式": "beam束搜索" if args.beam else "反向符号链证明",
+                "搜索方式": "beam束搜索" if args.beam else "双向符号链证明",
                 "搜索龙数上限": args.max_alex_count,
                 "搜索龙数下限": args.min_alex_count,
                 "路径上限": args.max_paths,
