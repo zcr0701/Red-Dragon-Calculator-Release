@@ -3105,6 +3105,78 @@ def has_prestarted_resources(state: GameState) -> bool:
     )
 
 
+def parse_path_item_to_action(path_item: str) -> Optional[SymbolicAction]:
+    """把具体路径项解析成符号动作，供“正向发现→反推符号链→反向验证”使用。
+
+    路径项格式：
+      - 卡名 / 卡名[殒命暗影]
+      - 卡名(目标名)
+      - 卡名（选择1->选择2）
+    """
+    item = canonical_path_item(path_item).strip()
+
+    if not item:
+        return None
+
+    known_names = set(CARD_DATABASE.keys())
+    known_names.update(ETC_BAND)
+    best_name: Optional[str] = None
+
+    for name in known_names:
+        if item.startswith(name) and (best_name is None or len(name) > len(best_name)):
+            best_name = name
+
+    if best_name is None:
+        return None
+
+    rest = item[len(best_name):]
+    target: Optional[str] = None
+    choices: Tuple[str, ...] = ()
+
+    if rest.startswith("("):
+        close_index = rest.find(")")
+
+        if close_index != -1:
+            target = rest[1:close_index]
+            rest = rest[close_index + 1:]
+
+    if rest.startswith("（") and rest.endswith("）"):
+        inner = rest[1:-1]
+        choices = tuple(part.strip() for part in inner.split("->"))
+
+    return SymbolicAction(name=best_name, target=target, choices=choices)
+
+
+def mine_symbolic_chain_from_path(state: GameState, chain_index: int) -> Optional[SymbolicChain]:
+    """把正向搜索发现的具体路径反推成一条符号链。
+
+    模拟人类思考的“前后关联”：先正向试探出一条可行路线，再把它抽象成
+    符号链模板，最后用反向符号链验证去确认/复用这条路线。
+    """
+    if not state.path or state.alex_play_count <= 0:
+        return None
+
+    actions: List[SymbolicAction] = []
+
+    for path_item in state.path:
+        action = parse_path_item_to_action(path_item)
+
+        if action is None:
+            return None
+
+        actions.append(action)
+
+    return SymbolicChain(
+        name=f"正向束搜索自动挖掘链-{chain_index}",
+        target_alex_count=state.alex_play_count,
+        reasoning=[
+            "由正向束搜索发现的可行路径自动反推成符号链，再经反向符号链验证确认；",
+            "用于覆盖手工符号链模板尚未总结的新线路（先正向试探、再反向证明）。",
+        ],
+        actions=actions,
+    )
+
+
 def reverse_symbolic_prove_paths(
     initial_state: GameState,
     max_alex_count: int,
@@ -3114,7 +3186,9 @@ def reverse_symbolic_prove_paths(
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
     found_callback: Optional[Callable[[List[GameState], int], None]] = None,
     prune_stats: Optional[Dict[str, int]] = None,
-    should_stop: Optional[Callable[[], bool]] = None
+    should_stop: Optional[Callable[[], bool]] = None,
+    forward_mining: bool = True,
+    forward_beam_width: int = 1000
 ) -> List[GameState]:
     search_initial_state = initial_state.clone()
     search_initial_state.record_log = False
@@ -3122,7 +3196,7 @@ def reverse_symbolic_prove_paths(
     all_proved_states: List[GameState] = []
     seen_paths = set()
     best_alex_count = 0
-    start_alex_count = max_alex_count if min_alex_count <= 1 else min(max_alex_count, min_alex_count)
+    start_alex_count = max_alex_count
 
     for target_alex_count in range(max(1, start_alex_count), min_alex_count - 1, -1):
         if prune_stats is not None:
@@ -3201,6 +3275,96 @@ def reverse_symbolic_prove_paths(
         if len(all_proved_states) >= max_paths:
             break
 
+    if (
+        forward_mining
+        and best_alex_count < max_alex_count
+        and not (should_stop is not None and should_stop())
+    ):
+        if prune_stats is not None:
+            prune_stats["正向挖掘"] = "束搜索自动挖掘"
+
+        mined_paths = beam_search_paths(
+            initial_state=search_initial_state,
+            max_depth=max_chain_steps,
+            max_paths=max_paths,
+            max_alex_count=max_alex_count,
+            min_alex_count=min_alex_count,
+            beam_width=forward_beam_width,
+            progress_callback=None,
+            found_callback=None,
+            prune_stats=prune_stats,
+            should_stop=should_stop,
+        )
+        mined_chains: List[SymbolicChain] = []
+        seen_chain_keys = set()
+
+        for mined_state in sorted(mined_paths, key=lambda item: -item.alex_play_count):
+            if mined_state.alex_play_count <= best_alex_count:
+                continue
+
+            chain = mine_symbolic_chain_from_path(mined_state, len(mined_chains) + 1)
+
+            if chain is None:
+                continue
+
+            chain_key = tuple(
+                (action.name, action.target, action.choices)
+                for action in chain.actions
+            )
+
+            if chain_key in seen_chain_keys:
+                continue
+
+            seen_chain_keys.add(chain_key)
+            mined_chains.append(chain)
+
+        if prune_stats is not None:
+            prune_stats["正向挖掘链条数"] = len(mined_chains)
+
+        for chain in mined_chains:
+            if should_stop is not None and should_stop():
+                break
+
+            if chain.target_alex_count <= best_alex_count:
+                continue
+
+            chain_states = validate_symbolic_chain(
+                initial_state=search_initial_state,
+                chain=chain,
+                max_states=max(1, max_paths - len(all_proved_states)),
+                prune_stats=prune_stats,
+                should_stop=should_stop,
+            )
+
+            for chain_state in sort_path_states(chain_states):
+                path_key = tuple(chain_state.path)
+
+                if path_key in seen_paths:
+                    continue
+
+                seen_paths.add(path_key)
+                all_proved_states.append(chain_state)
+                best_alex_count = max(best_alex_count, chain_state.alex_play_count)
+
+                if prune_stats is not None:
+                    prune_stats["已证明龙数"] = best_alex_count
+                    prune_stats["证明方式"] = "正向束搜索发现+符号链自动挖掘反证"
+
+                if found_callback:
+                    found_callback(
+                        sort_path_states(all_proved_states)[:max_paths],
+                        chain.target_alex_count,
+                    )
+
+                if len(all_proved_states) >= max_paths:
+                    break
+
+            if len(all_proved_states) >= max_paths:
+                break
+
+        if prune_stats is not None:
+            prune_stats["正向挖掘"] = "完成"
+
     if prune_stats is not None:
         prune_stats["已证明龙数"] = best_alex_count
         prune_stats["已搜索到龙数下限"] = min_alex_count
@@ -3217,7 +3381,9 @@ def enumerate_play_paths(
     progress_callback: Optional[Callable[[int, int], None]] = None,
     found_callback: Optional[Callable[[List[GameState], int], None]] = None,
     prune_stats: Optional[Dict[str, int]] = None,
-    should_stop: Optional[Callable[[], bool]] = None
+    should_stop: Optional[Callable[[], bool]] = None,
+    forward_mining: bool = True,
+    forward_beam_width: int = 1000
 ) -> List[GameState]:
     return reverse_symbolic_prove_paths(
         initial_state=initial_state,
@@ -3228,7 +3394,9 @@ def enumerate_play_paths(
         progress_callback=progress_callback,
         found_callback=found_callback,
         prune_stats=prune_stats,
-        should_stop=should_stop
+        should_stop=should_stop,
+        forward_mining=forward_mining,
+        forward_beam_width=forward_beam_width
     )
 
 
@@ -3578,6 +3746,8 @@ def main() -> int:
     parser.add_argument("--max-paths", type=int, default=500000)
     parser.add_argument("--max-alex-count", type=int, default=10)
     parser.add_argument("--min-alex-count", type=int, default=1)
+    parser.add_argument("--no-forward-mine", action="store_true", help="关闭正向束搜索自动挖掘（默认开启）")
+    parser.add_argument("--forward-mine-width", type=int, default=1000, help="自动挖掘束搜索束宽，默认1000")
     parser.add_argument("--show-limit", type=int, default=200)
     parser.add_argument("--json", action="store_true", help="输出 JSON")
 
@@ -3609,7 +3779,9 @@ def main() -> int:
                 max_depth=args.max_depth,
                 max_paths=args.max_paths,
                 max_alex_count=args.max_alex_count,
-                min_alex_count=args.min_alex_count
+                min_alex_count=args.min_alex_count,
+                forward_mining=not args.no_forward_mine,
+                forward_beam_width=args.forward_mine_width
             )
 
         if args.json:
