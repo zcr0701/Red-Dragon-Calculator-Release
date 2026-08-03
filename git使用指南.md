@@ -147,11 +147,21 @@ git merge --abort        # 合并冲突时放弃合并
 这是本项目最重要的一条约定，单独说清楚：
 
 - `git commit` **只在本地存档**，像游戏存档一样，不会把任何东西传到网上。
-- 本仓库目前**没有配置远程仓库**（`git remote -v` 是空的），所以根本不存在"上传"这个动作。
-- 只有当以后你在 GitHub / Gitee 上建了远程仓库、执行了 `git remote add ...`，并且手动运行 `git push` 时，本地提交才会被推送出去。
+- 本仓库已配置远程仓库 `origin` → `https://github.com/zcr0701/red-dragon-calculator.git`（GitHub 私有仓库）。
+- 在 GitHub 上建好远程仓库之后，**只有手动运行 `git push` 才会把本地提交推送上去**；不 push 就一直只存在本机。
 - 因此：你大量修改、弥补公式的时候，文件改了就改了，**不想留档就不用提交**；改到某个程度想存一个档，再 `git add` + `git commit`。提交频率完全由你决定。
 
 配合 Codex 使用的约定：**Codex 只在你明确要求提交（或完成一个里程碑）时才执行 `git add` / `git commit`**，平时的中间修改都留在工作区里不动，不会每次修改都提交或上传。
+
+### 什么时候"上传"（push）
+
+```powershell
+git push              # 在 dev 上：把 dev 的本地提交推送到 GitHub
+git switch main       # 想同步 main 时先切过去
+git push              # 在 main 上：把 main 的本地提交推送到 GitHub
+```
+
+两个分支都设了上游跟踪（`-u`），所以直接在对应分支上 `git push` 就行，不用写完整分支名。
 
 ## 本仓库已配置的内容
 
@@ -164,4 +174,4 @@ git merge --abort        # 合并冲突时放弃合并
   ```
 
 - `.gitignore` 已排除 `__pycache__/`、`logs/`、`*.log`、编辑器/系统文件，提交时不会误带这些。
-- 未配置远程仓库：想上传时再配，配完也必须手动 `git push` 才会上传。
+- 已配置远程仓库（GitHub 私有仓库 `zcr0701/red-dragon-calculator`）：commit 是本地存档，`git push` 才上传；想公开可在 GitHub 网页上把仓库改为 Public。
