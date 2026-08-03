@@ -41,6 +41,8 @@ class CardInstance:
     temp_cost: Optional[int] = None
     is_deadly_shadow: bool = False
     health: Optional[int] = None
+    # 赤烟·腾武回手锁定：本回合固定 1 费，刀油/伺机/骨刺等减费不能低于 1。
+    locked_one_cost: bool = False
 
     @classmethod
     def from_def(cls, card_def: CardDef) -> "CardInstance":
@@ -79,6 +81,7 @@ def _fast_clone_card(card: CardInstance) -> CardInstance:
         temp_cost=card.temp_cost,
         is_deadly_shadow=card.is_deadly_shadow,
         health=card.health,
+        locked_one_cost=card.locked_one_cost,
     )
 
 
@@ -426,6 +429,15 @@ CARD_DATABASE: Dict[str, CardDef] = {
         tags=["battlecry", "pirate"],
         health=2
     ),
+    "赤烟·腾武": CardDef(
+        name="赤烟·腾武",
+        cost=2,
+        card_type="minion",
+        description="战吼：将一个友方随从移回你的手牌，在本回合中，其法力值消耗为(1)点（固定1费，不能被减到0费）。",
+        effect_id="tenwu",
+        tags=["battlecry"],
+        health=2
+    ),
     "行骗": CardDef(
         name="行骗",
         cost=2,
@@ -559,6 +571,7 @@ CORE_CARD_NAMES = {
     "幻觉药水",
     "锯齿骨刺",
     "殒命暗影",
+    "赤烟·腾武",
 }
 
 def ordered_breakdance_returning(minions: List[CardInstance]) -> List[CardInstance]:
@@ -814,7 +827,13 @@ def effective_cost(state: GameState, card: CardInstance) -> Optional[int]:
     if "combo" in card.tags and state.next_combo_discount > 0:
         discount += state.next_combo_discount
 
-    return max(0, base_cost - discount)
+    cost = max(0, base_cost - discount)
+
+    if card.locked_one_cost:
+        # 腾武回手锁：本回合固定 1 费，刀油/伺机/骨刺等减费不能低于 1。
+        cost = max(1, cost)
+
+    return cost
 
 
 def active_oil_discount(state: GameState) -> bool:
@@ -1303,6 +1322,19 @@ def effect_shadowcaster(state: GameState, target_friendly_index: Optional[int], 
     add_to_hand(state, target)
 
 
+def effect_tenwu(state: GameState, card: CardInstance, target_friendly_index: Optional[int], **kwargs):
+    """赤烟·腾武：将一个友方随从移回手牌，本回合固定 1 费（不可减到 0）。"""
+    if target_friendly_index is None or target_friendly_index >= len(state.board_zone):
+        state.add_log("赤烟·腾武缺少有效友方随从目标")
+        return
+
+    target = state.board_zone.remove_at(target_friendly_index)
+    target.temp_cost = 1
+    target.locked_one_cost = True
+    add_to_hand(state, target)
+    state.add_log(f"赤烟·腾武回手：{target.name}（本回合固定1费）")
+
+
 def effect_evasion_trigger(state: GameState):
     for index, secret in enumerate(state.secret_zone.cards):
         if secret.name == "闪避":
@@ -1332,6 +1364,7 @@ EFFECT_HANDLERS: Dict[str, Callable] = {
     "alexstrasza": effect_alexstrasza,
     "dubious_purchase": effect_dubious_purchase,
     "shadowcaster": effect_shadowcaster,
+    "tenwu": effect_tenwu,
 }
 
 
@@ -1557,7 +1590,7 @@ def discover_deck_count_only(state: GameState, label: str) -> List[GameState]:
 
 
 def target_friendly_options(state: GameState, card: CardInstance) -> List[Optional[int]]:
-    if card.effect_id in {"shadowstep", "shadowcaster", "serrated_bone_spike"}:
+    if card.effect_id in {"shadowstep", "shadowcaster", "serrated_bone_spike", "tenwu"}:
         return state.board_zone.valid_target_indexes()
 
     return [None]
@@ -1691,6 +1724,16 @@ def apply_search_effect(
                 if target_friendly_index is not None and target_friendly_index < len(new_state.board_zone):
                     copied = make_one_one_copy(new_state.board_zone.cards[target_friendly_index])
                     add_card_to_hand_or_burn(new_state, copied)
+
+                next_states.append(new_state)
+            elif effect_id == "tenwu":
+                new_state = current.clone()
+
+                if target_friendly_index is not None and target_friendly_index < len(new_state.board_zone):
+                    target = new_state.board_zone.remove_at(target_friendly_index)
+                    target.temp_cost = 1
+                    target.locked_one_cost = True
+                    add_card_to_hand_or_burn(new_state, target)
 
                 next_states.append(new_state)
             elif effect_id == "breakdance":
@@ -1840,6 +1883,7 @@ def state_signature(state: GameState) -> Tuple:
             # 一个表示搜到 10龙/160，另一个只到 8龙/128）。
             safe_cost(card.current_cost()),
             card.is_deadly_shadow,
+            card.locked_one_cost,
             -1 if card.health is None else card.health,
         )
 
@@ -1875,6 +1919,7 @@ def state_key_for_dedup(state: GameState) -> Tuple:
             card.effect_id,
             safe_cost(card.current_cost()),
             card.is_deadly_shadow,
+            card.locked_one_cost,
             -1 if card.health is None else card.health,
         )
 

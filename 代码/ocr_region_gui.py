@@ -684,18 +684,39 @@ class MainWindow(QWidget):
         deadly_shadow_layout.addWidget(QLabel("按重建手牌列表从 1 开始编号"))
         deadly_shadow_layout.addStretch()
 
-        self.etcDanceCheck = QCheckBox("舞动全场（ft.迦罗娜）")
-        self.etcPotionCheck = QCheckBox("幻觉药水")
-        self.etcAlexCheck = QCheckBox("生命的缚誓者阿莱克丝塔萨")
-        for checkbox in [self.etcDanceCheck, self.etcPotionCheck, self.etcAlexCheck]:
-            checkbox.setChecked(True)
+        # 牛头人酋长剩余卡池：可勾选项超过 5 个（可继续追加），但最多只能勾选 3 张
+        self.etcBandChecks: List[Tuple[str, QCheckBox]] = []
+        self.etcBandOptions = [
+            ("舞动全场（ft.迦罗娜）", "舞动全场（ft.迦罗娜）"),
+            ("幻觉药水", "幻觉药水"),
+            ("生命的缚誓者阿莱克丝塔萨", "红龙"),
+            ("晦鳞巢母", "晦鳞巢母"),
+            ("赤烟·腾武", "赤烟·腾武"),
+        ]
+
+        def make_etc_toggler(box):
+            def handler(checked):
+                if checked and sum(
+                    1 for _name, other in self.etcBandChecks if other.isChecked()
+                ) > 3:
+                    box.blockSignals(True)
+                    box.setChecked(False)
+                    box.blockSignals(False)
+            return handler
+
+        for label, card_name in self.etcBandOptions:
+            box = QCheckBox(label)
+            box.setChecked(card_name in {"舞动全场（ft.迦罗娜）", "幻觉药水", "生命的缚誓者阿莱克丝塔萨"})
+            box.toggled.connect(make_etc_toggler(box))
+            self.etcBandChecks.append((card_name, box))
 
         etc_layout = QHBoxLayout()
         etc_layout.addWidget(QLabel("牛头人酋长剩余卡池："))
-        etc_layout.addWidget(self.etcDanceCheck)
-        etc_layout.addWidget(self.etcPotionCheck)
-        etc_layout.addWidget(self.etcAlexCheck)
-        etc_layout.addWidget(QLabel("取消勾选表示这张已经被选走"))
+
+        for _card_name, box in self.etcBandChecks:
+            etc_layout.addWidget(box)
+
+        etc_layout.addWidget(QLabel("最多勾选 3 张；取消勾选表示这张已经被选走"))
         etc_layout.addStretch()
 
         self.manualInputPanel = QWidget()
@@ -963,18 +984,11 @@ class MainWindow(QWidget):
         return indexes
 
     def get_etc_band_remaining(self):
-        selected = []
-        pairs = [
-            (self.etcDanceCheck, "舞动全场（ft.迦罗娜）"),
-            (self.etcPotionCheck, "幻觉药水"),
-            (self.etcAlexCheck, "生命的缚誓者阿莱克丝塔萨"),
+        return [
+            card_name
+            for card_name, checkbox in self.etcBandChecks
+            if checkbox.isChecked()
         ]
-
-        for checkbox, card_name in pairs:
-            if checkbox.isChecked():
-                selected.append(card_name)
-
-        return selected
 
     def start_ocr(self):
         if self.box is None:
