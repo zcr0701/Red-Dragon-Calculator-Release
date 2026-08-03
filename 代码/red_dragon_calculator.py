@@ -1925,6 +1925,51 @@ class SymbolicChain:
     actions: List[SymbolicAction]
 
 
+@dataclass(frozen=True)
+class DiscreteSubchain:
+    """长距离离散子链：按顺序出现的“里程碑”动作，允许中间任意间隔。
+
+    人脑式知识：例如“要打 5 龙或更多，必定是 牛(舞,龙) -> …… -> 舞 -> …… -> 舞[殒]”，
+    这类骨架跨越多步、中间由其他子链填充，不能被连续子链表达，但能用来
+    给候选链/拼接对排序（优先验证命中里程碑骨架的链）。
+    """
+
+    name: str
+    required: Tuple[SymbolicAction, ...]
+    min_alex_count: int = 0
+    reasoning: str = ""
+
+
+def discrete_action_matches(actual: SymbolicAction, required: SymbolicAction) -> bool:
+    if required.name in COIN_CARD_NAMES and actual.name in COIN_CARD_NAMES:
+        return True
+
+    if actual.name != required.name:
+        return False
+
+    if required.target and actual.target != required.target:
+        return False
+
+    if required.choices and set(required.choices) != set(actual.choices):
+        return False
+
+    return True
+
+
+def chain_contains_discrete_subchain(actions: List[SymbolicAction], subchain: DiscreteSubchain) -> bool:
+    """检查动作序列是否按顺序包含离散子链的全部里程碑（中间可隔任意步）。"""
+    iterator = iter(actions)
+
+    for required_action in subchain.required:
+        for actual_action in iterator:
+            if discrete_action_matches(actual_action, required_action):
+                break
+        else:
+            return False
+
+    return True
+
+
 def action_label(action: SymbolicAction) -> str:
     label = action.name
 
@@ -3151,6 +3196,94 @@ def build_symbolic_chains(target_alex_count: int) -> List[SymbolicChain]:
     return chains
 
 
+# =====================================================================
+# 长距离离散子链库：里程碑骨架（允许中间任意间隔），用于引导链验证顺序
+# 与双向拼接候选优选。这些是“人脑先想结构、再填空”的知识：
+#   双舞全回收骨架：……->牛（舞,龙）->……->舞->……->舞[殒]->……
+#   刀油叠费引擎：鲨鱼 + 2 张以上刀油把后续卡压到 0-1 费。
+#   暗施双龙复制：鲨鱼在场时暗影施法者复制红龙得两张 1 费复制体。
+# =====================================================================
+def build_discrete_subchain_library() -> List[DiscreteSubchain]:
+    alex = "生命的缚誓者阿莱克丝塔萨"
+    shark = "鲨鱼之灵"
+    scabbs = "斯卡布斯·刀油"
+    shadowcaster = "暗影施法者"
+    mother = "晦鳞巢母"
+    dance = "舞动全场（ft.迦罗娜）"
+    shadowstep = "暗影步"
+    etc = "乐队经理精英牛头人酋长"
+
+    return [
+        DiscreteSubchain(
+            name="双舞全回收骨架（5+龙）",
+            min_alex_count=5,
+            required=(SymbolicAction(dance), SymbolicAction(dance)),
+            reasoning="5 龙以上通常需要两次舞动全场全回收：第二张舞动由殒命暗影变形而来。",
+        ),
+        DiscreteSubchain(
+            name="牛舞龙发现+双舞（5+龙）",
+            min_alex_count=5,
+            required=(
+                SymbolicAction(etc, choices=(dance, alex)),
+                SymbolicAction(dance),
+                SymbolicAction(dance),
+            ),
+            reasoning="牛在鲨鱼下双发现舞动+红龙，随后两次舞动全回收（第二张为舞动[殒]）。",
+        ),
+        DiscreteSubchain(
+            name="牛舞龙发现（3+龙）",
+            min_alex_count=3,
+            required=(SymbolicAction(etc, choices=(dance, alex)),),
+            reasoning="牛头人发现舞动+红龙是红龙来源与回收来源的常见入口。",
+        ),
+        DiscreteSubchain(
+            name="刀油叠费引擎",
+            min_alex_count=3,
+            required=(SymbolicAction(shark), SymbolicAction(scabbs), SymbolicAction(scabbs)),
+            reasoning="鲨鱼使刀油连击双触发：两张刀油叠 4 层减费，把 9 费红龙压到 1 费。",
+        ),
+        DiscreteSubchain(
+            name="暗施双龙复制",
+            min_alex_count=3,
+            required=(
+                SymbolicAction(shadowcaster, target=alex),
+                SymbolicAction(alex),
+                SymbolicAction(alex),
+            ),
+            reasoning="鲨鱼在场时暗影施法者复制红龙得两张 1 费复制体并连打。",
+        ),
+        DiscreteSubchain(
+            name="殒命双币开手",
+            min_alex_count=3,
+            required=(SymbolicAction("幸运币"), SymbolicAction("幸运币")),
+            reasoning="殒命暗影在首张法术（幸运币）后变形为第二枚幸运币，把开局法力顶满。",
+        ),
+        DiscreteSubchain(
+            name="晦鳞回收轮",
+            min_alex_count=3,
+            required=(
+                SymbolicAction(mother),
+                SymbolicAction(dance),
+                SymbolicAction(shark),
+                SymbolicAction(mother),
+            ),
+            reasoning="晦鳞回费->舞动全回收->鲨鱼重铺->晦鳞再回费，构成回收轮。",
+        ),
+        DiscreteSubchain(
+            name="双暗影步回龙（5+龙）",
+            min_alex_count=5,
+            required=(
+                SymbolicAction(shadowstep, target=alex),
+                SymbolicAction(shadowstep, target=alex),
+            ),
+            reasoning="两条暗影步（其中一条可为暗影步[殒]）分别回手红龙再打出。",
+        ),
+    ]
+
+
+DISCRETE_SUBCHAIN_LIBRARY = build_discrete_subchain_library()
+
+
 @dataclass(frozen=True)
 class SymbolicOperator:
     name: str
@@ -4282,12 +4415,18 @@ def bidirectional_symbolic_prove_paths(
     found_callback: Optional[Callable[[List[GameState], int], None]] = None,
     prune_stats: Optional[Dict[str, int]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
-    forward_depth: int = 22,
+    forward_depth: int = 5,
     forward_beam_width: int = 1500,
     validate_candidates_per_target: int = 20,
     step_memo: Optional[Dict[Tuple, object]] = None
 ) -> List[GameState]:
-    """双向符号链证明：前向探索 + 反向尾链 + 前沿拼接 + 反向验证。"""
+    """双向符号链证明：个位数深度前向展开 + 大量子链/引理组合拼接 + 反向验证。
+
+    设计边界（与 beam 收束搜索区分）：
+      - forward_depth 默认 5：前向只做浅层算子展开（人脑式“先走几步看局面”）；
+      - 长距离结构靠子链库（起手段/尾段/长距离离散骨架）组合，不靠加深前向；
+      - 几十步的纯算子展开属于 beam 收束计算，单独开关（默认关闭、束宽 2000）。
+    """
     search_initial_state = initial_state.clone()
     search_initial_state.record_log = False
     min_alex_count = max(1, min(min_alex_count, max_alex_count))
@@ -4511,7 +4650,13 @@ def bidirectional_symbolic_prove_paths(
         if should_stop is not None and should_stop():
             break
 
-        candidates: List[Tuple[GameState, AlexTail, int]] = []
+        candidates: List[Tuple[GameState, AlexTail, int, int]] = []
+        relevant_discrete = [
+            subchain
+            for subchain in DISCRETE_SUBCHAIN_LIBRARY
+            if subchain.min_alex_count <= target
+        ]
+        tail_discrete_hits: Dict[int, int] = {}
 
         for index, (state, priority) in enumerate(pool):
             if state.alex_play_count >= target:
@@ -4543,10 +4688,20 @@ def bidirectional_symbolic_prove_paths(
                     )
                     and tail_mana_feasible(state, tail)
                 ):
-                    candidates.append((state, tail, priority))
+                    tail_id = id(tail)
+
+                    if tail_id not in tail_discrete_hits:
+                        tail_discrete_hits[tail_id] = sum(
+                            1
+                            for subchain in relevant_discrete
+                            if chain_contains_discrete_subchain(tail.actions, subchain)
+                        )
+
+                    candidates.append((state, tail, priority, tail_discrete_hits[tail_id]))
 
         candidates.sort(
             key=lambda pair: (
+                -pair[3],
                 -pair[2],
                 -pair[0].mana,
                 len(pair[1].actions),
@@ -4554,7 +4709,12 @@ def bidirectional_symbolic_prove_paths(
             )
         )
 
-        for state, tail, _priority in candidates[:validate_candidates_per_target]:
+        if prune_stats is not None:
+            prune_stats["离散子链命中候选尾链"] = prune_stats.get("离散子链命中候选尾链", 0) + sum(
+                1 for _state, _tail, _priority, hits in candidates if hits > 0
+            )
+
+        for state, tail, _priority, _hits in candidates[:validate_candidates_per_target]:
             if should_stop is not None and should_stop():
                 break
 
@@ -4641,10 +4801,27 @@ def reverse_symbolic_prove_paths(
             for chain in build_symbolic_chains(target_alex_count)
             if len(chain.actions) <= max_chain_steps
         ]
+        # 长距离离散子链（里程碑骨架）引导：命中相关骨架的链优先验证——
+        # 人脑先想结构（如“5+龙必含双舞”），再让具体线路先被验证。
+        relevant_discrete = [
+            subchain
+            for subchain in DISCRETE_SUBCHAIN_LIBRARY
+            if subchain.min_alex_count <= target_alex_count
+        ]
+        chains.sort(key=lambda chain: (
+            -sum(
+                1
+                for subchain in relevant_discrete
+                if chain_contains_discrete_subchain(chain.actions, subchain)
+            ),
+            len(chain.actions),
+            chain.name,
+        ))
         proved_states = []
 
         if prune_stats is not None:
             prune_stats["符号候选链条数"] = prune_stats.get("符号候选链条数", 0) + len(chains)
+            prune_stats["离散子链库数"] = len(DISCRETE_SUBCHAIN_LIBRARY)
 
         for chain_index, chain in enumerate(chains, start=1):
             if should_stop is not None and should_stop():
@@ -4921,7 +5098,7 @@ def beam_search_paths(
     max_paths: int = 500000,
     max_alex_count: int = 10,
     min_alex_count: int = 1,
-    beam_width: int = 4000,
+    beam_width: int = 2000,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
     found_callback: Optional[Callable[[List[GameState], int], None]] = None,
     prune_stats: Optional[Dict[str, int]] = None,
@@ -5268,13 +5445,13 @@ def main() -> int:
     parser.add_argument("--play", action="append", default=[], help="按名称依次使用卡牌，可重复传入")
     parser.add_argument("--search", action="store_true", help="执行符号化链条证明")
     parser.add_argument("--beam", action="store_true", help="使用正向束搜索（默认关闭，使用反向符号链证明）")
-    parser.add_argument("--beam-width", type=int, default=4000, help="束搜索束宽，默认4000")
+    parser.add_argument("--beam-width", type=int, default=2000, help="束搜索束宽，默认2000（计算时间长，默认不勾选）")
     parser.add_argument("--max-depth", type=int, default=100, help="符号链条最大步数")
     parser.add_argument("--max-paths", type=int, default=500000)
     parser.add_argument("--max-alex-count", type=int, default=10)
     parser.add_argument("--min-alex-count", type=int, default=1)
     parser.add_argument("--no-forward-mine", action="store_true", help="关闭正向束搜索自动挖掘（默认开启）")
-    parser.add_argument("--forward-mine-width", type=int, default=1000, help="自动挖掘束搜索束宽，默认1000")
+    parser.add_argument("--forward-mine-width", type=int, default=2000, help="自动挖掘束搜索束宽，默认2000")
     parser.add_argument("--no-bidirectional", action="store_true", help="关闭双向符号链拼接证明（默认开启）")
     parser.add_argument("--show-limit", type=int, default=200)
     parser.add_argument("--json", action="store_true", help="输出 JSON")

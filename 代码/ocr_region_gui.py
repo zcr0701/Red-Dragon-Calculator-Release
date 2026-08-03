@@ -445,7 +445,7 @@ class CalculationWorker(QThread):
                     max_paths=self.max_paths,
                     max_alex_count=self.max_alex_count,
                     min_alex_count=self.min_alex_count,
-                    beam_width=4000,
+                    beam_width=2000,
                     progress_callback=on_progress,
                     found_callback=on_found,
                     prune_stats=prune_stats,
