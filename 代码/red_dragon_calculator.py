@@ -2691,6 +2691,70 @@ def build_symbolic_chains(target_alex_count: int) -> List[SymbolicChain]:
         )
 
         add_chain(
+            name="公式币币殒鲨狐刀牛舞龙晦步刀暗刀舞重铺三龙链",
+            reasoning=[
+                "殒命暗影开局变形为第二枚幸运币（币[殒]），两枚币把法力顶到 4，",
+                "鲨鱼0费？——先鱼狐刀启动，牛在鲨鱼下双发现舞动和红龙，晦鳞回 4 费；",
+                "暗影步回刀油、再刀油+暗施复制刀油+刀油叠减费，舞动全场全回收引擎；",
+                "第二轮鱼晦双刀油压低红龙，骨刺击杀晦鳞给暗施减费，暗施复制红龙完成三龙。",
+                "顺序经过用户验证：牛后必须先晦（回费）再步（刀），不能先暗施复制刀油。",
+            ],
+            actions=[
+                SymbolicAction("伪造的幸运币"),
+                SymbolicAction("伪造的幸运币"),
+                SymbolicAction(shark),
+                SymbolicAction(foxy),
+                SymbolicAction(scabbs),
+                SymbolicAction(etc, choices=(dance, alex)),
+                SymbolicAction(mother),
+                SymbolicAction(shadowstep, target=scabbs),
+                SymbolicAction(scabbs),
+                SymbolicAction(shadowcaster, target=scabbs),
+                SymbolicAction(scabbs),
+                SymbolicAction(dance),
+                SymbolicAction(shark),
+                SymbolicAction(mother),
+                SymbolicAction(scabbs),
+                SymbolicAction(scabbs),
+                SymbolicAction(alex),
+                SymbolicAction(bone_spike, target=mother),
+                SymbolicAction(shadowcaster, target=alex),
+                SymbolicAction(alex),
+                SymbolicAction(alex),
+            ],
+        )
+
+        add_chain(
+            name="公式币币殒鲨狐刀牛舞龙晦步刀暗刀舞重铺三龙链-无骨刺",
+            reasoning=[
+                "同币币殒重铺三龙链，但不用骨刺：第二轮鱼晦刀刀压低红龙后，",
+                "暗施在鲨鱼下直接复制红龙（两张 1 费复制体）完成三龙。",
+            ],
+            actions=[
+                SymbolicAction("伪造的幸运币"),
+                SymbolicAction("伪造的幸运币"),
+                SymbolicAction(shark),
+                SymbolicAction(foxy),
+                SymbolicAction(scabbs),
+                SymbolicAction(etc, choices=(dance, alex)),
+                SymbolicAction(mother),
+                SymbolicAction(shadowstep, target=scabbs),
+                SymbolicAction(scabbs),
+                SymbolicAction(shadowcaster, target=scabbs),
+                SymbolicAction(scabbs),
+                SymbolicAction(dance),
+                SymbolicAction(shark),
+                SymbolicAction(mother),
+                SymbolicAction(scabbs),
+                SymbolicAction(scabbs),
+                SymbolicAction(alex),
+                SymbolicAction(shadowcaster, target=alex),
+                SymbolicAction(alex),
+                SymbolicAction(alex),
+            ],
+        )
+
+        add_chain(
             name="公式伺骨杀晦三龙链",
             reasoning=[
                 "新版伺+步/骨公式的骨分支：伺机待发压低舞动，普通舞动后先鱼晦刀刀龙。",
