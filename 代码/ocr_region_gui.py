@@ -256,7 +256,7 @@ class CalculationWorker(QThread):
     result_signal = pyqtSignal(str)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, rebuild_result, mana_crystals, mana, max_depth=100, max_paths=500000, max_alex_count=10, min_alex_count=1, deadly_shadow_hand_indexes=None, etc_band_remaining=None, beam_mode=False, operator_depth=5, beam_width=3000, beam_depth=20):
+    def __init__(self, rebuild_result, mana_crystals, mana, max_depth=100, max_paths=1000000, max_alex_count=10, min_alex_count=1, deadly_shadow_hand_indexes=None, etc_band_remaining=None, beam_mode=False, operator_depth=5, beam_width=3000, beam_depth=25):
         super().__init__()
         self.rebuild_result = rebuild_result
         self.mana_crystals = mana_crystals
@@ -437,6 +437,7 @@ class CalculationWorker(QThread):
                 )
 
             prune_stats = {}
+            search_started = time.time()
             if self.beam_mode:
                 states = beam_search_paths(
                     initial_state=state,
@@ -465,6 +466,8 @@ class CalculationWorker(QThread):
                     forward_depth=self.operator_depth,
                 )
 
+            elapsed_seconds = time.time() - search_started
+
             remember_situation(
                 state,
                 states,
@@ -474,6 +477,7 @@ class CalculationWorker(QThread):
                     "搜索龙数下限": self.min_alex_count,
                     "路径上限": self.max_paths,
                     "链条步数上限": self.max_depth,
+                    "计算总耗时(秒)": round(elapsed_seconds, 1),
                 },
             )
             limit_note = ""
@@ -498,6 +502,7 @@ class CalculationWorker(QThread):
             self.result_signal.emit(
                 self.format_initial_state_note(state)
                 + self.format_prune_stats(prune_stats)
+                + f"计算总耗时：{elapsed_seconds:.1f} 秒\n\n"
                 + stop_note
                 + limit_note
                 + export_note
@@ -622,7 +627,7 @@ class MainWindow(QWidget):
         self.operatorDepthInput = QLineEdit("5")
         self.operatorDepthInput.setFixedWidth(50)
         self.operatorDepthInput.setToolTip("双向符号链前向算子深度（个位数展开，默认5）。长距离结构由子链/引理组合完成。")
-        self.maxPathsInput = QLineEdit("500000")
+        self.maxPathsInput = QLineEdit("1000000")
         self.maxPathsInput.setFixedWidth(90)
         self.maxAlexInput = QLineEdit("10")
         self.maxAlexInput.setFixedWidth(60)
@@ -638,8 +643,6 @@ class MainWindow(QWidget):
         mana_layout.addWidget(self.maxDepthInput)
         mana_layout.addWidget(QLabel("双向算子深度："))
         mana_layout.addWidget(self.operatorDepthInput)
-        mana_layout.addWidget(QLabel("路径上限："))
-        mana_layout.addWidget(self.maxPathsInput)
         mana_layout.addWidget(QLabel("搜索龙数上限："))
         mana_layout.addWidget(self.maxAlexInput)
         mana_layout.addWidget(QLabel("搜索龙数下限："))
@@ -655,12 +658,16 @@ class MainWindow(QWidget):
         self.beamDepthInput.setToolTip("beam束搜索算子深度（展开步数上限），默认25。")
         self.beamWidthInput.setEnabled(False)
         self.beamDepthInput.setEnabled(False)
+        self.maxPathsInput.setEnabled(False)
         self.beamModeCheck.toggled.connect(self.beamWidthInput.setEnabled)
         self.beamModeCheck.toggled.connect(self.beamDepthInput.setEnabled)
+        self.beamModeCheck.toggled.connect(self.maxPathsInput.setEnabled)
         mana_layout.addWidget(QLabel("beam束宽："))
         mana_layout.addWidget(self.beamWidthInput)
         mana_layout.addWidget(QLabel("beam深度："))
         mana_layout.addWidget(self.beamDepthInput)
+        mana_layout.addWidget(QLabel("路径上限："))
+        mana_layout.addWidget(self.maxPathsInput)
         mana_layout.addStretch()
 
         self.deadlyShadowCheck = QCheckBox("标记殒命暗影")

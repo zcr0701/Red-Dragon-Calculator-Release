@@ -1,6 +1,7 @@
 import argparse
 import heapq
 import json
+import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
@@ -1234,6 +1235,7 @@ def effect_potion_of_illusion(state: GameState, **kwargs):
     for minion in state.board_zone.cards[:]:
         copy_card = _fast_clone_card(minion)
         copy_card.temp_cost = 1
+        copy_card.health = 1
         add_to_hand(state, copy_card)
 
 
@@ -1297,6 +1299,7 @@ def effect_shadowcaster(state: GameState, target_friendly_index: Optional[int], 
 
     target = _fast_clone_card(state.board_zone.cards[target_friendly_index])
     target.temp_cost = 1
+    target.health = 1
     add_to_hand(state, target)
 
 
@@ -4882,7 +4885,7 @@ def bidirectional_symbolic_prove_paths(
 def reverse_symbolic_prove_paths(
     initial_state: GameState,
     max_alex_count: int,
-    max_paths: int,
+    max_paths: int = 1000000,
     max_chain_steps: int = 100,
     min_alex_count: int = 1,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
@@ -5180,7 +5183,7 @@ def reverse_symbolic_prove_paths(
 def enumerate_play_paths(
     initial_state: GameState,
     max_depth: int = 100,
-    max_paths: int = 500000,
+    max_paths: int = 1000000,
     max_alex_count: int = 10,
     min_alex_count: int = 1,
     progress_callback: Optional[Callable[[int, int], None]] = None,
@@ -5212,7 +5215,7 @@ def enumerate_play_paths(
 def beam_search_paths(
     initial_state: GameState,
     max_depth: int = 100,
-    max_paths: int = 500000,
+    max_paths: int = 1000000,
     max_alex_count: int = 10,
     min_alex_count: int = 1,
     beam_width: int = 3000,
@@ -5264,6 +5267,14 @@ def beam_search_paths(
             for remaining_count, discount_amount in state.active_card_discounts
             if remaining_count > 0 and discount_amount > 0
         )
+        # “鱼先于龙”骨架：手牌同时有鲨鱼和龙（或鱼在场+龙在手）时加分——
+        # 下一轮先放鱼再出龙=每条龙 16 伤，这是 9 龙/144 伤等高伤害线路的关键。
+        shark_in_hand = count_hand_cards(state, "鲨鱼之灵")
+        shark_on = state.has_shark()
+
+        if hand_dragons > 0 and (shark_on or shark_in_hand):
+            dragons += 15
+
         return dragons * 100 + oil_value
 
     best: Dict[int, GameState] = {start.alex_play_count: start.clone()}
@@ -5273,6 +5284,8 @@ def beam_search_paths(
     expansions = 0
     max_reached = start.alex_play_count
     reached_depth = 0
+    max_damage_seen = start.alex_damage
+    best_damage_by_alex: Dict[int, int] = {start.alex_play_count: start.alex_damage}
 
     for depth in range(1, max_depth + 1):
         if should_stop is not None and should_stop():
@@ -5288,6 +5301,11 @@ def beam_search_paths(
         for state in level:
             for successor in generate_successors(state, prune_stats=prune_stats):
                 expansions += 1
+                max_damage_seen = max(max_damage_seen, successor.alex_damage)
+                best_damage_by_alex[successor.alex_play_count] = max(
+                    best_damage_by_alex.get(successor.alex_play_count, 0),
+                    successor.alex_damage,
+                )
                 key = (state_key_for_dedup(successor), successor.alex_play_count)
 
                 if key in next_seen or key in seen:
@@ -5298,7 +5316,9 @@ def beam_search_paths(
 
                 current = best.get(successor.alex_play_count)
 
-                if current is None or (successor.mana, potential(successor)) > (
+                # 同龙数优先保留伤害更高的路径（先鱼后龙的结构伤害更高）
+                if current is None or (successor.alex_damage, successor.mana, potential(successor)) > (
+                    current.alex_damage,
                     current.mana,
                     potential(current),
                 ):
@@ -5315,16 +5335,31 @@ def beam_search_paths(
         for state in next_level:
             buckets.setdefault(state.alex_play_count, []).append(state)
 
-        per_bucket = max(1, beam_width // max(1, len(buckets)))
+        # 每桶多保留 25%：深层“先鱼后龙”的高伤害线路（如 9 龙/144 伤）在桶内
+        # 排名常落后于“复制更多龙”的低伤害分支，需要额外余量才能存活。
+        per_bucket = max(1, int(beam_width * 1.25 / max(1, len(buckets))))
         level = []
 
         for bucket_key in sorted(buckets, reverse=True):
             bucket_states = sorted(
                 buckets[bucket_key],
-                key=lambda state: (potential(state), state.mana),
+                key=lambda state: (potential(state), state.alex_damage, state.mana),
                 reverse=True,
             )
-            level.extend(bucket_states[:per_bucket])
+            selected = bucket_states[:per_bucket]
+
+            # 伤害优先：每个龙数桶强制保留“最高伤害”状态，避免“鱼先于龙”的高伤害
+            # 分支（如 9 龙/144 伤）被潜力更高但伤害更低的分支挤掉。
+            if bucket_states:
+                damage_champion = max(
+                    bucket_states,
+                    key=lambda state: (state.alex_damage, state.mana),
+                )
+
+                if damage_champion not in selected:
+                    selected = selected[:-1] + [damage_champion]
+
+            level.extend(selected)
 
         level = level[:beam_width]
 
@@ -5353,6 +5388,7 @@ def beam_search_paths(
         prune_stats["束搜索展开状态数"] = expansions
         prune_stats["束搜索束宽"] = beam_width
         prune_stats["束搜索最高龙数"] = max(best.keys()) if best else 0
+        prune_stats["束搜索最高伤害"] = max_damage_seen
 
     return sort_path_states([
         item
@@ -5365,6 +5401,7 @@ def sort_path_states(states: List[GameState]) -> List[GameState]:
     return sorted(
         states,
         key=lambda item: (
+            -item.alex_damage,
             -item.alex_play_count,
             -len(item.path),
             -item.mana,
@@ -5609,7 +5646,7 @@ def main() -> int:
     parser.add_argument("--beam", action="store_true", help="使用正向束搜索（默认关闭，使用反向符号链证明）")
     parser.add_argument("--beam-width", type=int, default=3000, help="束搜索束宽，默认3000（计算时间长，默认不勾选）")
     parser.add_argument("--max-depth", type=int, default=100, help="符号链条最大步数")
-    parser.add_argument("--max-paths", type=int, default=500000)
+    parser.add_argument("--max-paths", type=int, default=1000000, help="路径上限，默认1000000")
     parser.add_argument("--max-alex-count", type=int, default=10)
     parser.add_argument("--min-alex-count", type=int, default=1)
     parser.add_argument("--forward-mine", action="store_true", help="启用束搜索自动挖掘（默认关闭；自动挖掘已从默认流程移除，属实验验算）")
@@ -5639,6 +5676,7 @@ def main() -> int:
 
     if args.search:
         cached = archive.lookup_situation(state)
+        search_started = time.time()
 
         if cached:
             if args.json:
@@ -5669,6 +5707,8 @@ def main() -> int:
                 forward_depth=args.operator_depth
             )
 
+        elapsed_seconds = time.time() - search_started
+
         archive.remember_situation(
             state,
             states,
@@ -5678,6 +5718,7 @@ def main() -> int:
                 "搜索龙数下限": args.min_alex_count,
                 "路径上限": args.max_paths,
                 "链条步数上限": args.max_depth,
+                "计算总耗时(秒)": round(elapsed_seconds, 1),
             },
         )
 
@@ -5685,6 +5726,7 @@ def main() -> int:
             print(json.dumps([state_summary(item) for item in states], ensure_ascii=False, indent=2))
         else:
             print(format_paths(states, limit=args.show_limit))
+            print(f"\n计算总耗时：{elapsed_seconds:.1f} 秒")
 
         if cached:
             print("\n（已重新计算完毕，存档已更新）")
