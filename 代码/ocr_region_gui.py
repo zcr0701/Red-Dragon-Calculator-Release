@@ -411,12 +411,12 @@ class CalculationWorker(QThread):
             cached = lookup_situation(state)
 
             if cached:
-                self.result_signal.emit(
+                # 立即展示缓存，但不返回：后台继续完整计算，搜出更高龙数就更新存档
+                self.partial_result_signal.emit(
                     self.format_initial_state_note(state)
                     + format_cached_paths(cached)
-                    + "\n\n（该局面已在存档中，直接输出缓存结果，未重新计算）"
+                    + "\n\n（以上为缓存结果，正在后台重新计算；若搜出更高龙数的新路径，会自动更新存档并展示新结果）"
                 )
-                return
 
             def on_progress(done_count, stack_count, pruned_count=0):
                 if self.beam_mode:

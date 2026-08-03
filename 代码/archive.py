@@ -243,23 +243,30 @@ def remember_situation(
         situations[key] = entry
         existing = entry
 
-    for count_text, paths in paths_by_count.items():
+    # 合并规则（针对“错误计算也会被缓存”的修正）：
+    # - 新旧龙数取并集，绝不丢旧路径；
+    # - 同一龙数下新算出的路径排前面（优先采用刚验证过的结论）；
+    # - 若新计算搜出了更高的龙数，整块结果以新计算为准，旧的低龙数结果自动退居其次。
+    all_counts = set(paths_by_count) | set(existing.get("路径", {}))
+    merged_paths: Dict[str, List[str]] = {}
+
+    for count_text in sorted(all_counts, key=lambda item: -int(item)):
         count = int(count_text)
-        retained = _retain_paths(paths, count)
-        existing["路径"].setdefault(count_text, [])
+        new_paths = paths_by_count.get(count_text, [])
+        old_paths = existing.get("路径", {}).get(count_text, [])
 
-        for path_text in retained:
-            if path_text not in existing["路径"][count_text]:
-                existing["路径"][count_text].append(path_text)
+        if new_paths:
+            merged = list(dict.fromkeys(new_paths + old_paths))
+        else:
+            merged = list(old_paths)
 
-        existing["路径"][count_text] = _retain_paths(
-            existing["路径"][count_text],
-            count,
-        )
+        merged_paths[count_text] = _retain_paths(merged, count)
 
+    existing["路径"] = merged_paths
     existing["最多龙数"] = max(
-        int(count_text) for count_text in existing["路径"]
-    ) if existing["路径"] else 0
+        (int(count_text) for count_text in merged_paths),
+        default=0,
+    )
     existing["更新时间"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     if params:
@@ -309,6 +316,12 @@ def format_cached_paths(entry: Dict[str, Any]) -> str:
     lines.append(f"战场：{entry.get('战场', '')}")
     lines.append(f"状态：{entry.get('状态', '')}")
     lines.append(f"牌库：{entry.get('牌库', '')}")
+    params = entry.get("计算参数") or {}
+
+    if params:
+        lines.append("")
+        lines.append("缓存来源参数：" + json.dumps(params, ensure_ascii=False))
+
     lines.append("")
 
     paths = entry.get("路径", {})

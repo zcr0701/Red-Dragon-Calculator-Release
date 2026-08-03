@@ -3787,6 +3787,85 @@ def tail_mana_feasible(state: GameState, tail: AlexTail) -> bool:
     return True
 
 
+def lemma_prestart_skipped(
+    base_state: GameState,
+    lemma: AlexTail,
+) -> bool:
+    """引理第一个动作是否已被“预启动”满足（如鲨鱼之灵已在场上，无需再打）。"""
+    return bool(
+        lemma.actions
+        and chain_action_already_satisfied(
+            base_state,
+            base_state,
+            lemma.actions[0],
+        )
+    )
+
+
+def lemma_meets_state(
+    base_state: GameState,
+    lemma: AlexTail,
+) -> bool:
+    """引理适用性检查：比尾链宽松——第一个动作若被预启动跳过，其手牌需求少算 1 张。"""
+    hand_counts = Counter(card.name for card in base_state.hand)
+    board_counts = Counter(card.name for card in base_state.board)
+    skip_name = (
+        lemma.actions[0].name
+        if lemma_prestart_skipped(base_state, lemma)
+        else None
+    )
+
+    for name, count in lemma.hand_req.items():
+        required = count
+
+        if name == skip_name:
+            # 预启动跳过一次：手牌需求少 1 张（如鲨鱼已在场上，只需再补 count-1 张）
+            required = max(0, count - 1)
+
+        if hand_counts.get(name, 0) < required:
+            return False
+
+    for name, count in lemma.board_req.items():
+        if board_counts.get(name, 0) < count:
+            return False
+
+    if lemma.band_req:
+        band = set(base_state.etc_band_remaining)
+
+        if not band.issuperset(set(lemma.band_req)):
+            return False
+
+    if lemma.any_friendly_minion and not base_state.board_zone.cards:
+        return False
+
+    return True
+
+
+def lemma_mana_feasible(
+    base_state: GameState,
+    lemma: AlexTail,
+) -> bool:
+    """引理费用可行性：第一个动作被预启动跳过时不收它的费用。"""
+    actions = list(lemma.actions)
+
+    if lemma_prestart_skipped(base_state, lemma):
+        actions = actions[1:]
+
+    if not actions:
+        return True
+
+    cost_proxy = AlexTail(
+        name=lemma.name,
+        actions=actions,
+        gain=lemma.gain,
+        hand_req=lemma.hand_req,
+        board_req=lemma.board_req,
+        band_req=lemma.band_req,
+        any_friendly_minion=lemma.any_friendly_minion,
+    )
+    return tail_mana_feasible(base_state, cost_proxy)
+
+
 def bidirectional_symbolic_prove_paths(
     initial_state: GameState,
     max_alex_count: int,
@@ -3855,6 +3934,117 @@ def bidirectional_symbolic_prove_paths(
     seen_paths = set()
     validated_count = 0
 
+    # 前向引理：模板起手段子链当作“已证结论”直接搭到当前局面（搭积木/引用定理），
+    # 不必再从初始局面重新展开一遍；引理链出的状态继续参与尾链拼接与二次引理搭接。
+    lemma_pool: List[GameState] = []
+    seen_lemma_keys = set()
+    max_lemma_states = 400
+    max_lemma_actions = 14
+    lemma_apply_count = 0
+
+    def apply_forward_lemma(
+        base_state: GameState,
+        lemma: AlexTail,
+    ) -> None:
+        nonlocal lemma_apply_count
+
+        if len(lemma_pool) >= max_lemma_states:
+            return
+
+        if len(lemma.actions) > max_lemma_actions:
+            return
+
+        if len(base_state.path) + len(lemma.actions) > max_chain_steps:
+            return
+
+        if not lemma_meets_state(base_state, lemma):
+            return
+
+        if not lemma_mana_feasible(base_state, lemma):
+            return
+
+        lemma_apply_count += 1
+        lemma_chain = SymbolicChain(
+            name=f"前向引理-{lemma.name}",
+            target_alex_count=lemma.gain,
+            reasoning=[
+                "前向引理（模板起手段子链，已证结论）直接搭接到当前状态；",
+                "引理内容：" + " -> ".join(action_label(action) for action in lemma.actions),
+            ],
+            actions=lemma.actions,
+        )
+        lemma_states = validate_symbolic_chain(
+            initial_state=base_state,
+            chain=lemma_chain,
+            max_states=max(1, max_paths - len(all_proved)),
+            prune_stats=prune_stats,
+            should_stop=should_stop,
+        )
+
+        for lemma_state in sort_path_states(lemma_states):
+            lemma_key = tuple(lemma_state.path)
+
+            if lemma_key in seen_lemma_keys:
+                continue
+
+            seen_lemma_keys.add(lemma_key)
+            lemma_pool.append(lemma_state)
+
+            if len(lemma_pool) >= max_lemma_states:
+                break
+
+    # 第 1 层：起手段子链直接搭到初始局面
+    for lemma in setup_subchains:
+        if len(lemma_pool) >= max_lemma_states:
+            break
+
+        apply_forward_lemma(search_initial_state, lemma)
+
+    # 第 2 层：引理链出的中间状态再搭一条起手段子链（最多搭两层，控制组合规模）
+    layer_one_states = list(lemma_pool)
+
+    for base_state in layer_one_states:
+        if len(lemma_pool) >= max_lemma_states:
+            break
+
+        for lemma in setup_subchains:
+            if len(lemma_pool) >= max_lemma_states:
+                break
+
+            apply_forward_lemma(base_state, lemma)
+
+    # 第 3 层：束搜索前沿状态 + 短引理跳接——
+    # 束宽可能剪掉的前向延续分支，用“已证结论”的短引理直接跳过去（搭积木）。
+    if len(lemma_pool) < max_lemma_states:
+        frontier_by_mana = sorted(
+            (state for state in frontier if state.alex_play_count < max_alex_count),
+            key=lambda item: -item.mana,
+        )
+
+        for frontier_state in frontier_by_mana:
+            if len(lemma_pool) >= max_lemma_states:
+                break
+
+            for lemma in setup_subchains:
+                if len(lemma_pool) >= max_lemma_states:
+                    break
+
+                if len(lemma.actions) > 8:
+                    continue
+
+                apply_forward_lemma(frontier_state, lemma)
+
+    # 拼接候选池：前向束展开状态（优先级0）+ 引理搭接状态（优先级1，先试）
+    pool: List[Tuple[GameState, int]] = [
+        (state, 0) for state in frontier
+    ] + [
+        (state, 1) for state in lemma_pool
+    ]
+
+    if prune_stats is not None:
+        prune_stats["前向引理尝试次数"] = lemma_apply_count
+        prune_stats["前向引理状态数"] = len(lemma_pool)
+
     def add_state(chain_state: GameState) -> bool:
         path_key = tuple(chain_state.path)
 
@@ -3866,7 +4056,7 @@ def bidirectional_symbolic_prove_paths(
         return True
 
     # 1) 前向直接命中：前沿状态本身已经打出 >= 下限的龙
-    for state in frontier:
+    for state, _priority in pool:
         if state.alex_play_count >= min_alex_count:
             if add_state(state.clone()):
                 if prune_stats is not None:
@@ -3887,9 +4077,9 @@ def bidirectional_symbolic_prove_paths(
         if should_stop is not None and should_stop():
             break
 
-        candidates: List[Tuple[GameState, AlexTail]] = []
+        candidates: List[Tuple[GameState, AlexTail, int]] = []
 
-        for state in frontier:
+        for state, priority in pool:
             if state.alex_play_count >= target:
                 continue
 
@@ -3900,13 +4090,18 @@ def bidirectional_symbolic_prove_paths(
 
             for tail in tails_by_gain.get(needed, []):
                 if tail_meets_state(state, tail) and tail_mana_feasible(state, tail):
-                    candidates.append((state, tail))
+                    candidates.append((state, tail, priority))
 
         candidates.sort(
-            key=lambda pair: (-pair[0].mana, len(pair[1].actions), len(pair[0].path))
+            key=lambda pair: (
+                -pair[2],
+                -pair[0].mana,
+                len(pair[1].actions),
+                len(pair[0].path),
+            )
         )
 
-        for state, tail in candidates[:validate_candidates_per_target]:
+        for state, tail, _priority in candidates[:validate_candidates_per_target]:
             if should_stop is not None and should_stop():
                 break
 
@@ -4147,7 +4342,9 @@ def reverse_symbolic_prove_paths(
                 default=0,
             )
 
-            if mined_max >= min_alex_count:
+            # 升级标准：只要这一档束宽没有超过当前最好成绩（best_alex_count），
+            # 就继续加大束宽往上挖，避免“下限=1 时挖到 1 龙就停”漏掉 2/3 龙。
+            if mined_max > best_alex_count or mined_max >= max_alex_count:
                 break
 
         mined_chains: List[SymbolicChain] = []
@@ -4648,8 +4845,7 @@ def main() -> int:
                 print(json.dumps(cached, ensure_ascii=False, indent=2))
             else:
                 print(archive.format_cached_paths(cached))
-
-            return 0
+                print("\n（以上为缓存结果；正在重新计算，若搜出更高龙数的新路径会自动更新存档）")
 
         if args.beam:
             states = beam_search_paths(
@@ -4688,6 +4884,9 @@ def main() -> int:
             print(json.dumps([state_summary(item) for item in states], ensure_ascii=False, indent=2))
         else:
             print(format_paths(states, limit=args.show_limit))
+
+        if cached:
+            print("\n（已重新计算完毕，存档已更新）")
 
         return 0
 
