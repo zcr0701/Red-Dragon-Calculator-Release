@@ -3294,6 +3294,58 @@ def build_symbolic_chains(target_alex_count: int) -> List[SymbolicChain]:
                 actions=deadly_coin_round1 + tail_actions,
             )
 
+    # =====================================================================
+    # 六费省鱼·双舞重铺链（由 beam 搜出的 9龙/112 反推）
+    # 6 法力不够“每轮先鱼”：中轮回省掉鲨鱼（3 条龙 8 伤）换取多续 1 龙。
+    # R1 开局轮：鲨刀刀龙暗(龙)晦刀舞 (+1)
+    # R2 中轮回：龙×3 暗施(龙) 龙 刀刀 舞[殒] (+4)
+    # R3 收尾轮：刀 鲨 晦 龙×N (+N)
+    # 目标 = 1 + 4m + N
+    # =====================================================================
+    if target_alex_count >= 5:
+        opening_save = [
+            SymbolicAction(shark),
+            SymbolicAction(scabbs),
+            SymbolicAction(scabbs),
+            SymbolicAction(alex),
+            SymbolicAction(shadowcaster, target=alex),
+            SymbolicAction(mother),
+            SymbolicAction(scabbs),
+            SymbolicAction(dance),
+        ]
+        middle_save = [
+            SymbolicAction(alex),
+            SymbolicAction(alex),
+            SymbolicAction(alex),
+            SymbolicAction(shadowcaster, target=alex),
+            SymbolicAction(alex),
+            SymbolicAction(scabbs),
+            SymbolicAction(scabbs),
+            SymbolicAction(dance),
+        ]
+
+        for middle_count in range(0, 2):
+            remaining = target_alex_count - 1 - 4 * middle_count
+
+            if remaining < 1 or remaining > 5:
+                continue
+
+            add_chain(
+                name=f"六费省鱼双舞重铺链-{middle_count}中轮-尾{remaining}",
+                reasoning=[
+                    f"目标 {target_alex_count} 龙（6 法力省鱼版）：第一轮鲨鱼刀刀压低红龙，",
+                    "暗施复制后晦鳞回费、舞动全回收整个引擎；",
+                    "中轮回省掉鲨鱼（3 条龙 8 伤）以 6 法力续出更多龙，殒命变形第二张舞动；",
+                    "收尾轮刀鲨晦后连出复制龙。9龙/144 需要 8 法力，6 法力下此为最高龙数结构。",
+                ],
+                actions=(
+                    list(opening_save)
+                    + list(middle_save) * middle_count
+                    + [SymbolicAction(scabbs), SymbolicAction(shark), SymbolicAction(mother)]
+                    + [SymbolicAction(alex)] * remaining
+                ),
+            )
+
     chains.sort(key=lambda chain: (
         0 if chain.name.startswith("公式") else 1 if chain.name.startswith("基础") else 2,
         len(chain.actions),
