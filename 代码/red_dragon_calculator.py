@@ -4455,6 +4455,10 @@ def bidirectional_symbolic_prove_paths(
         (state, 0) for state in frontier
     ] + [
         (state, 1) for state in lemma_pool
+    ] + [
+        # 初始局面本身也允许作为拼接起点：只要存在满足其资源的完整尾链，
+        # 双向证明可以直接“从起点拼到尾”，无需前向探索到中间态。
+        (search_initial_state, 1),
     ]
 
     # 预计算每个拼接候选状态的手牌/场面/卡池摘要，避免候选匹配时重复构造 Counter
