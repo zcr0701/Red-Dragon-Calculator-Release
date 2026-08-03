@@ -1,5 +1,4 @@
 import argparse
-import copy
 import heapq
 import json
 from collections import Counter
@@ -65,6 +64,23 @@ class CardInstance:
         return self.cost
 
 
+def _fast_clone_card(card: CardInstance) -> CardInstance:
+    """手写卡牌浅克隆：只复制可变字段（tags），避免 copy.deepcopy 的巨额开销。"""
+    return CardInstance(
+        name=card.name,
+        cost=card.cost,
+        original_name=card.original_name,
+        card_type=card.card_type,
+        description=card.description,
+        effect_id=card.effect_id,
+        tags=list(card.tags),
+        no_fixed_cost=card.no_fixed_cost,
+        temp_cost=card.temp_cost,
+        is_deadly_shadow=card.is_deadly_shadow,
+        health=card.health,
+    )
+
+
 @dataclass
 class GameState:
     deck: List[CardInstance] = field(default_factory=list)
@@ -95,7 +111,36 @@ class GameState:
     record_log: bool = True
 
     def clone(self) -> "GameState":
-        return copy.deepcopy(self)
+        # 手写克隆替代 copy.deepcopy：搜索中每秒要克隆上百万个状态，
+        # deepcopy 的 61M 次原子拷贝是主要瓶颈（profile 显示占 ~77% 运行时间）。
+        return GameState(
+            deck=[_fast_clone_card(card) for card in self.deck],
+            deck_is_known=self.deck_is_known,
+            hand=[_fast_clone_card(card) for card in self.hand],
+            board=[_fast_clone_card(card) for card in self.board],
+            secrets=[_fast_clone_card(card) for card in self.secrets],
+            weapon=None if self.weapon is None else _fast_clone_card(self.weapon),
+            mana_crystals=self.mana_crystals,
+            mana=self.mana,
+            initial_mana_crystals=self.initial_mana_crystals,
+            initial_mana=self.initial_mana,
+            cards_played_this_turn=self.cards_played_this_turn,
+            next_spell_discount=self.next_spell_discount,
+            next_combo_discount=self.next_combo_discount,
+            next_card_discount=self.next_card_discount,
+            next_two_cards_discount=self.next_two_cards_discount,
+            next_two_cards_discount_count=self.next_two_cards_discount_count,
+            active_card_discounts=list(self.active_card_discounts),
+            hero_immune_this_turn=self.hero_immune_this_turn,
+            last_spell_original_name=self.last_spell_original_name,
+            burned_cards=self.burned_cards,
+            alex_play_count=self.alex_play_count,
+            alex_damage=self.alex_damage,
+            etc_band_remaining=list(self.etc_band_remaining),
+            path=list(self.path),
+            log=list(self.log),
+            record_log=self.record_log,
+        )
 
     def has_shark(self) -> bool:
         return any(card.name == "鲨鱼之灵" for card in self.board)
@@ -709,7 +754,7 @@ def cards_drawn_if_played(state: GameState, card: CardInstance) -> int:
 
 
 def make_one_one_copy(card: CardInstance) -> CardInstance:
-    copied = copy.deepcopy(card)
+    copied = _fast_clone_card(card)
     copied.temp_cost = 1
     copied.health = 1
     return copied
@@ -1187,7 +1232,7 @@ def effect_etc(state: GameState, discover_choice_index: int = 0, **kwargs):
 
 def effect_potion_of_illusion(state: GameState, **kwargs):
     for minion in state.board_zone.cards[:]:
-        copy_card = copy.deepcopy(minion)
+        copy_card = _fast_clone_card(minion)
         copy_card.temp_cost = 1
         add_to_hand(state, copy_card)
 
@@ -1250,7 +1295,7 @@ def effect_shadowcaster(state: GameState, target_friendly_index: Optional[int], 
         state.add_log("暗影施法者缺少有效友方随从目标")
         return
 
-    target = copy.deepcopy(state.board_zone.cards[target_friendly_index])
+    target = _fast_clone_card(state.board_zone.cards[target_friendly_index])
     target.temp_cost = 1
     add_to_hand(state, target)
 
@@ -1988,11 +2033,21 @@ def validate_symbolic_chain(
     chain: SymbolicChain,
     max_states: int,
     prune_stats: Optional[Dict[str, int]] = None,
-    should_stop: Optional[Callable[[], bool]] = None
+    should_stop: Optional[Callable[[], bool]] = None,
+    step_memo: Optional[Dict[Tuple, object]] = None
 ) -> List[GameState]:
+    """验证符号链；`step_memo` 可跨链共享（CDCL 式冲突学习 + 子链结果复用）。
+
+    记忆键 = (起始局面键, 当前局面键, 动作, 剩余法力)：
+      - 该键下某动作无后继 => 记 False（冲突子句：此局面下此动作必然打不出来），
+        后续任何链到达同一局面、同一动作时直接剪枝，不再重算；
+      - 有后继 => 记结果列表（粘合引理），后续链直接复用已验证的子链结果。
+    验证本身确定性，因此缓存是可靠的；返回的路径仍全部来自真实模拟。
+    """
     states = [initial_state.clone()]
     seen = set()
     intermediate_limit = max(1, min(max_states, CHAIN_VALIDATION_BEAM))
+    initial_state_key = state_key_for_dedup(initial_state)
 
     for action_index, action in enumerate(chain.actions):
         if should_stop is not None and should_stop():
@@ -2011,26 +2066,59 @@ def validate_symbolic_chain(
 
             seen.add(cache_key)
 
-            if chain_action_already_satisfied(initial_state, state, action):
-                next_states.append(state.clone())
+            step_key = (
+                initial_state_key,
+                state_key_for_dedup(state),
+                action.name,
+                action.target,
+                action.choices,
+                state.mana,
+            )
+
+            if step_memo is not None and step_key in step_memo:
+                memo_value = step_memo[step_key]
+
+                if memo_value is False:
+                    if prune_stats is not None:
+                        prune_stats["冲突学习剪枝"] = prune_stats.get("冲突学习剪枝", 0) + 1
+
+                    continue
 
                 if prune_stats is not None:
-                    prune_stats["符号链条预启动跳步"] = prune_stats.get("符号链条预启动跳步", 0) + 1
+                    prune_stats["子链结果复用"] = prune_stats.get("子链结果复用", 0) + 1
+
+                for cached_state in memo_value:
+                    next_states.append(cached_state.clone())
 
                 if len(next_states) >= intermediate_limit:
                     break
 
                 continue
 
-            for successor in generate_successors(state, prune_stats=prune_stats):
-                if not successor.path:
-                    continue
+            if chain_action_already_satisfied(initial_state, state, action):
+                matched_states: List[GameState] = [state.clone()]
+                prestart_skipped = True
+            else:
+                matched_states = []
+                prestart_skipped = False
 
-                if chain_action_matches(successor.path[-1], action):
-                    next_states.append(successor)
+                for successor in generate_successors(state, prune_stats=prune_stats):
+                    if not successor.path:
+                        continue
 
-                    if len(next_states) >= intermediate_limit:
-                        break
+                    if chain_action_matches(successor.path[-1], action):
+                        matched_states.append(successor)
+
+                        if len(matched_states) >= intermediate_limit:
+                            break
+
+            if prestart_skipped and prune_stats is not None:
+                prune_stats["符号链条预启动跳步"] = prune_stats.get("符号链条预启动跳步", 0) + 1
+
+            if step_memo is not None and len(step_memo) < 60000:
+                step_memo[step_key] = matched_states if matched_states else False
+
+            next_states.extend(matched_states)
 
             if len(next_states) >= intermediate_limit:
                 break
@@ -2058,7 +2146,15 @@ def validate_symbolic_chain(
     ]
 
 
+_SYMBOLIC_CHAINS_CACHE: Dict[int, List[SymbolicChain]] = {}
+
+
 def build_symbolic_chains(target_alex_count: int) -> List[SymbolicChain]:
+    cached = _SYMBOLIC_CHAINS_CACHE.get(target_alex_count)
+
+    if cached is not None:
+        return cached
+
     alex = "生命的缚誓者阿莱克丝塔萨"
     shark = "鲨鱼之灵"
     foxy = "狐人老千"
@@ -2912,6 +3008,7 @@ def build_symbolic_chains(target_alex_count: int) -> List[SymbolicChain]:
         chain.name,
     ))
 
+    _SYMBOLIC_CHAINS_CACHE[target_alex_count] = chains
     return chains
 
 
@@ -3228,11 +3325,15 @@ def forward_symbolic_frontier(
     max_per_depth: int = 300,
     max_states: int = 6000,
     should_stop: Optional[Callable[[], bool]] = None,
+    stop_expanding_at_alex: Optional[int] = None,
 ) -> List[GameState]:
     """前向符号链：从初始局面按束展开真实后继，返回去重后的可达状态前沿。
 
     这些状态是“拼接”的前半段：只要某个反向尾链的资源要求能被该状态满足，
     就能拼成一条完整证明。状态路径即真实出牌序列，可复现。
+
+    `stop_expanding_at_alex`：达到该龙数的状态不再往下展开（已可作直接命中或
+    尾链拼接点，继续展开只会重复生成同样可被尾链覆盖的更深状态）。
     """
     start = initial_state.clone()
     start.record_log = False
@@ -3258,6 +3359,13 @@ def forward_symbolic_frontier(
         next_seen = set()
 
         for state in level:
+            if (
+                stop_expanding_at_alex is not None
+                and state.alex_play_count >= stop_expanding_at_alex
+            ):
+                # 已达到搜索下限：保留为拼接/直接命中点，但不再展开后继
+                continue
+
             for successor in generate_successors(state):
                 key = state_key_for_dedup(successor)
 
@@ -3464,6 +3572,9 @@ def _tail_bone(sim: _TailSim) -> int:
     return 0
 
 
+_ALEX_TAILS_CACHE: Dict[Tuple, List[AlexTail]] = {}
+
+
 def generate_alex_tails(
     max_gain: int = 6,
     max_actions: int = 12,
@@ -3471,6 +3582,12 @@ def generate_alex_tails(
     max_tails: int = 1500,
 ) -> List[AlexTail]:
     """反推生成目标尾链：递归组合“生产红龙”的机制，直到凑够目标龙数。"""
+    cache_key = (max_gain, max_actions, max_tails_per_gain, max_tails)
+    cached = _ALEX_TAILS_CACHE.get(cache_key)
+
+    if cached is not None:
+        return cached
+
     tails: Dict[Tuple, AlexTail] = {}
     tail_index = [0]
     visits = [0]
@@ -3545,7 +3662,9 @@ def generate_alex_tails(
     for target_gain in range(1, max_gain + 1):
         rec(_TailSim(), target_gain)
 
-    return list(tails.values())
+    result = list(tails.values())
+    _ALEX_TAILS_CACHE[cache_key] = result
+    return result
 
 
 def _sim_apply_template_action(sim: _TailSim, action: SymbolicAction) -> bool:
@@ -3630,6 +3749,9 @@ def _sim_apply_template_action(sim: _TailSim, action: SymbolicAction) -> bool:
     return True
 
 
+_SUBCLIBS_CACHE: Dict[int, Tuple[List[AlexTail], List[AlexTail]]] = {}
+
+
 def build_template_subchain_library(max_gain: int = 6) -> Tuple[List[AlexTail], List[AlexTail]]:
     """把手工模板拆成子链（起手段 + 尾段），供双向引擎快速构建链条。
 
@@ -3640,6 +3762,11 @@ def build_template_subchain_library(max_gain: int = 6) -> Tuple[List[AlexTail], 
     示例：鱼狐刀暗(刀)牛 = 起手段；鱼刀刀龙 = 尾段；
           鱼狐刀牛(舞龙)晦步(刀)刀暗刀 = 起手段。
     """
+    cached = _SUBCLIBS_CACHE.get(max_gain)
+
+    if cached is not None:
+        return cached
+
     setup_chains: Dict[Tuple, AlexTail] = {}
     tail_chains: Dict[Tuple, AlexTail] = {}
     setup_index = [0]
@@ -3723,7 +3850,9 @@ def build_template_subchain_library(max_gain: int = 6) -> Tuple[List[AlexTail], 
                 )
 
     setup_subchain_list = augment_setup_subchains(list(setup_chains.values()))
-    return setup_subchain_list, list(tail_chains.values())
+    result = (setup_subchain_list, list(tail_chains.values()))
+    _SUBCLIBS_CACHE[max_gain] = result
+    return result
 
 
 def augment_setup_subchains(
@@ -3809,10 +3938,18 @@ def lemma_constraint_rank(
     return (-satisfied / total, len(lemma.hand_req), len(lemma.actions))
 
 
-def tail_meets_state(state: GameState, tail: AlexTail) -> bool:
+def tail_meets_state(
+    state: GameState,
+    tail: AlexTail,
+    hand_counts: Optional[Counter] = None,
+    board_counts: Optional[Counter] = None,
+) -> bool:
     """检查前向状态是否满足反向尾链的起始资源要求。"""
-    hand_counts = Counter(card.name for card in state.hand)
-    board_counts = Counter(card.name for card in state.board)
+    if hand_counts is None:
+        hand_counts = Counter(card.name for card in state.hand)
+
+    if board_counts is None:
+        board_counts = Counter(card.name for card in state.board)
 
     for name, count in tail.hand_req.items():
         if hand_count_with_coin_equivalence(hand_counts, name) < count:
@@ -3832,6 +3969,21 @@ def tail_meets_state(state: GameState, tail: AlexTail) -> bool:
         return False
 
     return True
+
+
+_TAIL_COST_PROFILE_CACHE: Dict[str, Tuple[int, bool, bool]] = {}
+
+
+def _tail_cost_profile(name: str) -> Tuple[int, bool, bool]:
+    """卡牌静态费用档案：(基础费用, 是否法术, 是否连击)。"""
+    profile = _TAIL_COST_PROFILE_CACHE.get(name)
+
+    if profile is None:
+        card = make_card(name)
+        profile = (card.current_cost() or 0, is_spell_like(card), "combo" in card.tags)
+        _TAIL_COST_PROFILE_CACHE[name] = profile
+
+    return profile
 
 
 def tail_mana_feasible(state: GameState, tail: AlexTail) -> bool:
@@ -3854,16 +4006,15 @@ def tail_mana_feasible(state: GameState, tail: AlexTail) -> bool:
             # 硬币：0 费 + 打出获得 1 临时法力（仍走下方通用消耗记账）
             mana += 1
 
-        card = make_card(action.name)
-        base_cost = card.current_cost() or 0
+        base_cost, is_spell, is_combo = _tail_cost_profile(action.name)
         discount = next_card + sum(
             discount_amount for _remaining, discount_amount in actives
         )
 
-        if is_spell_like(card):
+        if is_spell:
             discount += next_spell
 
-        if "combo" in card.tags:
+        if is_combo:
             discount += next_combo
 
         cost = max(0, base_cost - discount)
@@ -3879,10 +4030,10 @@ def tail_mana_feasible(state: GameState, tail: AlexTail) -> bool:
             if remaining_count - 1 > 0
         ]
 
-        if is_spell_like(card):
+        if is_spell:
             next_spell = 0
 
-        if "combo" in card.tags:
+        if is_combo:
             next_combo = 0
 
         if action.name == PREP_TAIL_NAME:
@@ -3985,6 +4136,7 @@ def bidirectional_symbolic_prove_paths(
     forward_depth: int = 22,
     forward_beam_width: int = 1500,
     validate_candidates_per_target: int = 20,
+    step_memo: Optional[Dict[Tuple, object]] = None
 ) -> List[GameState]:
     """双向符号链证明：前向探索 + 反向尾链 + 前沿拼接 + 反向验证。"""
     search_initial_state = initial_state.clone()
@@ -3999,6 +4151,9 @@ def bidirectional_symbolic_prove_paths(
         max_depth=forward_depth,
         beam_width=forward_beam_width,
         should_stop=should_stop,
+        # 只对“已达到搜索上限”的状态停止展开（其任何后继对全部目标都无增量贡献）；
+        # 不能卡在搜索下限——低于上限的中间龙数状态继续展开才能被前向直接命中发现。
+        stop_expanding_at_alex=max_alex_count,
     )
 
     if prune_stats is not None:
@@ -4090,6 +4245,7 @@ def bidirectional_symbolic_prove_paths(
             max_states=max(1, max_paths - len(all_proved)),
             prune_stats=prune_stats,
             should_stop=should_stop,
+            step_memo=step_memo,
         )
 
         for lemma_state in sort_path_states(lemma_states):
@@ -4152,6 +4308,20 @@ def bidirectional_symbolic_prove_paths(
         (state, 1) for state in lemma_pool
     ]
 
+    # 预计算每个拼接候选状态的手牌/场面/卡池摘要，避免候选匹配时重复构造 Counter
+    pool_hand_counts: List[Counter] = [
+        Counter(card.name for card in state.hand) for state, _priority in pool
+    ]
+    pool_board_counts: List[Counter] = [
+        Counter(card.name for card in state.board) for state, _priority in pool
+    ]
+    pool_band_sets: List[set] = [
+        set(state.etc_band_remaining) for state, _priority in pool
+    ]
+    pool_has_board: List[bool] = [
+        bool(state.board_zone.cards) for state, _priority in pool
+    ]
+
     if prune_stats is not None:
         prune_stats["前向引理尝试次数"] = lemma_apply_count
         prune_stats["前向引理状态数"] = len(lemma_pool)
@@ -4190,7 +4360,7 @@ def bidirectional_symbolic_prove_paths(
 
         candidates: List[Tuple[GameState, AlexTail, int]] = []
 
-        for state, priority in pool:
+        for index, (state, priority) in enumerate(pool):
             if state.alex_play_count >= target:
                 continue
 
@@ -4200,7 +4370,26 @@ def bidirectional_symbolic_prove_paths(
                 continue
 
             for tail in tails_by_gain.get(needed, []):
-                if tail_meets_state(state, tail) and tail_mana_feasible(state, tail):
+                hand_counts = pool_hand_counts[index]
+                board_counts = pool_board_counts[index]
+                band_ok = (
+                    not tail.band_req
+                    or pool_band_sets[index].issuperset(set(tail.band_req))
+                )
+
+                if (
+                    band_ok
+                    and (not tail.any_friendly_minion or pool_has_board[index])
+                    and all(
+                        hand_count_with_coin_equivalence(hand_counts, name) >= count
+                        for name, count in tail.hand_req.items()
+                    )
+                    and all(
+                        board_counts.get(name, 0) >= count
+                        for name, count in tail.board_req.items()
+                    )
+                    and tail_mana_feasible(state, tail)
+                ):
                     candidates.append((state, tail, priority))
 
         candidates.sort(
@@ -4231,6 +4420,7 @@ def bidirectional_symbolic_prove_paths(
                 max_states=max(1, max_paths - len(all_proved)),
                 prune_stats=prune_stats,
                 should_stop=should_stop,
+                step_memo=step_memo,
             )
             validated_count += 1
 
@@ -4280,6 +4470,9 @@ def reverse_symbolic_prove_paths(
     search_initial_state = initial_state.clone()
     search_initial_state.record_log = False
     min_alex_count = max(1, min(min_alex_count, max_alex_count))
+    # 跨目标共享的 CDCL 式冲突学习 / 子链结果复用记忆：
+    # 同一局面在某一动作上验证过一次（成功或失败），后续所有链、所有目标直接复用。
+    step_memo: Dict[Tuple, object] = {}
     all_proved_states: List[GameState] = []
     seen_paths = set()
     best_alex_count = 0
@@ -4309,7 +4502,8 @@ def reverse_symbolic_prove_paths(
                 chain=chain,
                 max_states=max(1, max_paths - len(all_proved_states)),
                 prune_stats=prune_stats,
-                should_stop=should_stop
+                should_stop=should_stop,
+                step_memo=step_memo
             )
 
             proved_states.extend(chain_states)
@@ -4382,6 +4576,7 @@ def reverse_symbolic_prove_paths(
             found_callback=found_callback,
             prune_stats=prune_stats,
             should_stop=should_stop,
+            step_memo=step_memo,
         )
 
         for bidir_state in sort_path_states(bidir_results):
@@ -4413,7 +4608,7 @@ def reverse_symbolic_prove_paths(
 
     if (
         forward_mining
-        and best_alex_count < max_alex_count
+        and best_alex_count < min_alex_count
         and not bidirectional_proved_any
         and not (should_stop is not None and should_stop())
     ):
@@ -4453,9 +4648,9 @@ def reverse_symbolic_prove_paths(
                 default=0,
             )
 
-            # 升级标准：只要这一档束宽没有超过当前最好成绩（best_alex_count），
-            # 就继续加大束宽往上挖，避免“下限=1 时挖到 1 龙就停”漏掉 2/3 龙。
-            if mined_max > best_alex_count or mined_max >= max_alex_count:
+            # 升级标准：只要这一档束宽还没摸到搜索下限（min_alex_count），
+            # 就继续加大束宽往上挖；摸到下限即停，避免无谓的束宽升级浪费时间。
+            if mined_max >= min_alex_count or mined_max >= max_alex_count:
                 break
 
         mined_chains: List[SymbolicChain] = []
@@ -4497,6 +4692,7 @@ def reverse_symbolic_prove_paths(
                 max_states=max(1, max_paths - len(all_proved_states)),
                 prune_stats=prune_stats,
                 should_stop=should_stop,
+                step_memo=step_memo
             )
 
             for chain_state in sort_path_states(chain_states):
