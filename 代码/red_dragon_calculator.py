@@ -3346,6 +3346,60 @@ def build_symbolic_chains(target_alex_count: int) -> List[SymbolicChain]:
                 ),
             )
 
+    # =====================================================================
+    # 六费鱼先晦中回费·双舞重铺链（由用户指出的 6法力 9龙/144 反推）
+    # 关键：晦鳞巢母放在轮中回费（鱼龙龙晦 / 鱼龙晦），6 法力也能每条龙 16 伤。
+    # R1 开局轮：鲨刀刀龙暗(龙)晦刀舞 (+1)
+    # R2 中轮回：鱼 龙 龙 晦 暗施(龙) 龙 刀 舞[殒] (+3)
+    # R3 收尾轮：鱼 龙 晦 龙×(N-1) (+N)
+    # 目标 = 1 + 3m + N
+    # =====================================================================
+    if target_alex_count >= 5:
+        opening_fish_mid = [
+            SymbolicAction(shark),
+            SymbolicAction(scabbs),
+            SymbolicAction(scabbs),
+            SymbolicAction(alex),
+            SymbolicAction(shadowcaster, target=alex),
+            SymbolicAction(mother),
+            SymbolicAction(scabbs),
+            SymbolicAction(dance),
+        ]
+        middle_fish_mid = [
+            SymbolicAction(shark),
+            SymbolicAction(alex),
+            SymbolicAction(alex),
+            SymbolicAction(mother),
+            SymbolicAction(shadowcaster, target=alex),
+            SymbolicAction(alex),
+            SymbolicAction(scabbs),
+            SymbolicAction(dance),
+        ]
+
+        for middle_count in range(0, 2):
+            remaining = target_alex_count - 1 - 3 * middle_count
+
+            if remaining < 1 or remaining > 5:
+                continue
+
+            final_fish_mid = (
+                [SymbolicAction(shark), SymbolicAction(alex), SymbolicAction(mother)]
+                + [SymbolicAction(alex)] * (remaining - 1)
+            )
+            add_chain(
+                name=f"六费鱼先晦中回费双舞重铺链-{middle_count}中轮-尾{remaining}",
+                reasoning=[
+                    f"目标 {target_alex_count} 龙（6 法力版）：鲨鱼刀刀压低红龙，暗施复制后晦鳞回费、",
+                    "舞动全回收整个引擎；中轮回鱼龙龙晦暗施(龙)龙刀舞[殒]——晦鳞放轮中回费，",
+                    "6 法力也能先鱼后龙每条 16 伤；收尾轮鱼龙晦龙×N。9龙/144 在 6 法力下成立。",
+                ],
+                actions=(
+                    list(opening_fish_mid)
+                    + list(middle_fish_mid) * middle_count
+                    + final_fish_mid
+                ),
+            )
+
     chains.sort(key=lambda chain: (
         0 if chain.name.startswith("公式") else 1 if chain.name.startswith("基础") else 2,
         len(chain.actions),
@@ -5538,21 +5592,23 @@ def beam_search_paths(
         for bucket_key in sorted(buckets, reverse=True):
             bucket_states = sorted(
                 buckets[bucket_key],
-                key=lambda state: (potential(state), state.alex_damage, state.mana),
+                # 伤害优先排序（6法力 9龙/144 需要纯伤害排序才能全程保留）
+                key=lambda state: (state.alex_damage, state.mana),
                 reverse=True,
             )
             selected = bucket_states[:per_bucket]
 
-            # 伤害优先：每个龙数桶强制保留“最高伤害”状态，避免“鱼先于龙”的高伤害
-            # 分支（如 9 龙/144 伤）被潜力更高但伤害更低的分支挤掉。
             if bucket_states:
-                damage_champion = max(
+                # 冠军判据用（伤害, 潜力）：同伤害时保留潜力更高的状态——
+                # 8水晶 10龙/160 线在 alex=9 与 9龙/144 同伤害但潜力更高，
+                # 靠潜力冠军存活到第 10 条龙；6法力 144 线每层伤害最高自然当选。
+                champion = max(
                     bucket_states,
-                    key=lambda state: (state.alex_damage, state.mana),
+                    key=lambda state: (state.alex_damage, potential(state), state.mana),
                 )
 
-                if damage_champion not in selected:
-                    selected = selected[:-1] + [damage_champion]
+                if champion not in selected:
+                    selected.append(champion)
 
             level.extend(selected)
 
