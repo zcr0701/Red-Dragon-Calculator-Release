@@ -23,10 +23,12 @@ ARCHIVE_DIR = Path(__file__).resolve().parent.parent / "存档"
 ARCHIVE_PATH = ARCHIVE_DIR / "红龙贼-情况存档.json"
 
 _ALEX_NAME = "生命的缚誓者阿莱克丝塔萨"
+_COIN_CARD_NAMES = frozenset({"幸运币", "伪造的幸运币"})
 
 
 def _card_key(card) -> Tuple:
-    return (card.name, card.current_cost(), card.card_type)
+    name = "幸运币" if card.name in _COIN_CARD_NAMES else card.name
+    return (name, card.current_cost(), card.card_type)
 
 
 def hand_signature(state) -> Tuple:

@@ -563,6 +563,20 @@ PREFERRED_COMBO_PATTERNS = [
     ("生命的缚誓者阿莱克丝塔萨", "暗影施法者", "生命的缚誓者阿莱克丝塔萨", "生命的缚誓者阿莱克丝塔萨"),
 ]
 
+# 幸运币与伪造的幸运币在计算中等价：同为 0 费法术、打出各 +1 临时法力。
+COIN_CARD_NAMES = frozenset({"幸运币", "伪造的幸运币"})
+
+
+def hand_count_with_coin_equivalence(
+    hand_counts: Counter,
+    name: str,
+) -> int:
+    """手牌需求计数：硬币两种名字合并计算（币币可互换）。"""
+    if name in COIN_CARD_NAMES:
+        return hand_counts.get("幸运币", 0) + hand_counts.get("伪造的幸运币", 0)
+
+    return hand_counts.get(name, 0)
+
 
 def make_card(name: str, cost: Optional[int] = None, use_runtime_cost: bool = False) -> CardInstance:
     if name not in CARD_DATABASE:
@@ -1897,6 +1911,10 @@ def symbolic_chain_key(state: GameState, action_index: int, target_alex_count: i
 def chain_action_matches(path_item: str, action: SymbolicAction) -> bool:
     canonical_item = canonical_path_item(path_item)
     candidate_names = (action.name,) + action.aliases
+
+    if action.name in COIN_CARD_NAMES:
+        # 币币等价：幸运币动作可由伪造的幸运币满足，反之亦然
+        candidate_names = tuple(COIN_CARD_NAMES) + action.aliases
 
     if not any(canonical_item.startswith(candidate_name) for candidate_name in candidate_names):
         return False
@@ -3704,7 +3722,91 @@ def build_template_subchain_library(max_gain: int = 6) -> Tuple[List[AlexTail], 
                     ),
                 )
 
-    return list(setup_chains.values()), list(tail_chains.values())
+    setup_subchain_list = augment_setup_subchains(list(setup_chains.values()))
+    return setup_subchain_list, list(tail_chains.values())
+
+
+def augment_setup_subchains(
+    setup_subchains: List[AlexTail],
+    max_actions: int = 14,
+) -> List[AlexTail]:
+    """给“鲨鱼之灵（鱼）”开头的起手段子链补双币前置，生成 币币鱼 等开手引理。
+
+    幸运币/伪造的幸运币计算等价，因此手牌需求统一记到“幸运币”上，
+    需求匹配时两种硬币合并计数。
+    """
+    coin_pairs = [
+        ("幸运币", "幸运币"),
+        ("幸运币", "伪造的幸运币"),
+        ("伪造的幸运币", "幸运币"),
+        ("伪造的幸运币", "伪造的幸运币"),
+    ]
+    result = list(setup_subchains)
+    existing_keys = {
+        tuple((action.name, action.target, action.choices) for action in sub.actions)
+        for sub in result
+    }
+    index = len(result) + 1
+
+    for sub in setup_subchains:
+        if not sub.actions:
+            continue
+
+        first_name = sub.actions[0].name
+
+        if first_name in COIN_CARD_NAMES:
+            continue
+
+        if first_name != "鲨鱼之灵":
+            continue
+
+        if len(sub.actions) + 2 > max_actions:
+            continue
+
+        for coin_a, coin_b in coin_pairs:
+            actions = [
+                SymbolicAction(coin_a),
+                SymbolicAction(coin_b),
+            ] + list(sub.actions)
+            key = tuple(
+                (action.name, action.target, action.choices)
+                for action in actions
+            )
+
+            if key in existing_keys:
+                continue
+
+            existing_keys.add(key)
+            hand_req = dict(sub.hand_req)
+            hand_req["幸运币"] = hand_req.get("幸运币", 0) + 2
+            result.append(
+                AlexTail(
+                    name=f"模板起手段-币币鱼-{index}",
+                    actions=actions,
+                    gain=sub.gain,
+                    hand_req=hand_req,
+                    board_req=dict(sub.board_req),
+                    band_req=sub.band_req,
+                    any_friendly_minion=sub.any_friendly_minion,
+                )
+            )
+            index += 1
+
+    return result
+
+
+def lemma_constraint_rank(
+    base_state: GameState,
+    lemma: AlexTail,
+) -> Tuple[float, int, int]:
+    """边界约束引导：可满足需求占比越高、需求越少、链越短的引理越优先尝试。"""
+    hand_counts = Counter(card.name for card in base_state.hand)
+    satisfied = sum(
+        min(hand_count_with_coin_equivalence(hand_counts, name), count)
+        for name, count in lemma.hand_req.items()
+    )
+    total = sum(lemma.hand_req.values()) or 1
+    return (-satisfied / total, len(lemma.hand_req), len(lemma.actions))
 
 
 def tail_meets_state(state: GameState, tail: AlexTail) -> bool:
@@ -3713,7 +3815,7 @@ def tail_meets_state(state: GameState, tail: AlexTail) -> bool:
     board_counts = Counter(card.name for card in state.board)
 
     for name, count in tail.hand_req.items():
-        if hand_counts.get(name, 0) < count:
+        if hand_count_with_coin_equivalence(hand_counts, name) < count:
             return False
 
     for name, count in tail.board_req.items():
@@ -3747,6 +3849,10 @@ def tail_mana_feasible(state: GameState, tail: AlexTail) -> bool:
     for action in tail.actions:
         if action.name not in CARD_DATABASE:
             continue
+
+        if action.name in COIN_CARD_NAMES:
+            # 硬币：0 费 + 打出获得 1 临时法力（仍走下方通用消耗记账）
+            mana += 1
 
         card = make_card(action.name)
         base_cost = card.current_cost() or 0
@@ -3822,7 +3928,7 @@ def lemma_meets_state(
             # 预启动跳过一次：手牌需求少 1 张（如鲨鱼已在场上，只需再补 count-1 张）
             required = max(0, count - 1)
 
-        if hand_counts.get(name, 0) < required:
+        if hand_count_with_coin_equivalence(hand_counts, name) < required:
             return False
 
     for name, count in lemma.board_req.items():
@@ -3902,6 +4008,11 @@ def bidirectional_symbolic_prove_paths(
     generated_tails = generate_alex_tails(max_gain=min(max_alex_count, 6))
     setup_subchains, template_tails = build_template_subchain_library(
         max_gain=min(max_alex_count, 6)
+    )
+    # 边界约束引导：与当前局面契合度高的引理（需求占比高、约束少、链短）优先搭接
+    setup_subchains = sorted(
+        setup_subchains,
+        key=lambda lemma: lemma_constraint_rank(search_initial_state, lemma),
     )
     tails = generated_tails + [
         tail for tail in template_tails if tail.gain > 0
