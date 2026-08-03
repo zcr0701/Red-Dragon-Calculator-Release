@@ -3677,6 +3677,76 @@ class AlexTail:
     board_req: Dict[str, int]
     band_req: Tuple[str, ...]
     any_friendly_minion: bool
+    # 引理前提（数学引理式）：needs_deadly 时，可改用 hand_req_deadly——
+    # 即“需要两张同名法术副本时，手牌有一张本体 + 一张殒命暗影即可”。
+    needs_deadly: bool = False
+    hand_req_deadly: Dict[str, int] = field(default_factory=dict)
+
+
+DEADLY_SHADOW_NAME = "殒命暗影"
+DEADLY_COPY_SOURCE_SPELLS = {
+    "舞动全场（ft.迦罗娜）",
+    "幻觉药水",
+    "暗影步",
+    "伺机待发",
+    "锯齿骨刺",
+    "幸运币",
+    "伪造的幸运币",
+}
+
+
+def make_deadly_variant(hand_req: Dict[str, int]) -> Tuple[bool, Dict[str, int]]:
+    """由基础手牌需求推导“殒命暗影补一张法术副本”的替代前提。
+
+    例：链需要 舞动×2；若手牌只有 舞动×1 + 殒命暗影×1，前提也成立——
+    首次打出舞动后殒命变形为第二张舞动。返回 (是否可用殒命, 替代需求)。
+    """
+    best_spell: Optional[str] = None
+    best_count = 0
+
+    for name, count in hand_req.items():
+        if name == DEADLY_SHADOW_NAME:
+            continue
+
+        if name in DEADLY_COPY_SOURCE_SPELLS and count >= 2 and count > best_count:
+            best_spell = name
+            best_count = count
+
+    if best_spell is None:
+        return False, {}
+
+    variant = dict(hand_req)
+    variant[best_spell] -= 1
+
+    if variant[best_spell] <= 0:
+        del variant[best_spell]
+
+    variant[DEADLY_SHADOW_NAME] = variant.get(DEADLY_SHADOW_NAME, 0) + 1
+    return True, variant
+
+
+def make_alex_tail(
+    name: str,
+    actions: List[SymbolicAction],
+    gain: int,
+    hand_req: Dict[str, int],
+    board_req: Dict[str, int],
+    band_req: Tuple[str, ...],
+    any_friendly_minion: bool,
+) -> AlexTail:
+    """构造 AlexTail 并自动推导殒命暗影替代前提。"""
+    needs_deadly, deadly_req = make_deadly_variant(hand_req)
+    return AlexTail(
+        name=name,
+        actions=actions,
+        gain=gain,
+        hand_req=hand_req,
+        board_req=board_req,
+        band_req=band_req,
+        any_friendly_minion=any_friendly_minion,
+        needs_deadly=needs_deadly,
+        hand_req_deadly=deadly_req,
+    )
 
 
 class _TailSim:
@@ -3730,6 +3800,10 @@ class _TailSim:
         self.board[name] = self.board.get(name, 0) - 1
 
     def to_tail(self, index: int) -> AlexTail:
+        needs_deadly, deadly_req = make_deadly_variant(
+            {name: count for name, count in self.hand_req.items() if count > 0}
+        )
+
         return AlexTail(
             name=f"反向目标尾链-{index}",
             actions=self.actions,
@@ -3738,6 +3812,8 @@ class _TailSim:
             board_req={name: count for name, count in self.board_req.items() if count > 0},
             band_req=tuple(sorted(self.band_req)),
             any_friendly_minion=self.any_friendly_minion,
+            needs_deadly=needs_deadly,
+            hand_req_deadly=deadly_req,
         )
 
 
@@ -4080,7 +4156,7 @@ def build_template_subchain_library(max_gain: int = 6) -> Tuple[List[AlexTail], 
                     )
                     setup_chains.setdefault(
                         key,
-                        AlexTail(
+                        make_alex_tail(
                             name=f"模板起手段-{setup_index[0]}",
                             actions=setup_actions,
                             gain=0,
@@ -4112,7 +4188,7 @@ def build_template_subchain_library(max_gain: int = 6) -> Tuple[List[AlexTail], 
                 )
                 tail_chains.setdefault(
                     key,
-                    AlexTail(
+                    make_alex_tail(
                         name=f"模板尾段-{tail_index[0]}",
                         actions=tail_actions,
                         gain=sim.alex_played,
@@ -4191,7 +4267,7 @@ def augment_setup_subchains(
             hand_req = dict(sub.hand_req)
             hand_req["幸运币"] = hand_req.get("幸运币", 0) + 2
             result.append(
-                AlexTail(
+                make_alex_tail(
                     name=f"模板起手段-币币鱼-{index}",
                     actions=actions,
                     gain=sub.gain,
@@ -4220,21 +4296,46 @@ def lemma_constraint_rank(
     return (-satisfied / total, len(lemma.hand_req), len(lemma.actions))
 
 
+def _hand_req_met(
+    hand_counts: Counter,
+    req: Dict[str, int],
+    skip_name: Optional[str] = None,
+) -> bool:
+    """手牌前提检查：需求计数 + 硬币等价 + 预启动跳过。"""
+    for name, count in req.items():
+        required = count
+
+        if name == skip_name:
+            required = max(0, count - 1)
+
+        if hand_count_with_coin_equivalence(hand_counts, name) < required:
+            return False
+
+    return True
+
+
 def tail_meets_state(
     state: GameState,
     tail: AlexTail,
     hand_counts: Optional[Counter] = None,
     board_counts: Optional[Counter] = None,
 ) -> bool:
-    """检查前向状态是否满足反向尾链的起始资源要求。"""
+    """检查前向状态是否满足反向尾链的起始资源前提。
+
+    数学引理式前提：基础需求不满足时，若该尾链声明了“殒命暗影替代”
+    （needs_deadly），且手牌有殒命暗影、替代需求满足，则前提成立。
+    """
     if hand_counts is None:
         hand_counts = Counter(card.name for card in state.hand)
 
     if board_counts is None:
         board_counts = Counter(card.name for card in state.board)
 
-    for name, count in tail.hand_req.items():
-        if hand_count_with_coin_equivalence(hand_counts, name) < count:
+    if not _hand_req_met(hand_counts, tail.hand_req):
+        if not (
+            tail.needs_deadly
+            and _hand_req_met(hand_counts, tail.hand_req_deadly)
+        ):
             return False
 
     for name, count in tail.board_req.items():
@@ -4345,7 +4446,7 @@ def lemma_meets_state(
     base_state: GameState,
     lemma: AlexTail,
 ) -> bool:
-    """引理适用性检查：比尾链宽松——第一个动作若被预启动跳过，其手牌需求少算 1 张。"""
+    """引理适用性检查：手牌/场面/卡池前提 + 殒命暗影替代前提 + 预启动跳过。"""
     hand_counts = Counter(card.name for card in base_state.hand)
     board_counts = Counter(card.name for card in base_state.board)
     skip_name = (
@@ -4354,14 +4455,11 @@ def lemma_meets_state(
         else None
     )
 
-    for name, count in lemma.hand_req.items():
-        required = count
-
-        if name == skip_name:
-            # 预启动跳过一次：手牌需求少 1 张（如鲨鱼已在场上，只需再补 count-1 张）
-            required = max(0, count - 1)
-
-        if hand_count_with_coin_equivalence(hand_counts, name) < required:
+    if not _hand_req_met(hand_counts, lemma.hand_req, skip_name):
+        if not (
+            lemma.needs_deadly
+            and _hand_req_met(hand_counts, lemma.hand_req_deadly, skip_name)
+        ):
             return False
 
     for name, count in lemma.board_req.items():
@@ -4423,9 +4521,10 @@ def bidirectional_symbolic_prove_paths(
     """双向符号链证明：个位数深度前向展开 + 大量子链/引理组合拼接 + 反向验证。
 
     设计边界（与 beam 收束搜索区分）：
-      - forward_depth 默认 5：前向只做浅层算子展开（人脑式“先走几步看局面”）；
+      - forward_depth 默认 5：最多连续 5 步纯算子真实模拟，之后必须用子链/引理
+        拼接（引理可在第 1..5 任意步提前拼接，前提满足才用——数学引理式前提）；
       - 长距离结构靠子链库（起手段/尾段/长距离离散骨架）组合，不靠加深前向；
-      - 几十步的纯算子展开属于 beam 收束计算，单独开关（默认关闭、束宽 2000）。
+      - 几十步的纯算子展开属于 beam 收束计算，单独开关（默认关闭、束宽 3000）。
     """
     search_initial_state = initial_state.clone()
     search_initial_state.record_log = False
@@ -4434,20 +4533,10 @@ def bidirectional_symbolic_prove_paths(
     if prune_stats is not None:
         prune_stats["双向拼接证明"] = "前向探索中"
 
-    frontier = forward_symbolic_frontier(
-        initial_state=search_initial_state,
-        max_depth=forward_depth,
-        beam_width=forward_beam_width,
-        should_stop=should_stop,
-        # 只对“已达到搜索上限”的状态停止展开（其任何后继对全部目标都无增量贡献）；
-        # 不能卡在搜索下限——低于上限的中间龙数状态继续展开才能被前向直接命中发现。
-        stop_expanding_at_alex=max_alex_count,
-    )
-
-    if prune_stats is not None:
-        prune_stats["双向前向探索状态数"] = len(frontier)
-        prune_stats["双向拼接证明"] = "反向尾链生成中"
-
+    # —— 前向阶段：算子真实展开 与 引理（子链）拼接 交错 ——
+    # forward_depth = “最多连续几步纯算子真实模拟”；每层先尝试前提满足的引理
+    # 拼接（数学引理式前提：资源需求/殒命替代/目标契合），再算子展开一步。
+    # 达到 forward_depth 后不再纯算子展开，后续只能靠引理/尾链拼接。
     generated_tails = generate_alex_tails(max_gain=min(max_alex_count, 6))
     setup_subchains, template_tails = build_template_subchain_library(
         max_gain=min(max_alex_count, 6)
@@ -4482,14 +4571,12 @@ def bidirectional_symbolic_prove_paths(
         prune_stats["双向生成尾链数"] = len(generated_tails)
         prune_stats["模板子链数（起手+尾段）"] = len(setup_subchains) + len(template_tails)
         prune_stats["双向拼接候选尾链数"] = len(tails)
-        prune_stats["双向拼接证明"] = "拼接验证中"
+        prune_stats["双向拼接证明"] = "算子/引理交错展开中"
 
     all_proved: List[GameState] = []
     seen_paths = set()
     validated_count = 0
 
-    # 前向引理：模板起手段子链当作“已证结论”直接搭到当前局面（搭积木/引用定理），
-    # 不必再从初始局面重新展开一遍；引理链出的状态继续参与尾链拼接与二次引理搭接。
     lemma_pool: List[GameState] = []
     seen_lemma_keys = set()
     max_lemma_states = 400
@@ -4511,10 +4598,15 @@ def bidirectional_symbolic_prove_paths(
         if len(base_state.path) + len(lemma.actions) > max_chain_steps:
             return
 
+        # 引理前提（数学引理式）：资源需求 + 殒命替代前提 + 费用可行性
         if not lemma_meets_state(base_state, lemma):
             return
 
         if not lemma_mana_feasible(base_state, lemma):
+            return
+
+        # 目标契合前提：引理增益不能把龙数推过搜索上限
+        if lemma.gain > 0 and base_state.alex_play_count + lemma.gain > max_alex_count:
             return
 
         lemma_apply_count += 1
@@ -4522,7 +4614,7 @@ def bidirectional_symbolic_prove_paths(
             name=f"前向引理-{lemma.name}",
             target_alex_count=lemma.gain,
             reasoning=[
-                "前向引理（模板起手段子链，已证结论）直接搭接到当前状态；",
+                "前向引理（子链库，已证结论）在前提满足时搭接到当前状态；",
                 "引理内容：" + " -> ".join(action_label(action) for action in lemma.actions),
             ],
             actions=lemma.actions,
@@ -4548,35 +4640,20 @@ def bidirectional_symbolic_prove_paths(
             if len(lemma_pool) >= max_lemma_states:
                 break
 
-    # 第 1 层：起手段子链直接搭到初始局面
-    for lemma in setup_subchains:
-        if len(lemma_pool) >= max_lemma_states:
+    # 交错展开：第 d 层 = 先引理拼接（前提满足才用），再算子真实展开一步。
+    # 连续算子步数被 forward_depth 限制；引理可在 1..forward_depth 任意步拼接。
+    level: List[GameState] = [search_initial_state]
+    collected: List[GameState] = [search_initial_state]
+    seen_frontier_keys = {state_key_for_dedup(search_initial_state)}
+
+    for _depth in range(1, forward_depth + 1):
+        if should_stop is not None and should_stop():
             break
 
-        apply_forward_lemma(search_initial_state, lemma)
+        lemma_pool_before = len(lemma_pool)
 
-    # 第 2 层：引理链出的中间状态再搭一条起手段子链（最多搭两层，控制组合规模）
-    layer_one_states = list(lemma_pool)
-
-    for base_state in layer_one_states:
-        if len(lemma_pool) >= max_lemma_states:
-            break
-
-        for lemma in setup_subchains:
-            if len(lemma_pool) >= max_lemma_states:
-                break
-
-            apply_forward_lemma(base_state, lemma)
-
-    # 第 3 层：束搜索前沿状态 + 短引理跳接——
-    # 束宽可能剪掉的前向延续分支，用“已证结论”的短引理直接跳过去（搭积木）。
-    if len(lemma_pool) < max_lemma_states:
-        frontier_by_mana = sorted(
-            (state for state in frontier if state.alex_play_count < max_alex_count),
-            key=lambda item: -item.mana,
-        )
-
-        for frontier_state in frontier_by_mana:
+        # 1) 引理拼接：对当前层每个状态应用满足前提的引理
+        for base_state in level:
             if len(lemma_pool) >= max_lemma_states:
                 break
 
@@ -4584,10 +4661,46 @@ def bidirectional_symbolic_prove_paths(
                 if len(lemma_pool) >= max_lemma_states:
                     break
 
-                if len(lemma.actions) > 8:
+                apply_forward_lemma(base_state, lemma)
+
+        # 引理链出的中间状态也允许继续算子展开（引理-引理由下一层引理阶段覆盖）
+        level = level + list(lemma_pool[lemma_pool_before:])
+
+        # 2) 算子真实展开一步（连续算子步数不超过 forward_depth）
+        next_level: List[GameState] = []
+        next_seen = set()
+
+        for state in level:
+            if state.alex_play_count >= max_alex_count:
+                continue
+
+            for successor in generate_successors(state):
+                key = state_key_for_dedup(successor)
+
+                if key in seen_frontier_keys or key in next_seen:
                     continue
 
-                apply_forward_lemma(frontier_state, lemma)
+                next_seen.add(key)
+                next_level.append(successor)
+
+        if not next_level:
+            break
+
+        next_level.sort(
+            key=lambda state: (state.alex_play_count, state.mana),
+            reverse=True,
+        )
+        level = next_level[:forward_beam_width]
+        seen_frontier_keys |= next_seen
+        collected.extend(level[: max(1, forward_beam_width // 4)])
+
+    frontier = collected
+
+    if prune_stats is not None:
+        prune_stats["双向前向探索状态数"] = len(frontier)
+        prune_stats["前向引理尝试次数"] = lemma_apply_count
+        prune_stats["前向引理状态数"] = len(lemma_pool)
+        prune_stats["双向拼接证明"] = "拼接验证中"
 
     # 拼接候选池：前向束展开状态（优先级0）+ 引理搭接状态（优先级1，先试）
     pool: List[Tuple[GameState, int]] = [
