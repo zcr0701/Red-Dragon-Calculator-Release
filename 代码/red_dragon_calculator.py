@@ -3002,6 +3002,81 @@ def build_symbolic_chains(target_alex_count: int) -> List[SymbolicChain]:
             ]
         )
 
+    # =====================================================================
+    # 刀油引擎·舞动全回收链（不依赖狐人老千/硬币/牛头人）
+    # ---------------------------------------------------------------------
+    # 底层修正来源（2026-08-03 用户 9 龙/144 伤害样例）：
+    #   符号层此前把舞动全场建模成“只回收红龙一张”，而真规则是回收场上
+    #   【所有】友方随从为 1 费复制体。这条家族用“鲨鱼+多张 1 费刀油”
+    #   叠减费引擎开局（无需狐人老千），晦鳞回费，舞动全回收整个引擎，
+    #   殒命暗影在首次打出舞动后变形为第二张舞动，第三轮连出复制红龙。
+    #   轮次参数化：开局轮 +1 龙，每个中轮回 +3 龙，收尾轮 +N 龙（1<=N<=5）。
+    # =====================================================================
+    if target_alex_count >= 3:
+        alex_action = SymbolicAction(alex)
+        scabbs_action = SymbolicAction(scabbs)
+        shark_action = SymbolicAction(shark)
+        mother_action = SymbolicAction(mother)
+        dance_action = SymbolicAction(dance)
+        shadowcaster_alex_action = SymbolicAction(shadowcaster, target=alex)
+
+        opening_round = [
+            shark_action,
+            scabbs_action,
+            scabbs_action,
+            alex_action,
+            shadowcaster_alex_action,
+            mother_action,
+            scabbs_action,
+            dance_action,
+        ]
+        recycle_round_variants = [
+            [
+                shark_action,
+                mother_action,
+                alex_action,
+                alex_action,
+                shadowcaster_alex_action,
+                alex_action,
+                scabbs_action,
+                dance_action,
+            ],
+            [
+                shark_action,
+                mother_action,
+                alex_action,
+                alex_action,
+                shadowcaster_alex_action,
+                alex_action,
+                dance_action,
+            ],
+        ]
+
+        for round_variant_index, recycle_round in enumerate(recycle_round_variants):
+            for middle_count in range(0, 3):
+                consumed = 1 + 3 * middle_count
+                remaining = target_alex_count - consumed
+
+                if remaining < 1 or remaining > 5:
+                    continue
+
+                add_chain(
+                    name=f"刀油引擎舞动全回收链-{middle_count}中轮-尾{remaining}-v{round_variant_index + 1}",
+                    reasoning=[
+                        f"目标 {target_alex_count} 龙：鲨鱼使刀油连击触发两次，2-3 张刀油叠出 4-6 层减费，",
+                        "红龙/舞动被压到 0-1 费；暗影施法者在鲨鱼下复制红龙得两张 1 费复制体，晦鳞回 4 费。",
+                        "舞动全场把场上所有友方随从回手为 1 费复制体（不只是红龙），引擎（鱼/刀/晦/暗施）可重铺；",
+                        "殒命暗影在首次打出舞动后变形为第二张舞动，实现第二轮全回收、第三轮连出复制龙。",
+                        "本家族不依赖狐人老千/硬币/牛头人，覆盖手牌自带红龙 + 多刀油 + 舞动 + 殒命的三轮结构。",
+                    ],
+                    actions=(
+                        list(opening_round)
+                        + list(recycle_round) * middle_count
+                        + [shark_action, mother_action]
+                        + [alex_action] * remaining
+                    ),
+                )
+
     chains.sort(key=lambda chain: (
         0 if chain.name.startswith("公式") else 1 if chain.name.startswith("基础") else 2,
         len(chain.actions),
@@ -3511,12 +3586,19 @@ def _tail_shadowstep(sim: _TailSim) -> int:
 
 
 def _tail_dance(sim: _TailSim) -> int:
-    """舞动全场回手场上的红龙再打出。"""
+    """舞动全场：场上所有友方随从回手为 1 费复制体（含全部红龙），再打出其中一条红龙。"""
+    if not sim.board:
+        return -1
+
     sim.actions.append(SymbolicAction(DANCE_TAIL_NAME))
     sim.board_need(ALEX_TAIL_NAME)
     sim.play_spell(DANCE_TAIL_NAME)
-    sim.remove_board(ALEX_TAIL_NAME)
-    sim.add_hand(ALEX_TAIL_NAME)
+
+    for board_name, board_count in list(sim.board.items()):
+        if board_count > 0:
+            sim.board[board_name] = 0
+            sim.add_hand(board_name, board_count)
+
     sim.actions.append(SymbolicAction(ALEX_TAIL_NAME))
     sim.play_minion(ALEX_TAIL_NAME)
     sim.alex_played += 1
@@ -3692,10 +3774,13 @@ def _sim_apply_template_action(sim: _TailSim, action: SymbolicAction) -> bool:
 
     if name == DANCE_TAIL_NAME:
         sim.play_spell(DANCE_TAIL_NAME)
-
-        if sim.board.get(ALEX_TAIL_NAME, 0) > 0:
-            sim.remove_board(ALEX_TAIL_NAME)
-            sim.add_hand(ALEX_TAIL_NAME)
+        # 底层修正：舞动全场把场上【所有】友方随从按进场顺序回手为 1 费复制体，
+        # 而不仅是红龙——这正是“第二轮/第三轮重新铺引擎（鱼/刀/晦/暗施）”的符号来源。
+        # 抽象推演器不区分 1 费复制体与本体，只按名字计数回手。
+        for board_name, board_count in list(sim.board.items()):
+            if board_count > 0:
+                sim.board[board_name] = 0
+                sim.add_hand(board_name, board_count)
 
         return True
 
