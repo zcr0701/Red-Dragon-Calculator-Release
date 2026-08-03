@@ -2,6 +2,7 @@ import argparse
 import copy
 import heapq
 import json
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -3183,6 +3184,579 @@ def mine_symbolic_chain_from_path(state: GameState, chain_index: int) -> Optiona
     )
 
 
+# =====================================================================
+# 双向符号链证明：前向符号链（从初始局面展开）+ 反向符号链（从目标龙数
+# 反推尾链），在前沿状态处“拼接”。拼接后的完整链条仍走反向验证确认，
+# 保证结果可复现、可直接落盘。
+# =====================================================================
+
+ALEX_TAIL_NAME = "生命的缚誓者阿莱克丝塔萨"
+SHARK_TAIL_NAME = "鲨鱼之灵"
+SHADOWCASTER_TAIL_NAME = "暗影施法者"
+ETC_TAIL_NAME = "乐队经理精英牛头人酋长"
+DANCE_TAIL_NAME = "舞动全场（ft.迦罗娜）"
+POTION_TAIL_NAME = "幻觉药水"
+SHADOWSTEP_TAIL_NAME = "暗影步"
+PREP_TAIL_NAME = "伺机待发"
+BONE_TAIL_NAME = "锯齿骨刺"
+
+
+def forward_symbolic_frontier(
+    initial_state: GameState,
+    max_depth: int = 22,
+    beam_width: int = 1500,
+    max_per_depth: int = 300,
+    max_states: int = 6000,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> List[GameState]:
+    """前向符号链：从初始局面按束展开真实后继，返回去重后的可达状态前沿。
+
+    这些状态是“拼接”的前半段：只要某个反向尾链的资源要求能被该状态满足，
+    就能拼成一条完整证明。状态路径即真实出牌序列，可复现。
+    """
+    start = initial_state.clone()
+    start.record_log = False
+
+    def potential(state: GameState) -> int:
+        dragons = sum(1 for card in state.hand if "dragon" in card.tags)
+        dragons += sum(1 for card in state.board if "dragon" in card.tags)
+        return dragons
+
+    seen = set()
+    seen.add(state_key_for_dedup(start))
+    level = [start]
+    collected: List[GameState] = []
+
+    for _ in range(1, max_depth + 1):
+        if should_stop is not None and should_stop():
+            break
+
+        if not level:
+            break
+
+        next_level: List[GameState] = []
+        next_seen = set()
+
+        for state in level:
+            for successor in generate_successors(state):
+                key = state_key_for_dedup(successor)
+
+                if key in seen or key in next_seen:
+                    continue
+
+                next_seen.add(key)
+                next_level.append(successor)
+
+        if not next_level:
+            break
+
+        next_level.sort(
+            key=lambda state: (state.alex_play_count, state.mana, potential(state)),
+            reverse=True,
+        )
+        level = next_level[:beam_width]
+        seen |= next_seen
+        # 每层都保留一部分状态，避免深层（法力低但资源齐）的拼接点被浅层挤掉
+        collected.extend(level[:max_per_depth])
+
+    collected.sort(
+        key=lambda state: (state.alex_play_count, state.mana, potential(state)),
+        reverse=True,
+    )
+    return collected[:max_states]
+
+
+@dataclass
+class AlexTail:
+    """反向目标尾链：从“还要打出 N 条红龙”反推的动作后缀 + 起始资源要求。"""
+
+    name: str
+    actions: List[SymbolicAction]
+    gain: int
+    hand_req: Dict[str, int]
+    board_req: Dict[str, int]
+    band_req: Tuple[str, ...]
+    any_friendly_minion: bool
+
+
+class _TailSim:
+    """尾链的抽象推演器：同时维护“当前已产生/消耗的资源”和“起始必须满足的要求”。"""
+
+    def __init__(self) -> None:
+        self.actions: List[SymbolicAction] = []
+        self.hand: Dict[str, int] = {}
+        self.board: Dict[str, int] = {}
+        self.alex_played: int = 0
+        self.hand_req: Dict[str, int] = {}
+        self.board_req: Dict[str, int] = {}
+        self.band_req = set()
+        self.any_friendly_minion: bool = False
+        self.prep_used: bool = False
+        self.bone_used: bool = False
+
+    def clone(self) -> "_TailSim":
+        new = _TailSim()
+        new.actions = self.actions[:]
+        new.hand = dict(self.hand)
+        new.board = dict(self.board)
+        new.alex_played = self.alex_played
+        new.hand_req = dict(self.hand_req)
+        new.board_req = dict(self.board_req)
+        new.band_req = set(self.band_req)
+        new.any_friendly_minion = self.any_friendly_minion
+        new.prep_used = self.prep_used
+        new.bone_used = self.bone_used
+        return new
+
+    def hand_need(self, name: str) -> None:
+        self.hand_req[name] = max(self.hand_req.get(name, 0), 1 - self.hand.get(name, 0))
+
+    def board_need(self, name: str) -> None:
+        self.board_req[name] = max(self.board_req.get(name, 0), 1 - self.board.get(name, 0))
+
+    def play_minion(self, name: str) -> None:
+        self.hand_need(name)
+        self.hand[name] = self.hand.get(name, 0) - 1
+        self.board[name] = self.board.get(name, 0) + 1
+
+    def play_spell(self, name: str) -> None:
+        self.hand_need(name)
+        self.hand[name] = self.hand.get(name, 0) - 1
+
+    def add_hand(self, name: str, count: int = 1) -> None:
+        self.hand[name] = self.hand.get(name, 0) + count
+
+    def remove_board(self, name: str) -> None:
+        self.board[name] = self.board.get(name, 0) - 1
+
+    def to_tail(self, index: int) -> AlexTail:
+        return AlexTail(
+            name=f"反向目标尾链-{index}",
+            actions=self.actions,
+            gain=self.alex_played,
+            hand_req={name: count for name, count in self.hand_req.items() if count > 0},
+            board_req={name: count for name, count in self.board_req.items() if count > 0},
+            band_req=tuple(sorted(self.band_req)),
+            any_friendly_minion=self.any_friendly_minion,
+        )
+
+
+def _tail_direct(sim: _TailSim) -> int:
+    """直出红龙（手牌里有龙直接打出）。"""
+    sim.actions.append(SymbolicAction(ALEX_TAIL_NAME))
+    sim.play_minion(ALEX_TAIL_NAME)
+    sim.alex_played += 1
+    return 1
+
+
+def _tail_shadowcaster(sim: _TailSim, doubled: bool) -> int:
+    """暗影施法者复制场上的红龙（鲨鱼在场翻倍=两张1费红龙），再打出。"""
+    sim.actions.append(SymbolicAction(SHADOWCASTER_TAIL_NAME, target=ALEX_TAIL_NAME))
+    sim.board_need(ALEX_TAIL_NAME)
+    sim.play_minion(SHADOWCASTER_TAIL_NAME)
+    copies = 2 if doubled else 1
+
+    if doubled:
+        sim.board_need(SHARK_TAIL_NAME)
+
+    sim.add_hand(ALEX_TAIL_NAME, copies)
+
+    for _ in range(copies):
+        sim.actions.append(SymbolicAction(ALEX_TAIL_NAME))
+        sim.play_minion(ALEX_TAIL_NAME)
+        sim.alex_played += 1
+
+    return copies
+
+
+def _tail_shadowstep(sim: _TailSim) -> int:
+    """暗影步回手场上的红龙再打出。"""
+    sim.actions.append(SymbolicAction(SHADOWSTEP_TAIL_NAME, target=ALEX_TAIL_NAME))
+    sim.board_need(ALEX_TAIL_NAME)
+    sim.play_spell(SHADOWSTEP_TAIL_NAME)
+    sim.remove_board(ALEX_TAIL_NAME)
+    sim.add_hand(ALEX_TAIL_NAME)
+    sim.actions.append(SymbolicAction(ALEX_TAIL_NAME))
+    sim.play_minion(ALEX_TAIL_NAME)
+    sim.alex_played += 1
+    return 1
+
+
+def _tail_dance(sim: _TailSim) -> int:
+    """舞动全场回手场上的红龙再打出。"""
+    sim.actions.append(SymbolicAction(DANCE_TAIL_NAME))
+    sim.board_need(ALEX_TAIL_NAME)
+    sim.play_spell(DANCE_TAIL_NAME)
+    sim.remove_board(ALEX_TAIL_NAME)
+    sim.add_hand(ALEX_TAIL_NAME)
+    sim.actions.append(SymbolicAction(ALEX_TAIL_NAME))
+    sim.play_minion(ALEX_TAIL_NAME)
+    sim.alex_played += 1
+    return 1
+
+
+def _tail_potion(sim: _TailSim) -> int:
+    """幻觉药水复制场上的红龙再打出。"""
+    sim.actions.append(SymbolicAction(POTION_TAIL_NAME))
+    sim.board_need(ALEX_TAIL_NAME)
+    sim.play_spell(POTION_TAIL_NAME)
+    sim.add_hand(ALEX_TAIL_NAME)
+    sim.actions.append(SymbolicAction(ALEX_TAIL_NAME))
+    sim.play_minion(ALEX_TAIL_NAME)
+    sim.alex_played += 1
+    return 1
+
+
+def _tail_etc(sim: _TailSim, potion_variant: bool) -> int:
+    """牛头人酋长（鲨鱼在场双发现）发现 舞动/药水 + 红龙，再打出红龙。"""
+    choice = POTION_TAIL_NAME if potion_variant else DANCE_TAIL_NAME
+    choices = (choice, ALEX_TAIL_NAME)
+    sim.actions.append(SymbolicAction(ETC_TAIL_NAME, choices=choices))
+    sim.board_need(SHARK_TAIL_NAME)
+    sim.play_minion(ETC_TAIL_NAME)
+    sim.band_req.update(choices)
+    sim.add_hand(choice)
+    sim.add_hand(ALEX_TAIL_NAME)
+    sim.actions.append(SymbolicAction(ALEX_TAIL_NAME))
+    sim.play_minion(ALEX_TAIL_NAME)
+    sim.alex_played += 1
+    return 1
+
+
+def _tail_prep(sim: _TailSim) -> int:
+    if sim.prep_used:
+        return -1
+
+    sim.actions.append(SymbolicAction(PREP_TAIL_NAME))
+    sim.play_spell(PREP_TAIL_NAME)
+    sim.prep_used = True
+    return 0
+
+
+def _tail_bone(sim: _TailSim) -> int:
+    if sim.bone_used:
+        return -1
+
+    sim.actions.append(SymbolicAction(BONE_TAIL_NAME))
+    sim.play_spell(BONE_TAIL_NAME)
+    sim.any_friendly_minion = True
+    sim.bone_used = True
+    return 0
+
+
+def generate_alex_tails(
+    max_gain: int = 6,
+    max_actions: int = 12,
+    max_tails_per_gain: int = 150,
+    max_tails: int = 1500,
+) -> List[AlexTail]:
+    """反推生成目标尾链：递归组合“生产红龙”的机制，直到凑够目标龙数。"""
+    tails: Dict[Tuple, AlexTail] = {}
+    tail_index = [0]
+    visits = [0]
+    gain_counts: Dict[int, int] = {}
+
+    def rec(sim: _TailSim, remaining: int) -> None:
+        visits[0] += 1
+
+        if visits[0] > 80000:
+            return
+
+        if remaining <= 0:
+            tail = sim.to_tail(tail_index[0])
+            tail_index[0] += 1
+            key = (
+                tuple((action.name, action.target, action.choices) for action in sim.actions),
+                tuple(sorted(sim.hand_req.items())),
+                tuple(sorted(sim.board_req.items())),
+                tuple(sorted(sim.band_req)),
+                sim.any_friendly_minion,
+            )
+
+            if key not in tails:
+                if gain_counts.get(tail.gain, 0) >= max_tails_per_gain:
+                    return
+
+                tails[key] = tail
+                gain_counts[tail.gain] = gain_counts.get(tail.gain, 0) + 1
+
+            return
+
+        if len(tails) >= max_tails:
+            return
+
+        if len(sim.actions) >= max_actions:
+            return
+
+        gain_options = [
+            ("direct", lambda s: _tail_direct(s)),
+            ("shadowcaster", lambda s: _tail_shadowcaster(s, False)),
+            ("shadowcaster2", lambda s: _tail_shadowcaster(s, True)),
+            ("shadowstep", lambda s: _tail_shadowstep(s)),
+            ("dance", lambda s: _tail_dance(s)),
+            ("potion", lambda s: _tail_potion(s)),
+            ("etc_dance", lambda s: _tail_etc(s, False)),
+            ("etc_potion", lambda s: _tail_etc(s, True)),
+        ]
+
+        for label, fn in gain_options:
+            next_sim = sim.clone()
+            gain = fn(next_sim)
+
+            if gain <= 0 or gain > remaining:
+                continue
+
+            rec(next_sim, remaining - gain)
+
+        prep_options = [
+            ("prep", lambda s: _tail_prep(s)),
+            ("bone", lambda s: _tail_bone(s)),
+        ]
+
+        for label, fn in prep_options:
+            next_sim = sim.clone()
+            gain = fn(next_sim)
+
+            if gain < 0:
+                continue
+
+            rec(next_sim, remaining)
+
+    for target_gain in range(1, max_gain + 1):
+        rec(_TailSim(), target_gain)
+
+    return list(tails.values())
+
+
+def tail_meets_state(state: GameState, tail: AlexTail) -> bool:
+    """检查前向状态是否满足反向尾链的起始资源要求。"""
+    hand_counts = Counter(card.name for card in state.hand)
+    board_counts = Counter(card.name for card in state.board)
+
+    for name, count in tail.hand_req.items():
+        if hand_counts.get(name, 0) < count:
+            return False
+
+    for name, count in tail.board_req.items():
+        if board_counts.get(name, 0) < count:
+            return False
+
+    if tail.band_req:
+        band = set(state.etc_band_remaining)
+
+        if not band.issuperset(set(tail.band_req)):
+            return False
+
+    if tail.any_friendly_minion and not state.board_zone.cards:
+        return False
+
+    return True
+
+
+def tail_mana_feasible(state: GameState, tail: AlexTail) -> bool:
+    """快速检查尾链在给定状态下的费用可行性（只算费用，不做完整模拟）。"""
+    mana = state.mana
+    next_spell = state.next_spell_discount
+    next_combo = state.next_combo_discount
+    next_card = state.next_card_discount
+    actives = [
+        (remaining_count, discount_amount)
+        for remaining_count, discount_amount in state.active_card_discounts
+        if remaining_count > 0 and discount_amount > 0
+    ]
+
+    for action in tail.actions:
+        if action.name not in CARD_DATABASE:
+            continue
+
+        card = make_card(action.name)
+        base_cost = card.current_cost() or 0
+        discount = next_card + sum(
+            discount_amount for _remaining, discount_amount in actives
+        )
+
+        if is_spell_like(card):
+            discount += next_spell
+
+        if "combo" in card.tags:
+            discount += next_combo
+
+        cost = max(0, base_cost - discount)
+
+        if mana < cost:
+            return False
+
+        mana -= cost
+        next_card = 0
+        actives = [
+            (remaining_count - 1, discount_amount)
+            for remaining_count, discount_amount in actives
+            if remaining_count - 1 > 0
+        ]
+
+        if is_spell_like(card):
+            next_spell = 0
+
+        if "combo" in card.tags:
+            next_combo = 0
+
+        if action.name == PREP_TAIL_NAME:
+            next_spell += 2
+        elif action.name == BONE_TAIL_NAME:
+            next_card += 2
+
+    return True
+
+
+def bidirectional_symbolic_prove_paths(
+    initial_state: GameState,
+    max_alex_count: int,
+    min_alex_count: int,
+    max_paths: int,
+    max_chain_steps: int = 100,
+    progress_callback: Optional[Callable[[int, int, int], None]] = None,
+    found_callback: Optional[Callable[[List[GameState], int], None]] = None,
+    prune_stats: Optional[Dict[str, int]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+    forward_depth: int = 22,
+    forward_beam_width: int = 1500,
+    validate_candidates_per_target: int = 20,
+) -> List[GameState]:
+    """双向符号链证明：前向探索 + 反向尾链 + 前沿拼接 + 反向验证。"""
+    search_initial_state = initial_state.clone()
+    search_initial_state.record_log = False
+    min_alex_count = max(1, min(min_alex_count, max_alex_count))
+
+    if prune_stats is not None:
+        prune_stats["双向拼接证明"] = "前向探索中"
+
+    frontier = forward_symbolic_frontier(
+        initial_state=search_initial_state,
+        max_depth=forward_depth,
+        beam_width=forward_beam_width,
+        should_stop=should_stop,
+    )
+
+    if prune_stats is not None:
+        prune_stats["双向前向探索状态数"] = len(frontier)
+        prune_stats["双向拼接证明"] = "反向尾链生成中"
+
+    tails = generate_alex_tails(max_gain=min(max_alex_count, 6))
+    tails_by_gain: Dict[int, List[AlexTail]] = {}
+
+    for tail in tails:
+        tails_by_gain.setdefault(tail.gain, []).append(tail)
+
+    if prune_stats is not None:
+        prune_stats["双向生成尾链数"] = len(tails)
+        prune_stats["双向拼接证明"] = "拼接验证中"
+
+    all_proved: List[GameState] = []
+    seen_paths = set()
+    validated_count = 0
+
+    def add_state(chain_state: GameState) -> bool:
+        path_key = tuple(chain_state.path)
+
+        if path_key in seen_paths:
+            return False
+
+        seen_paths.add(path_key)
+        all_proved.append(chain_state)
+        return True
+
+    # 1) 前向直接命中：前沿状态本身已经打出 >= 下限的龙
+    for state in frontier:
+        if state.alex_play_count >= min_alex_count:
+            if add_state(state.clone()):
+                if prune_stats is not None:
+                    prune_stats["已证明龙数"] = max(
+                        prune_stats.get("已证明龙数", 0),
+                        state.alex_play_count,
+                    )
+                    prune_stats["证明方式"] = "双向前向直接命中"
+
+            if len(all_proved) >= max_paths:
+                break
+
+    # 2) 前沿拼接：找到满足尾链资源要求的前沿状态，从该状态直接验证尾链
+    for target in range(max_alex_count, min_alex_count - 1, -1):
+        if len(all_proved) >= max_paths:
+            break
+
+        if should_stop is not None and should_stop():
+            break
+
+        candidates: List[Tuple[GameState, AlexTail]] = []
+
+        for state in frontier:
+            if state.alex_play_count >= target:
+                continue
+
+            needed = target - state.alex_play_count
+
+            if needed <= 0:
+                continue
+
+            for tail in tails_by_gain.get(needed, []):
+                if tail_meets_state(state, tail) and tail_mana_feasible(state, tail):
+                    candidates.append((state, tail))
+
+        candidates.sort(
+            key=lambda pair: (-pair[0].mana, len(pair[1].actions), len(pair[0].path))
+        )
+
+        for state, tail in candidates[:validate_candidates_per_target]:
+            if should_stop is not None and should_stop():
+                break
+
+            chain = SymbolicChain(
+                name=f"双向拼接-{tail.name}",
+                target_alex_count=target,
+                reasoning=[
+                    "前向符号链（从初始局面展开的前沿状态）与反向符号链（从目标龙数反推的尾链）",
+                    f"在 {state.alex_play_count} 龙状态处拼接；尾链再从该状态经反向验证确认。",
+                ],
+                actions=tail.actions,
+            )
+            chain_states = validate_symbolic_chain(
+                initial_state=state,
+                chain=chain,
+                max_states=max(1, max_paths - len(all_proved)),
+                prune_stats=prune_stats,
+                should_stop=should_stop,
+            )
+            validated_count += 1
+
+            for chain_state in sort_path_states(chain_states):
+                if add_state(chain_state):
+                    if prune_stats is not None:
+                        prune_stats["已证明龙数"] = max(
+                            prune_stats.get("已证明龙数", 0),
+                            chain_state.alex_play_count,
+                        )
+                        prune_stats["证明方式"] = "双向符号链拼接证明"
+                        prune_stats[f"当前搜索 {target}龙"] = "存在"
+
+                    if found_callback:
+                        found_callback(
+                            sort_path_states(all_proved)[:max_paths],
+                            target,
+                        )
+
+                if len(all_proved) >= max_paths:
+                    break
+
+            if len(all_proved) >= max_paths:
+                break
+
+    if prune_stats is not None:
+        prune_stats["双向验证链条数"] = validated_count
+        prune_stats["双向拼接证明"] = "完成"
+
+    return sort_path_states(all_proved)[:max_paths]
+
+
 def reverse_symbolic_prove_paths(
     initial_state: GameState,
     max_alex_count: int,
@@ -3194,7 +3768,8 @@ def reverse_symbolic_prove_paths(
     prune_stats: Optional[Dict[str, int]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
     forward_mining: bool = True,
-    forward_beam_width: int = 1000
+    forward_beam_width: int = 1000,
+    use_bidirectional: bool = True
 ) -> List[GameState]:
     search_initial_state = initial_state.clone()
     search_initial_state.record_log = False
@@ -3281,9 +3856,59 @@ def reverse_symbolic_prove_paths(
         if len(all_proved_states) >= max_paths:
             break
 
+    bidirectional_proved_any = False
+
+    if (
+        use_bidirectional
+        and best_alex_count < min_alex_count
+        and not (should_stop is not None and should_stop())
+    ):
+        if prune_stats is not None:
+            prune_stats["双向拼接证明"] = "运行中"
+
+        bidir_results = bidirectional_symbolic_prove_paths(
+            initial_state=search_initial_state,
+            max_alex_count=max_alex_count,
+            min_alex_count=min_alex_count,
+            max_paths=max_paths,
+            max_chain_steps=max_chain_steps,
+            progress_callback=progress_callback,
+            found_callback=found_callback,
+            prune_stats=prune_stats,
+            should_stop=should_stop,
+        )
+
+        for bidir_state in sort_path_states(bidir_results):
+            path_key = tuple(bidir_state.path)
+
+            if path_key in seen_paths:
+                continue
+
+            seen_paths.add(path_key)
+            all_proved_states.append(bidir_state)
+            best_alex_count = max(best_alex_count, bidir_state.alex_play_count)
+
+            if bidir_state.alex_play_count >= min_alex_count:
+                bidirectional_proved_any = True
+
+            if prune_stats is not None:
+                prune_stats["已证明龙数"] = best_alex_count
+                prune_stats["证明方式"] = "双向符号链拼接证明"
+                prune_stats[f"当前搜索 {bidir_state.alex_play_count}龙"] = "存在"
+
+            if found_callback:
+                found_callback(
+                    sort_path_states(all_proved_states)[:max_paths],
+                    bidir_state.alex_play_count,
+                )
+
+            if len(all_proved_states) >= max_paths:
+                break
+
     if (
         forward_mining
         and best_alex_count < max_alex_count
+        and not bidirectional_proved_any
         and not (should_stop is not None and should_stop())
     ):
         if prune_stats is not None:
@@ -3414,7 +4039,8 @@ def enumerate_play_paths(
     prune_stats: Optional[Dict[str, int]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
     forward_mining: bool = True,
-    forward_beam_width: int = 1000
+    forward_beam_width: int = 1000,
+    use_bidirectional: bool = True
 ) -> List[GameState]:
     return reverse_symbolic_prove_paths(
         initial_state=initial_state,
@@ -3427,7 +4053,8 @@ def enumerate_play_paths(
         prune_stats=prune_stats,
         should_stop=should_stop,
         forward_mining=forward_mining,
-        forward_beam_width=forward_beam_width
+        forward_beam_width=forward_beam_width,
+        use_bidirectional=use_bidirectional
     )
 
 
@@ -3791,6 +4418,7 @@ def main() -> int:
     parser.add_argument("--min-alex-count", type=int, default=1)
     parser.add_argument("--no-forward-mine", action="store_true", help="关闭正向束搜索自动挖掘（默认开启）")
     parser.add_argument("--forward-mine-width", type=int, default=1000, help="自动挖掘束搜索束宽，默认1000")
+    parser.add_argument("--no-bidirectional", action="store_true", help="关闭双向符号链拼接证明（默认开启）")
     parser.add_argument("--show-limit", type=int, default=200)
     parser.add_argument("--json", action="store_true", help="输出 JSON")
 
@@ -3824,7 +4452,8 @@ def main() -> int:
                 max_alex_count=args.max_alex_count,
                 min_alex_count=args.min_alex_count,
                 forward_mining=not args.no_forward_mine,
-                forward_beam_width=args.forward_mine_width
+                forward_beam_width=args.forward_mine_width,
+                use_bidirectional=not args.no_bidirectional
             )
 
         if args.json:
