@@ -1,0 +1,126 @@
+{
+  "min_common_chars": 1,
+  "cards": [
+    {
+      "name": "伪造的幸运币",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "伺机待发",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "暗影步",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "殒命暗影",
+      "aliases": [],
+      "no_cost": true,
+      "description": ""
+    },
+    {
+      "name": "垂钓时光",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "挖掘宝藏",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "黑水弯刀",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "异教地图",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "狐人老千",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "疾速矿锄",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "行骗",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "锯齿骨刺",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "闪避",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "晦鳞巢母",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "潜伏帷幕",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "乐队经理精英牛头人酋长",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "舞动全场（ft.迦罗娜）",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "幻觉药水",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "生命的缚誓者阿莱克丝塔萨",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "可疑交易",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "斯卡布斯·刀油",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "鲨鱼之灵",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "暗影施法者",
+      "aliases": [],
+      "description": ""
+    },
+    {
+      "name": "幸运币",
+      "aliases": [],
+      "description": ""
+    }
+  ]
+}
