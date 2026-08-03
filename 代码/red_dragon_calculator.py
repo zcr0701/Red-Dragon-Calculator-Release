@@ -3289,18 +3289,42 @@ def reverse_symbolic_prove_paths(
         if prune_stats is not None:
             prune_stats["正向挖掘"] = "束搜索自动挖掘"
 
-        mined_paths = beam_search_paths(
-            initial_state=search_initial_state,
-            max_depth=max_chain_steps,
-            max_paths=max_paths,
-            max_alex_count=max_alex_count,
-            min_alex_count=min_alex_count,
-            beam_width=forward_beam_width,
-            progress_callback=None,
-            found_callback=None,
-            prune_stats=prune_stats,
-            should_stop=should_stop,
-        )
+        # 束宽自动升级：先用默认束宽，摸不到搜索下限就加大，避免漏掉深度线路。
+        mining_widths = [forward_beam_width]
+
+        for extra_width in (2500, 5000):
+            if forward_beam_width < extra_width:
+                mining_widths.append(extra_width)
+
+        if prune_stats is not None:
+            prune_stats["正向挖掘尝试束宽"] = list(mining_widths)
+
+        mined_paths: List[GameState] = []
+
+        for mining_width in mining_widths:
+            if should_stop is not None and should_stop():
+                break
+
+            mined_paths = beam_search_paths(
+                initial_state=search_initial_state,
+                max_depth=max_chain_steps,
+                max_paths=max_paths,
+                max_alex_count=max_alex_count,
+                min_alex_count=min_alex_count,
+                beam_width=mining_width,
+                progress_callback=None,
+                found_callback=None,
+                prune_stats=prune_stats,
+                should_stop=should_stop,
+            )
+            mined_max = max(
+                (mined_state.alex_play_count for mined_state in mined_paths),
+                default=0,
+            )
+
+            if mined_max >= min_alex_count:
+                break
+
         mined_chains: List[SymbolicChain] = []
         seen_chain_keys = set()
 
@@ -3355,6 +3379,7 @@ def reverse_symbolic_prove_paths(
                 if prune_stats is not None:
                     prune_stats["已证明龙数"] = best_alex_count
                     prune_stats["证明方式"] = "正向束搜索发现+符号链自动挖掘反证"
+                    prune_stats[f"当前搜索 {chain.target_alex_count}龙"] = "存在"
 
                 if found_callback:
                     found_callback(

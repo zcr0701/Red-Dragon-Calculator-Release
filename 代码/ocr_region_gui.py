@@ -624,7 +624,7 @@ class MainWindow(QWidget):
         self.forwardMineCheck.setChecked(True)
         self.forwardMineCheck.setToolTip(
             "反向符号链搜索时自动用束搜索发现模板外的新线路，再反推成符号链证明（默认开启）。"
-            "发现不到新线路时约多花几十秒；追求速度可取消勾选。"
+            "束宽不足会自动升级（1000→2500→5000）直到摸到搜索下限；追求速度可取消勾选。"
         )
         mana_layout.addWidget(self.forwardMineCheck)
         mana_layout.addStretch()
