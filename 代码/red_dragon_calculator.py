@@ -3254,6 +3254,46 @@ def build_symbolic_chains(target_alex_count: int) -> List[SymbolicChain]:
                         ),
                     )
 
+    # =====================================================================
+    # 殒命双币·牛舞龙·晦步刀重铺链（由 beam 搜出的 2龙/32、1龙/16 反推）
+    # 适用：4水晶开局、殒命暗影变形第二枚幸运币（币币[殒]）、牛双发现舞动+红龙、
+    # 晦鳞回费后暗影步回刀、刀油+暗施(刀)+刀油叠减费，舞动全回收整个引擎；
+    # 第二轮重铺后按目标连出复制龙（无骨刺变体）。
+    # =====================================================================
+    if target_alex_count <= 3:
+        deadly_coin_round1 = [
+            SymbolicAction("伪造的幸运币"),
+            SymbolicAction("伪造的幸运币"),
+            SymbolicAction(shark),
+            SymbolicAction(foxy),
+            SymbolicAction(scabbs),
+            SymbolicAction(etc, choices=(dance, alex)),
+            SymbolicAction(mother),
+            SymbolicAction(shadowstep, target=scabbs),
+            SymbolicAction(scabbs),
+            SymbolicAction(shadowcaster, target=scabbs),
+            SymbolicAction(scabbs),
+            SymbolicAction(dance),
+        ]
+        deadly_coin_tails = [
+            (1, "直出", [SymbolicAction(shark), SymbolicAction(mother), SymbolicAction(scabbs), SymbolicAction(scabbs), SymbolicAction(alex)]),
+            (1, "牛药水复制", [SymbolicAction(shark), SymbolicAction(mother), SymbolicAction(etc, choices=(potion,)), SymbolicAction(scabbs), SymbolicAction(scabbs), SymbolicAction(alex), SymbolicAction(potion), SymbolicAction(mother)]),
+            (2, "暗施双龙", [SymbolicAction(shark), SymbolicAction(mother), SymbolicAction(scabbs), SymbolicAction(scabbs), SymbolicAction(alex), SymbolicAction(shadowcaster, target=alex), SymbolicAction(alex)]),
+            (3, "暗施三龙", [SymbolicAction(shark), SymbolicAction(mother), SymbolicAction(scabbs), SymbolicAction(scabbs), SymbolicAction(alex), SymbolicAction(shadowcaster, target=alex), SymbolicAction(alex), SymbolicAction(alex)]),
+        ]
+
+        for gain, tail_label, tail_actions in deadly_coin_tails:
+            add_chain(
+                name=f"殒命双币牛舞龙晦步刀重铺链-{gain}龙-{tail_label}",
+                reasoning=[
+                    f"目标 {target_alex_count} 龙：殒命暗影在首张幸运币后变形为第二枚（币币[殒]），",
+                    "鲨鱼狐人刀油启动，牛双发现舞动+红龙，晦鳞回费后暗影步回刀、",
+                    "刀油+暗施(刀)+刀油叠减费，舞动全回收整个引擎；",
+                    "第二轮先鲨后晦（先鱼后龙=每条16伤），按目标连出/复制红龙（无骨刺变体）。",
+                ],
+                actions=deadly_coin_round1 + tail_actions,
+            )
+
     chains.sort(key=lambda chain: (
         0 if chain.name.startswith("公式") else 1 if chain.name.startswith("基础") else 2,
         len(chain.actions),
