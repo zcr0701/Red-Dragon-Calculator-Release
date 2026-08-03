@@ -827,13 +827,12 @@ def effective_cost(state: GameState, card: CardInstance) -> Optional[int]:
     if "combo" in card.tags and state.next_combo_discount > 0:
         discount += state.next_combo_discount
 
-    cost = max(0, base_cost - discount)
-
     if card.locked_one_cost:
-        # 腾武回手锁：本回合固定 1 费，刀油/伺机/骨刺等减费不能低于 1。
-        cost = max(1, cost)
+        # 腾武回手锁：本回合无论加费/减费，永远固定 1 费
+        # （刀油、伺机、骨刺、暗影步等全部无法改变）。
+        return 1
 
-    return cost
+    return max(0, base_cost - discount)
 
 
 def active_oil_discount(state: GameState) -> bool:
@@ -1116,8 +1115,14 @@ def effect_shadowstep(state: GameState, card: CardInstance, target_friendly_inde
         return
 
     target = state.board_zone.remove_at(target_friendly_index)
-    base_cost = target.current_cost() or 0
-    target.temp_cost = max(0, base_cost - 2)
+
+    if target.locked_one_cost:
+        # 腾武锁定卡：暗影步不能减费，保持固定 1 费
+        target.temp_cost = 1
+    else:
+        base_cost = target.current_cost() or 0
+        target.temp_cost = max(0, base_cost - 2)
+
     add_to_hand(state, target)
 
 
@@ -1713,8 +1718,13 @@ def apply_search_effect(
 
                 if target_friendly_index is not None and target_friendly_index < len(new_state.board_zone):
                     target = new_state.board_zone.remove_at(target_friendly_index)
-                    base_cost = target.current_cost() or 0
-                    target.temp_cost = max(0, base_cost - 2)
+
+                    if target.locked_one_cost:
+                        target.temp_cost = 1
+                    else:
+                        base_cost = target.current_cost() or 0
+                        target.temp_cost = max(0, base_cost - 2)
+
                     add_card_to_hand_or_burn(new_state, target)
 
                 next_states.append(new_state)
@@ -5527,54 +5537,182 @@ def beam_search_paths(
     start.record_log = False
     min_alex_count = max(1, min(min_alex_count, max_alex_count))
 
-    def potential(state: GameState) -> int:
-        """未来潜力（用于束内排序）：红龙 + 复制/回收/发现/叠费潜力。
+    def subchain_score(state: GameState) -> int:
+        """子链评分（象棋子力式）：按局面中“已成形/即将成形的子链”计分。
 
-        纯“当前手牌/场面龙数”会让舞动全回收分支在前期龙数低时被束挤掉
-        （用户 9 龙样例实测：束宽 2000 只搜到 8）。这里加入：
-          - 暗施复制潜力（鲨鱼翻倍）；
-          - 回收潜力（舞动/药水/暗影步，殒命暗影可变形为第二张法术）；
-          - 牛头人发现潜力；刀油叠费引擎潜力。
+        两条深线的共同点都是这些子链：
+          - 鱼龙（先鱼后龙）：鱼在场/在手 + 龙 → 每条 16 伤；
+          - 龙晦龙（轮中回费）：晦 + 龙 → 多续一条龙；
+          - 龙暗龙（复制）：暗施 + 龙 → 复制出更多龙；
+          - 龙舞龙（回收）：舞 + 龙 → 全回收重铺；
+          - 龙步龙（回手）：步 + 场上龙 → 同龙打两次；
+          - 双舞（殒命+舞）：第二回收轮；
+          - 刀刀引擎（鲨+双刀）：叠费压低红龙。
+        每条子链按“子力值”计分，局面总分 = 已打出的伤害 + 子链分。
         """
         hand_dragons = count_hand_dragons(state)
         board_dragons = count_board_cards(state, "生命的缚誓者阿莱克丝塔萨")
         dragons = hand_dragons + board_dragons
-        has_shark = state.has_shark()
-
-        shadowcasters = count_hand_cards(state, "暗影施法者")
-
-        if dragons > 0:
-            dragons += shadowcasters * (2 if has_shark else 1)
-
-        recycle = count_hand_cards(state, "舞动全场（ft.迦罗娜）")
-        recycle += count_hand_cards(state, "幻觉药水")
-        recycle += count_hand_cards(state, "暗影步")
-        deadly = any(card.is_deadly_shadow for card in state.hand)
-        recycle += 1 if deadly else 0
-
-        if dragons > 0:
-            dragons += recycle * max(1, board_dragons)
-
-        dragons += count_hand_cards(state, "乐队经理精英牛头人酋长")
+        shark_on = state.has_shark()
+        shark_in_hand = count_hand_cards(state, "鲨鱼之灵")
+        mother_any = (
+            count_hand_cards(state, "晦鳞巢母")
+            + count_board_cards(state, "晦鳞巢母")
+        )
+        shadowcaster_any = (
+            count_hand_cards(state, "暗影施法者")
+            + count_board_cards(state, "暗影施法者")
+        )
+        shadowstep_any = count_hand_cards(state, "暗影步")
+        dance_any = count_hand_cards(state, "舞动全场（ft.迦罗娜）")
+        potion_any = count_hand_cards(state, "幻觉药水")
+        deadly_ready = any(card.is_deadly_shadow for card in state.hand)
+        scabbs_in_hand = count_hand_cards(state, "斯卡布斯·刀油")
         oil_value = sum(
             discount_amount * remaining_count
             for remaining_count, discount_amount in state.active_card_discounts
             if remaining_count > 0 and discount_amount > 0
         )
-        # “鱼先于龙”骨架：手牌同时有鲨鱼和龙（或鱼在场+龙在手）时加分——
-        # 下一轮先放鱼再出龙=每条龙 16 伤，这是 9 龙/144 伤等高伤害线路的关键。
-        shark_in_hand = count_hand_cards(state, "鲨鱼之灵")
+
+        score = oil_value * 2
+
+        # 鱼龙：先鱼后龙
+        if dragons > 0 and (shark_on or shark_in_hand):
+            score += dragons * 16
+
+        # 龙晦龙：轮中回费
+        if dragons > 0 and mother_any:
+            score += 12
+
+        # 龙暗龙：暗施复制
+        if dragons > 0 and shadowcaster_any:
+            score += 12
+
+        # 龙舞龙：舞动全回收
+        if dragons > 0 and (dance_any > 0 or potion_any > 0):
+            score += 12
+
+        # 龙步龙：暗影步回手（需场上龙）
+        if board_dragons > 0 and shadowstep_any:
+            score += 12
+
+        # 双舞：殒命未用 + 舞/药水在手
+        if deadly_ready and (dance_any > 0 or potion_any > 0):
+            score += 15
+
+        # 刀刀引擎：鲨鱼可用 + 两张以上刀油
+        if (shark_on or shark_in_hand) and scabbs_in_hand >= 2:
+            score += 8
+
+        # 牛找龙/舞/药水
+        score += count_hand_cards(state, "乐队经理精英牛头人酋长") * 8
+        return score
+
+    def subchain_coverage(state: GameState) -> int:
+        """子链覆盖度：局面中“已凑齐”的子链种类数（每条计1）。
+
+        两条深线的共同点是同时集齐 鱼龙/龙晦龙/龙暗龙/龙舞龙/双舞 等子链；
+        用覆盖度做冠军判据，能保住“手牌精简但结构完整”的深线
+        （肥线复制多，但覆盖度不一定更高）。
+        """
+        hand_dragons = count_hand_dragons(state)
+        board_dragons = count_board_cards(state, "生命的缚誓者阿莱克丝塔萨")
+        dragons = hand_dragons + board_dragons
         shark_on = state.has_shark()
+        shark_in_hand = count_hand_cards(state, "鲨鱼之灵")
+        mother_any = (
+            count_hand_cards(state, "晦鳞巢母")
+            + count_board_cards(state, "晦鳞巢母")
+        )
+        shadowcaster_any = (
+            count_hand_cards(state, "暗影施法者")
+            + count_board_cards(state, "暗影施法者")
+        )
+        shadowstep_any = count_hand_cards(state, "暗影步")
+        dance_any = count_hand_cards(state, "舞动全场（ft.迦罗娜）")
+        potion_any = count_hand_cards(state, "幻觉药水")
+        deadly_ready = any(card.is_deadly_shadow for card in state.hand)
+        scabbs_in_hand = count_hand_cards(state, "斯卡布斯·刀油")
 
-        if hand_dragons > 0 and (shark_on or shark_in_hand):
-            dragons += 15
+        coverage = 0
 
-        return dragons * 100 + oil_value
+        if dragons > 0 and (shark_on or shark_in_hand):
+            coverage += 1  # 鱼龙
+
+        if dragons > 0 and mother_any:
+            coverage += 1  # 龙晦龙
+
+        if dragons > 0 and shadowcaster_any:
+            coverage += 1  # 龙暗龙
+
+        if dragons > 0 and (dance_any > 0 or potion_any > 0):
+            coverage += 1  # 龙舞龙
+
+        if board_dragons > 0 and shadowstep_any:
+            coverage += 1  # 龙步龙
+
+        if deadly_ready and (dance_any > 0 or potion_any > 0):
+            coverage += 1  # 双舞
+
+        if (shark_on or shark_in_hand) and scabbs_in_hand >= 2:
+            coverage += 1  # 刀刀引擎
+
+        return coverage
+
+    def discrete_path_score(state: GameState) -> int:
+        """离散子链评分：路径中按顺序出现的里程碑（允许中间任意间隔）。
+
+        高伤深线的判别性离散子链（低伤线缺少）：
+          - 龙…晦…龙（轮中回费）：6法力 144 线有，112 线没有；
+          - 龙…暗…龙…舞（复制+回收）；
+          - 步…龙（暗影步回手）：8水晶 160 线有，144 线没有；
+          - 双舞（舞…舞[殒]）：两次全回收；
+          - 鱼…龙：每条 16 伤。
+        """
+        path = state.path
+        score = 0
+
+        def contains(required):
+            iterator = iter(path)
+
+            for needle in required:
+                for item in iterator:
+                    if needle in item:
+                        break
+                else:
+                    return False
+
+            return True
+
+        if contains(("鲨鱼之灵", "生命的缚誓者")):
+            score += 16  # 鱼…龙：先鱼后龙
+
+        if contains(("生命的缚誓者", "晦鳞巢母", "生命的缚誓者")):
+            score += 20  # 龙…晦…龙：轮中回费（144 线的判别子链）
+
+        if contains(("生命的缚誓者", "暗影施法者", "生命的缚誓者")):
+            score += 16  # 龙…暗…龙：暗施复制
+
+        if contains(("生命的缚誓者", "舞动全场", "生命的缚誓者")):
+            score += 16  # 龙…舞…龙：舞动全回收
+
+        if contains(("暗影步", "生命的缚誓者")):
+            score += 14  # 步…龙：暗影步回手（160 线的判别子链）
+
+        if contains(("舞动全场", "舞动全场")):
+            score += 18  # 双舞：第二回收轮
+
+        if contains(("鲨鱼之灵", "晦鳞巢母", "生命的缚誓者")):
+            score += 14  # 鱼…晦…龙：收尾轮骨架
+
+        return score
 
     best: Dict[int, GameState] = {start.alex_play_count: start.clone()}
     level = [start]
-    seen = set()
-    seen.add((state_key_for_dedup(start), start.alex_play_count))
+    # 去重保留“法力最高”的替身：去重键不含法力，若低法力替身先到会卡死
+    # 高法力深线的续接（6法力 9龙/144 在深度11 因此“未被生成”）。
+    seen: Dict[Tuple, GameState] = {}
+    seen[(state_key_for_dedup(start), start.alex_play_count)] = start
     expansions = 0
     max_reached = start.alex_play_count
     reached_depth = 0
@@ -5589,8 +5727,7 @@ def beam_search_paths(
             break
 
         reached_depth = depth
-        next_level: List[GameState] = []
-        next_seen = set()
+        next_seen: Dict[Tuple, GameState] = {}
 
         for state in level:
             for successor in generate_successors(state, prune_stats=prune_stats):
@@ -5601,27 +5738,46 @@ def beam_search_paths(
                     successor.alex_damage,
                 )
                 key = (state_key_for_dedup(successor), successor.alex_play_count)
+                previous = seen.get(key)
 
-                if key in next_seen or key in seen:
+                if previous is not None and successor.mana <= previous.mana:
                     continue
 
-                next_seen.add(key)
-                next_level.append(successor)
+                current_best = next_seen.get(key)
+
+                if current_best is not None and successor.mana <= current_best.mana:
+                    continue
+
+                next_seen[key] = successor
 
                 current = best.get(successor.alex_play_count)
 
-                # 同龙数优先保留伤害更高的路径（先鱼后龙的结构伤害更高）
-                if current is None or (successor.alex_damage, successor.mana, potential(successor)) > (
-                    current.alex_damage,
+                # 同龙数优先保留“总分（伤害+短子链+离散子链）”更高的路径
+                if current is None or (
+                    successor.alex_damage
+                    + subchain_score(successor)
+                    + discrete_path_score(successor),
+                    successor.mana,
+                ) > (
+                    current.alex_damage
+                    + subchain_score(current)
+                    + discrete_path_score(current),
                     current.mana,
-                    potential(current),
                 ):
                     best[successor.alex_play_count] = successor.clone()
+
+        next_level = list(next_seen.values())
 
         if not next_level:
             break
 
-        seen |= next_seen
+        # 全局去重同样保留法力最高的替身
+        for key, successor in next_seen.items():
+            previous = seen.get(key)
+
+            if previous is None or successor.mana > previous.mana:
+                seen[key] = successor
+
         # 按“当前龙数分桶”保留各桶前若干状态，避免高龙数分支挤掉
         # 正在走“舞动全回收”的低龙数高潜力分支（9 龙样例的关键）。
         buckets: Dict[int, List[GameState]] = {}
@@ -5629,27 +5785,39 @@ def beam_search_paths(
         for state in next_level:
             buckets.setdefault(state.alex_play_count, []).append(state)
 
-        # 每桶多保留 25%：深层“先鱼后龙”的高伤害线路（如 9 龙/144 伤）在桶内
-        # 排名常落后于“复制更多龙”的低伤害分支，需要额外余量才能存活。
+        # 子链评分裁剪：按“总分 = 已打出伤害 + 短子链分 + 离散子链分”排序。
+        # 短子链（手中/场上凑齐的 鱼龙/龙晦龙/龙暗龙…）+ 离散子链（路径里的
+        # 里程碑 龙…晦…龙 / 步…龙 / 双舞…），同一套象棋子力式评分同时覆盖
+        # 6法力 9龙/144 与 8水晶 10龙/160。
         per_bucket = max(1, int(beam_width * 1.25 / max(1, len(buckets))))
         level = []
 
         for bucket_key in sorted(buckets, reverse=True):
+            bucket_states = buckets[bucket_key]
             bucket_states = sorted(
-                buckets[bucket_key],
-                # 伤害优先排序（6法力 9龙/144 需要纯伤害排序才能全程保留）
-                key=lambda state: (state.alex_damage, state.mana),
+                bucket_states,
+                key=lambda state: (
+                    state.alex_damage
+                    + subchain_score(state)
+                    + discrete_path_score(state),
+                    state.mana,
+                ),
                 reverse=True,
             )
             selected = bucket_states[:per_bucket]
 
             if bucket_states:
-                # 冠军判据用（伤害, 潜力）：同伤害时保留潜力更高的状态——
-                # 8水晶 10龙/160 线在 alex=9 与 9龙/144 同伤害但潜力更高，
-                # 靠潜力冠军存活到第 10 条龙；6法力 144 线每层伤害最高自然当选。
                 champion = max(
                     bucket_states,
-                    key=lambda state: (state.alex_damage, potential(state), state.mana),
+                    key=lambda state: (
+                        # 冠军判据：短子链覆盖度 + 离散子链数 优先（结构最完整），
+                        # 再按总分（伤害+短子链+离散子链）与法力。
+                        subchain_coverage(state),
+                        state.alex_damage
+                        + subchain_score(state)
+                        + discrete_path_score(state),
+                        state.mana,
+                    ),
                 )
 
                 if champion not in selected:
