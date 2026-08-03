@@ -491,13 +491,25 @@ def parse_effect_block(
     result: HandRebuildResult
 ) -> List[HandCard]:
     cards: List[HandCard] = []
+    i = 0
 
-    for line in effect_lines:
+    while i < len(effect_lines):
+        line = effect_lines[i]
+
         if is_marker_line(line):
+            i += 1
             continue
 
         if is_cost_line(line):
+            i += 1
             continue
+
+        # “效果卡名 + 数字”表示该效果叠加了几层（如鲨鱼之灵双倍战吼叠 2 层）
+        layers = 1
+
+        if i + 1 < len(effect_lines) and is_cost_line(effect_lines[i + 1]):
+            layers = max(1, int(effect_lines[i + 1]))
+            i += 1
 
         cards.append(
             make_card_entry(
@@ -505,9 +517,11 @@ def parse_effect_block(
                 recognized_name=line,
                 card_configs=card_configs,
                 min_common_chars=min_common_chars,
-                result=result
+                result=result,
+                count=layers
             )
         )
+        i += 1
 
     return cards
 
@@ -836,7 +850,7 @@ def format_result(result: HandRebuildResult) -> str:
     lines = []
 
     if result.expected_effect_count is not None or result.current_effect_cards:
-        lines.extend(format_card_lines("当前效果", result.current_effect_cards))
+        lines.extend(format_card_lines("当前效果", result.current_effect_cards, show_count=True))
         lines.append("")
 
     if result.expected_deck_count is not None or result.deck_cards:

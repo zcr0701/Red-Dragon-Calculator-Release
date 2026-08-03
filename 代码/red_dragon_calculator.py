@@ -3717,19 +3717,25 @@ def apply_current_effects_from_rebuild_result(state: GameState, result) -> None:
 
     for effect_entry in effect_entries:
         name = getattr(effect_entry, "name", "")
+        layers = max(1, int(getattr(effect_entry, "count", 1) or 1))
 
         if name == "狐人老千":
-            state.next_combo_discount = max(state.next_combo_discount, 2)
-            state.add_log("初始当前效果：狐人老千，下一张连击牌减2费")
+            amount = 2 * layers
+            state.next_combo_discount = max(state.next_combo_discount, amount)
+            state.add_log(f"初始当前效果：狐人老千×{layers}，下一张连击牌减{amount}费")
         elif name == "伺机待发":
-            state.next_spell_discount = max(state.next_spell_discount, 2)
-            state.add_log("初始当前效果：伺机待发，下一张法术减2费")
+            amount = 2 * layers
+            state.next_spell_discount = max(state.next_spell_discount, amount)
+            state.add_log(f"初始当前效果：伺机待发×{layers}，下一张法术减{amount}费")
         elif name == "斯卡布斯·刀油":
-            state.active_card_discounts.append((2, 2))
-            state.add_log("初始当前效果：斯卡布斯·刀油，接下来两张牌减2费")
+            for _ in range(layers):
+                state.active_card_discounts.append((2, 2))
+
+            state.add_log(f"初始当前效果：斯卡布斯·刀油×{layers}，接下来两张牌各减{2 * layers}费")
         elif name == "锯齿骨刺":
-            state.next_card_discount = max(state.next_card_discount, 2)
-            state.add_log("初始当前效果：锯齿骨刺，下一张牌减2费")
+            amount = 2 * layers
+            state.next_card_discount = max(state.next_card_discount, amount)
+            state.add_log(f"初始当前效果：锯齿骨刺×{layers}，下一张牌减{amount}费")
 
 
 def main() -> int:
