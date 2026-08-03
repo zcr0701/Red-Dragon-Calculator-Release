@@ -1,27 +1,29 @@
 # 炉石红龙贼计算器
 
-本项目以 **Codex 对话**（2026-08-03，Codex 桌面应用会话「理解提供的文件」）中的最终修改版为准迁移，用 git 管理版本和分支。此前曾从 TRAE 对话导出迁移过一次，TRAE 的对话导出保留在 [docs/红龙贼-对话导出.md](docs/红龙贼-对话导出.md) 作为背景参考。
+本项目以 **Codex 对话**（2026-08-03，Codex 桌面应用会话「理解提供的文件」）中的最终修改版为准迁移，用 git 管理版本和分支。此前曾从 TRAE 对话导出迁移过一次，TRAE 的对话导出保留在 [红龙贼-对话导出.md](红龙贼-对话导出.md) 作为背景参考。
 
-迁移依据与改动清单见 [docs/Codex对话-迁移记录.md](docs/Codex对话-迁移记录.md)。
+迁移依据与改动清单见 [Codex对话-迁移记录.md](Codex对话-迁移记录.md)。
 
 ## 项目结构
 
 ```text
 炉石传说/
-├── red_dragon_calculator.py    # 红龙路径计算核心：卡牌定义、状态模型、反向符号链、beam 束搜索
-├── rebuild_hand.py             # OCR 文本 → 手牌/牌库/战场/当前效果 重建逻辑（含手动输入解析）
-├── ocr_region_gui.py           # OCR 图形界面（PyQt5）：截图区域 + 手动输入面板 + 计算入口
-├── ocr_interface.py            # OCR 底层封装（PaddleOCR + mss 截图）
-├── card_config.json            # 卡牌名称修正配置（25 张，含邪恶短刀）
-├── docs/
-│   ├── Codex对话-迁移记录.md    # Codex 对话迁移依据与改动清单（本仓库主依据）
-│   └── 红龙贼-对话导出.md       # 原始 TRAE 对话导出（背景参考）
+├── 代码/
+│   ├── red_dragon_calculator.py    # 红龙路径计算核心：卡牌定义、状态模型、反向符号链、beam 束搜索
+│   ├── rebuild_hand.py             # OCR 文本 → 手牌/牌库/战场/当前效果 重建逻辑（含手动输入解析）
+│   ├── ocr_region_gui.py           # OCR 图形界面（PyQt5）：截图区域 + 手动输入面板 + 计算入口
+│   ├── ocr_interface.py            # OCR 底层封装（PaddleOCR + mss 截图）
+│   └── card_config.json            # 卡牌名称修正配置（25 张，含邪恶短刀）
+├── 说明/
+│   ├── README.md                   # 本文件：项目说明
+│   ├── git使用指南.md              # Git 使用教程（含"提交 vs 上传"说明）
+│   ├── Codex对话-迁移记录.md       # Codex 对话迁移依据与改动清单（本仓库主依据）
+│   └── 红龙贼-对话导出.md          # 原始 TRAE 对话导出（背景参考）
 ├── 参考数据/
 │   ├── 六随红龙公式表(2026.4.22更新).xlsx   # 六随红龙公式表（公式表 sheet）
 │   ├── 红龙贼-牛转牛舞公式.xlsx            # 牛转/牛舞公式（简洁版 + 精修版）
 │   └── 截图/                              # OCR 测试截图
-├── git使用指南.md              # Git 使用教程（含"提交 vs 上传"说明）
-└── README.md
+└── .gitignore
 ```
 
 ## 运行方式
@@ -30,27 +32,27 @@
 
 ```powershell
 # 红龙路径计算：给定手牌，反向符号链搜索可达路径
-python red_dragon_calculator.py --hand "狐人老千,斯卡布斯·刀油,鲨鱼之灵,晦鳞巢母" --search
+python 代码/red_dragon_calculator.py --hand "狐人老千,斯卡布斯·刀油,鲨鱼之灵,晦鳞巢母" --search
 
 # 束搜索模式（默认关闭，需显式加 --beam）
-python red_dragon_calculator.py --hand "..." --search --beam --beam-width 4000
+python 代码/red_dragon_calculator.py --hand "..." --search --beam --beam-width 4000
 
 # 关闭反向搜索时的正向自动挖掘（默认开启；会额外跑一次束搜索兜底）
-python red_dragon_calculator.py --hand "..." --search --no-forward-mine
+python 代码/red_dragon_calculator.py --hand "..." --search --no-forward-mine
 
 # 从 OCR 文本重建手牌（支持 --text / --file）
-python rebuild_hand.py --text "手牌中(9)`n0 狐人老千`n4 鲨鱼之灵"
+python 代码/rebuild_hand.py --text "手牌中(9)`n0 狐人老千`n4 鲨鱼之灵"
 ```
 
-主要参数见 `python red_dragon_calculator.py --help`。
+主要参数见 `python 代码/red_dragon_calculator.py --help`。
 
 ### 图形界面（需要 PyQt5 + PaddleOCR）
 
 ```powershell
-python ocr_region_gui.py
+python 代码/ocr_region_gui.py
 ```
 
-界面支持框选截图区域、选择牛头人酋长剩余卡池（舞动全场 / 幻觉药水 / 生命缚誓者阿莱克丝塔萨）、查看初始状态摘要；顶部「手动输入」按钮可展开手牌栏 / 战场（随从栏）/ 当前效果三个输入区，复用正则规则解析后直接开始计算；「beam模式」复选框默认不勾选。计算结果会写入 `logs/red_dragon_all_paths_时间戳.txt`。
+界面支持框选截图区域、选择牛头人酋长剩余卡池（舞动全场 / 幻觉药水 / 生命缚誓者阿莱克丝塔萨）、查看初始状态摘要；顶部「手动输入」按钮可展开手牌栏 / 战场（随从栏）/ 当前效果三个输入区，复用正则规则解析后直接开始计算；「beam模式」复选框默认不勾选。计算结果会写入 `代码/logs/red_dragon_all_paths_时间戳.txt`。
 
 「自动挖掘」复选框默认勾选：反向符号链搜索到最高目标未证明时，会自动再跑一次束搜索（束宽 1000）发现模板外的新线路，并把找到的路径反推成符号链做反向验证（先正向试探、再反向证明）。追求速度可取消勾选，或用命令行 `--no-forward-mine` 关闭。
 
