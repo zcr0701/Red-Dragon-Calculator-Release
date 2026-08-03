@@ -1835,8 +1835,9 @@ def state_signature(state: GameState) -> Tuple:
             card.original_name,
             card.card_type,
             card.effect_id,
-            safe_cost(card.cost),
-            safe_cost(card.temp_cost),
+            # 费用按“当前费用”归一：原生 1 费与 temp_cost=1 是同一玩法状态，
+            # 分开记录会导致 beam 去重/分桶对等价局面走不同分支（实测 9 龙样例
+            # 一个表示搜到 10龙/160，另一个只到 8龙/128）。
             safe_cost(card.current_cost()),
             card.is_deadly_shadow,
             -1 if card.health is None else card.health,
@@ -1872,8 +1873,6 @@ def state_key_for_dedup(state: GameState) -> Tuple:
             card.original_name,
             card.card_type,
             card.effect_id,
-            safe_cost(card.cost),
-            safe_cost(card.temp_cost),
             safe_cost(card.current_cost()),
             card.is_deadly_shadow,
             -1 if card.health is None else card.health,
