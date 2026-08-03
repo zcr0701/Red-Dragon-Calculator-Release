@@ -3188,6 +3188,72 @@ def build_symbolic_chains(target_alex_count: int) -> List[SymbolicChain]:
                     ),
                 )
 
+    # =====================================================================
+    # 刀油引擎·双舞步龙重铺链（由 beam 搜出的 10龙/160、9龙/144 反推入库）
+    # R1 开局轮：鲨鱼 -> 刀 -> 刀 -> 龙 -> 暗施(龙) -> 龙 -> 暗影步(龙) -> 龙 -> 刀 -> 舞   (+3 龙)
+    # R2 中轮回：鲨鱼 -> 龙 -> 龙 -> 晦 -> 龙 -> 暗施(龙) -> [刀] -> 舞                       (+3 龙)
+    # R3 收尾轮：鲨鱼 -> 晦 -> [刀/龙穿插] -> 龙×N                                            (+N 龙)
+    # 目标 = 3 + 3m + N；殒命暗影在首次舞动后变形为第二张舞动（舞[殒]）。
+    # 关键结构：R1 用暗影步回手红龙续打（比纯复制多 1 龙），R3 先鱼后龙保证每条 16 伤。
+    # =====================================================================
+    if target_alex_count >= 4:
+        alex_a = SymbolicAction(alex)
+        shark_a = SymbolicAction(shark)
+        scabbs_a = SymbolicAction(scabbs)
+        mother_a = SymbolicAction(mother)
+        dance_a = SymbolicAction(dance)
+        shadowcaster_a = SymbolicAction(shadowcaster, target=alex)
+        shadowstep_a = SymbolicAction(shadowstep, target=alex)
+
+        opening_step_round = [
+            shark_a, scabbs_a, scabbs_a, alex_a, shadowcaster_a, alex_a,
+            shadowstep_a, alex_a, scabbs_a, dance_a,
+        ]
+        middle_step_rounds = [
+            [
+                shark_a, alex_a, alex_a, mother_a, alex_a, shadowcaster_a,
+                scabbs_a, dance_a,
+            ],
+            [
+                shark_a, alex_a, alex_a, mother_a, alex_a, shadowcaster_a,
+                dance_a,
+            ],
+        ]
+
+        for middle_variant_index, middle_round in enumerate(middle_step_rounds):
+            for middle_count in range(0, 2):
+                remaining = target_alex_count - 3 - 3 * middle_count
+
+                if remaining < 1 or remaining > 5:
+                    continue
+
+                final_variants = [
+                    [shark_a, mother_a] + [alex_a] * remaining,
+                    [shark_a, mother_a, scabbs_a] + [alex_a] * remaining,
+                ]
+
+                if remaining >= 2:
+                    final_variants.append(
+                        [shark_a, mother_a, alex_a, alex_a, scabbs_a, alex_a]
+                        + [alex_a] * (remaining - 2)
+                    )
+
+                for final_index, final_round in enumerate(final_variants):
+                    add_chain(
+                        name=f"刀油引擎双舞步龙重铺链-{middle_count}中轮-尾{remaining}-v{middle_variant_index + 1}f{final_index + 1}",
+                        reasoning=[
+                            f"目标 {target_alex_count} 龙：鲨鱼+双刀油叠减费压低红龙，暗施复制红龙后",
+                            "暗影步回手红龙再打出（R1 多续一条）；舞动全场全回收整个引擎，殒命变形第二张舞动；",
+                            "中轮回鲨龙龙晦龙暗施(龙)再铺，收尾轮先鲨后晦再连出复制龙（先鱼后龙=每条 16 伤）。",
+                            "本家族由 beam 搜出的 10龙/160、9龙/144 线路反推为符号链，双向引擎可直接验证。",
+                        ],
+                        actions=(
+                            list(opening_step_round)
+                            + list(middle_round) * middle_count
+                            + final_round
+                        ),
+                    )
+
     chains.sort(key=lambda chain: (
         0 if chain.name.startswith("公式") else 1 if chain.name.startswith("基础") else 2,
         len(chain.actions),
@@ -3279,6 +3345,44 @@ def build_discrete_subchain_library() -> List[DiscreteSubchain]:
                 SymbolicAction(shadowstep, target=alex),
             ),
             reasoning="两条暗影步（其中一条可为暗影步[殒]）分别回手红龙再打出。",
+        ),
+        DiscreteSubchain(
+            name="步龙回手续龙（3+龙）",
+            min_alex_count=3,
+            required=(
+                SymbolicAction(shadowstep, target=alex),
+                SymbolicAction(alex),
+            ),
+            reasoning="暗影步回手场上的红龙再打出：同一条龙打两次，多续一条龙。",
+        ),
+        DiscreteSubchain(
+            name="鱼先于龙骨架（伤害关键）",
+            min_alex_count=3,
+            required=(
+                SymbolicAction(shark),
+                SymbolicAction(alex),
+            ),
+            reasoning="先放鲨鱼再出红龙：战吼双触发=每条龙 16 伤（9龙144/10龙160 的关键）。",
+        ),
+        DiscreteSubchain(
+            name="鱼晦龙收尾轮",
+            min_alex_count=5,
+            required=(
+                SymbolicAction(shark),
+                SymbolicAction(mother),
+                SymbolicAction(alex),
+            ),
+            reasoning="收尾轮先鲨鱼后晦鳞回费再连出复制龙：第三轮连出 3-5 条的结构骨架。",
+        ),
+        DiscreteSubchain(
+            name="双舞+步龙重铺（7+龙）",
+            min_alex_count=7,
+            required=(
+                SymbolicAction(dance),
+                SymbolicAction(shadowstep, target=alex),
+                SymbolicAction(dance),
+            ),
+            reasoning="两次舞动全回收（第二张为舞动[殒]）之间夹暗影步回龙：10龙/160 线路的骨架。",
         ),
     ]
 
