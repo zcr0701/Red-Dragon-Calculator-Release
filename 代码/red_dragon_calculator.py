@@ -4776,9 +4776,10 @@ def reverse_symbolic_prove_paths(
     found_callback: Optional[Callable[[List[GameState], int], None]] = None,
     prune_stats: Optional[Dict[str, int]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
-    forward_mining: bool = True,
+    forward_mining: bool = False,
     forward_beam_width: int = 1000,
-    use_bidirectional: bool = True
+    use_bidirectional: bool = True,
+    forward_depth: int = 5
 ) -> List[GameState]:
     search_initial_state = initial_state.clone()
     search_initial_state.record_log = False
@@ -4907,6 +4908,7 @@ def reverse_symbolic_prove_paths(
             prune_stats=prune_stats,
             should_stop=should_stop,
             step_memo=step_memo,
+            forward_depth=forward_depth,
         )
 
         for bidir_state in sort_path_states(bidir_results):
@@ -5072,9 +5074,10 @@ def enumerate_play_paths(
     found_callback: Optional[Callable[[List[GameState], int], None]] = None,
     prune_stats: Optional[Dict[str, int]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
-    forward_mining: bool = True,
+    forward_mining: bool = False,
     forward_beam_width: int = 1000,
-    use_bidirectional: bool = True
+    use_bidirectional: bool = True,
+    forward_depth: int = 5
 ) -> List[GameState]:
     return reverse_symbolic_prove_paths(
         initial_state=initial_state,
@@ -5088,7 +5091,8 @@ def enumerate_play_paths(
         should_stop=should_stop,
         forward_mining=forward_mining,
         forward_beam_width=forward_beam_width,
-        use_bidirectional=use_bidirectional
+        use_bidirectional=use_bidirectional,
+        forward_depth=forward_depth,
     )
 
 
@@ -5098,7 +5102,7 @@ def beam_search_paths(
     max_paths: int = 500000,
     max_alex_count: int = 10,
     min_alex_count: int = 1,
-    beam_width: int = 2000,
+    beam_width: int = 3000,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
     found_callback: Optional[Callable[[List[GameState], int], None]] = None,
     prune_stats: Optional[Dict[str, int]] = None,
@@ -5114,9 +5118,40 @@ def beam_search_paths(
     min_alex_count = max(1, min(min_alex_count, max_alex_count))
 
     def potential(state: GameState) -> int:
-        dragons = sum(1 for card in state.hand if "dragon" in card.tags)
-        dragons += sum(1 for card in state.board if "dragon" in card.tags)
-        return dragons
+        """未来潜力（用于束内排序）：红龙 + 复制/回收/发现/叠费潜力。
+
+        纯“当前手牌/场面龙数”会让舞动全回收分支在前期龙数低时被束挤掉
+        （用户 9 龙样例实测：束宽 2000 只搜到 8）。这里加入：
+          - 暗施复制潜力（鲨鱼翻倍）；
+          - 回收潜力（舞动/药水/暗影步，殒命暗影可变形为第二张法术）；
+          - 牛头人发现潜力；刀油叠费引擎潜力。
+        """
+        hand_dragons = count_hand_dragons(state)
+        board_dragons = count_board_cards(state, "生命的缚誓者阿莱克丝塔萨")
+        dragons = hand_dragons + board_dragons
+        has_shark = state.has_shark()
+
+        shadowcasters = count_hand_cards(state, "暗影施法者")
+
+        if dragons > 0:
+            dragons += shadowcasters * (2 if has_shark else 1)
+
+        recycle = count_hand_cards(state, "舞动全场（ft.迦罗娜）")
+        recycle += count_hand_cards(state, "幻觉药水")
+        recycle += count_hand_cards(state, "暗影步")
+        deadly = any(card.is_deadly_shadow for card in state.hand)
+        recycle += 1 if deadly else 0
+
+        if dragons > 0:
+            dragons += recycle * max(1, board_dragons)
+
+        dragons += count_hand_cards(state, "乐队经理精英牛头人酋长")
+        oil_value = sum(
+            discount_amount * remaining_count
+            for remaining_count, discount_amount in state.active_card_discounts
+            if remaining_count > 0 and discount_amount > 0
+        )
+        return dragons * 100 + oil_value
 
     best: Dict[int, GameState] = {start.alex_play_count: start.clone()}
     level = [start]
@@ -5160,11 +5195,25 @@ def beam_search_paths(
             break
 
         seen |= next_seen
-        next_level.sort(
-            key=lambda state: (state.alex_play_count, state.mana, potential(state)),
-            reverse=True,
-        )
-        level = next_level[:beam_width]
+        # 按“当前龙数分桶”保留各桶前若干状态，避免高龙数分支挤掉
+        # 正在走“舞动全回收”的低龙数高潜力分支（9 龙样例的关键）。
+        buckets: Dict[int, List[GameState]] = {}
+
+        for state in next_level:
+            buckets.setdefault(state.alex_play_count, []).append(state)
+
+        per_bucket = max(1, beam_width // max(1, len(buckets)))
+        level = []
+
+        for bucket_key in sorted(buckets, reverse=True):
+            bucket_states = sorted(
+                buckets[bucket_key],
+                key=lambda state: (potential(state), state.mana),
+                reverse=True,
+            )
+            level.extend(bucket_states[:per_bucket])
+
+        level = level[:beam_width]
 
         if prune_stats is not None:
             prune_stats["束搜索深度"] = depth
@@ -5445,14 +5494,15 @@ def main() -> int:
     parser.add_argument("--play", action="append", default=[], help="按名称依次使用卡牌，可重复传入")
     parser.add_argument("--search", action="store_true", help="执行符号化链条证明")
     parser.add_argument("--beam", action="store_true", help="使用正向束搜索（默认关闭，使用反向符号链证明）")
-    parser.add_argument("--beam-width", type=int, default=2000, help="束搜索束宽，默认2000（计算时间长，默认不勾选）")
+    parser.add_argument("--beam-width", type=int, default=3000, help="束搜索束宽，默认3000（计算时间长，默认不勾选）")
     parser.add_argument("--max-depth", type=int, default=100, help="符号链条最大步数")
     parser.add_argument("--max-paths", type=int, default=500000)
     parser.add_argument("--max-alex-count", type=int, default=10)
     parser.add_argument("--min-alex-count", type=int, default=1)
-    parser.add_argument("--no-forward-mine", action="store_true", help="关闭正向束搜索自动挖掘（默认开启）")
-    parser.add_argument("--forward-mine-width", type=int, default=2000, help="自动挖掘束搜索束宽，默认2000")
+    parser.add_argument("--forward-mine", action="store_true", help="启用束搜索自动挖掘（默认关闭；自动挖掘已从默认流程移除，属实验验算）")
+    parser.add_argument("--forward-mine-width", type=int, default=3000, help="自动挖掘束搜索束宽，默认3000")
     parser.add_argument("--no-bidirectional", action="store_true", help="关闭双向符号链拼接证明（默认开启）")
+    parser.add_argument("--operator-depth", type=int, default=5, help="双向符号链前向算子深度（个位数展开），默认5")
     parser.add_argument("--show-limit", type=int, default=200)
     parser.add_argument("--json", action="store_true", help="输出 JSON")
     parser.add_argument("--sync-archive", action="store_true", help="把局面存档提交并推送到云端（GitHub 仓库）")
@@ -5500,9 +5550,10 @@ def main() -> int:
                 max_paths=args.max_paths,
                 max_alex_count=args.max_alex_count,
                 min_alex_count=args.min_alex_count,
-                forward_mining=not args.no_forward_mine,
+                forward_mining=args.forward_mine,
                 forward_beam_width=args.forward_mine_width,
-                use_bidirectional=not args.no_bidirectional
+                use_bidirectional=not args.no_bidirectional,
+                forward_depth=args.operator_depth
             )
 
         archive.remember_situation(

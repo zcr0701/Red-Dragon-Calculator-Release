@@ -256,7 +256,7 @@ class CalculationWorker(QThread):
     result_signal = pyqtSignal(str)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, rebuild_result, mana_crystals, mana, max_depth=100, max_paths=500000, max_alex_count=10, min_alex_count=1, deadly_shadow_hand_indexes=None, etc_band_remaining=None, beam_mode=False, forward_mining=True, forward_beam_width=1000):
+    def __init__(self, rebuild_result, mana_crystals, mana, max_depth=100, max_paths=500000, max_alex_count=10, min_alex_count=1, deadly_shadow_hand_indexes=None, etc_band_remaining=None, beam_mode=False, operator_depth=5, beam_width=3000, beam_depth=20):
         super().__init__()
         self.rebuild_result = rebuild_result
         self.mana_crystals = mana_crystals
@@ -268,8 +268,9 @@ class CalculationWorker(QThread):
         self.deadly_shadow_hand_indexes = deadly_shadow_hand_indexes or []
         self.etc_band_remaining = list(etc_band_remaining) if etc_band_remaining is not None else ETC_BAND[:]
         self.beam_mode = bool(beam_mode)
-        self.forward_mining = bool(forward_mining)
-        self.forward_beam_width = int(forward_beam_width)
+        self.operator_depth = int(operator_depth)
+        self.beam_width = int(beam_width)
+        self.beam_depth = int(beam_depth)
         self.stats_title = "束搜索统计：" if self.beam_mode else "符号链条证明统计："
 
     def format_initial_state_note(self, state):
@@ -285,8 +286,6 @@ class CalculationWorker(QThread):
 
         if self.beam_mode:
             search_mode_text = "beam束搜索"
-        elif self.forward_mining:
-            search_mode_text = "双向符号链证明（含自动挖掘）"
         else:
             search_mode_text = "双向符号链证明"
         lines = [
@@ -441,11 +440,11 @@ class CalculationWorker(QThread):
             if self.beam_mode:
                 states = beam_search_paths(
                     initial_state=state,
-                    max_depth=self.max_depth,
+                    max_depth=self.beam_depth,
                     max_paths=self.max_paths,
                     max_alex_count=self.max_alex_count,
                     min_alex_count=self.min_alex_count,
-                    beam_width=2000,
+                    beam_width=self.beam_width,
                     progress_callback=on_progress,
                     found_callback=on_found,
                     prune_stats=prune_stats,
@@ -461,7 +460,9 @@ class CalculationWorker(QThread):
                     progress_callback=on_progress,
                     found_callback=on_found,
                     prune_stats=prune_stats,
-                    should_stop=self.isInterruptionRequested
+                    should_stop=self.isInterruptionRequested,
+                    forward_mining=False,
+                    forward_depth=self.operator_depth,
                 )
 
             remember_situation(
@@ -618,6 +619,9 @@ class MainWindow(QWidget):
         self.manaInput.setFixedWidth(60)
         self.maxDepthInput = QLineEdit("100")
         self.maxDepthInput.setFixedWidth(70)
+        self.operatorDepthInput = QLineEdit("5")
+        self.operatorDepthInput.setFixedWidth(50)
+        self.operatorDepthInput.setToolTip("双向符号链前向算子深度（个位数展开，默认5）。长距离结构由子链/引理组合完成。")
         self.maxPathsInput = QLineEdit("500000")
         self.maxPathsInput.setFixedWidth(90)
         self.maxAlexInput = QLineEdit("10")
@@ -632,6 +636,8 @@ class MainWindow(QWidget):
         mana_layout.addWidget(self.manaInput)
         mana_layout.addWidget(QLabel("链条步数上限："))
         mana_layout.addWidget(self.maxDepthInput)
+        mana_layout.addWidget(QLabel("双向算子深度："))
+        mana_layout.addWidget(self.operatorDepthInput)
         mana_layout.addWidget(QLabel("路径上限："))
         mana_layout.addWidget(self.maxPathsInput)
         mana_layout.addWidget(QLabel("搜索龙数上限："))
@@ -639,15 +645,22 @@ class MainWindow(QWidget):
         mana_layout.addWidget(QLabel("搜索龙数下限："))
         mana_layout.addWidget(self.minAlexInput)
         self.beamModeCheck = QCheckBox("beam模式")
-        self.beamModeCheck.setToolTip("正向束搜索（默认关闭）。勾选后用束搜索直接枚举真实后继状态，可用于验证符号链未覆盖的线路。")
+        self.beamModeCheck.setToolTip("beam束搜索（默认关闭，计算时间长）。勾选后用束搜索直接枚举真实后继状态，可自行填束宽与算子深度。")
         mana_layout.addWidget(self.beamModeCheck)
-        self.forwardMineCheck = QCheckBox("自动挖掘")
-        self.forwardMineCheck.setChecked(True)
-        self.forwardMineCheck.setToolTip(
-            "双向符号链搜索时自动用束搜索发现模板外的新线路，再反推成符号链证明（默认开启）。"
-            "束宽不足会自动升级（2000→2500→5000）直到摸到搜索下限；追求速度可取消勾选。"
-        )
-        mana_layout.addWidget(self.forwardMineCheck)
+        self.beamWidthInput = QLineEdit("3000")
+        self.beamWidthInput.setFixedWidth(60)
+        self.beamWidthInput.setToolTip("beam束搜索束宽，默认3000。")
+        self.beamDepthInput = QLineEdit("20")
+        self.beamDepthInput.setFixedWidth(50)
+        self.beamDepthInput.setToolTip("beam束搜索算子深度（展开步数上限），默认20。")
+        self.beamWidthInput.setEnabled(False)
+        self.beamDepthInput.setEnabled(False)
+        self.beamModeCheck.toggled.connect(self.beamWidthInput.setEnabled)
+        self.beamModeCheck.toggled.connect(self.beamDepthInput.setEnabled)
+        mana_layout.addWidget(QLabel("beam束宽："))
+        mana_layout.addWidget(self.beamWidthInput)
+        mana_layout.addWidget(QLabel("beam深度："))
+        mana_layout.addWidget(self.beamDepthInput)
         mana_layout.addStretch()
 
         self.deadlyShadowCheck = QCheckBox("标记殒命暗影")
@@ -1001,6 +1014,27 @@ class MainWindow(QWidget):
             return
 
         try:
+            operator_depth = int(self.operatorDepthInput.text().strip())
+        except ValueError:
+            QMessageBox.warning(self, "提示", "双向算子深度必须是数字。")
+            return
+
+        if operator_depth <= 0:
+            QMessageBox.warning(self, "提示", "双向算子深度必须大于 0。")
+            return
+
+        try:
+            beam_width = int(self.beamWidthInput.text().strip())
+            beam_depth = int(self.beamDepthInput.text().strip())
+        except ValueError:
+            QMessageBox.warning(self, "提示", "beam束宽/深度必须是数字。")
+            return
+
+        if beam_width <= 0 or beam_depth <= 0:
+            QMessageBox.warning(self, "提示", "beam束宽/深度必须大于 0。")
+            return
+
+        try:
             max_paths = int(self.maxPathsInput.text().strip())
         except ValueError:
             QMessageBox.warning(self, "提示", "路径上限必须是数字。")
@@ -1055,8 +1089,9 @@ class MainWindow(QWidget):
             deadly_shadow_hand_indexes=deadly_shadow_hand_indexes,
             etc_band_remaining=self.get_etc_band_remaining(),
             beam_mode=self.beamModeCheck.isChecked(),
-            forward_mining=self.forwardMineCheck.isChecked(),
-            forward_beam_width=1000
+            operator_depth=operator_depth,
+            beam_width=beam_width,
+            beam_depth=beam_depth
         )
         self.calc_worker.progress_signal.connect(self.on_calculation_progress)
         self.calc_worker.partial_result_signal.connect(self.on_calculation_partial)
