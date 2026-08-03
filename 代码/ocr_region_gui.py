@@ -36,6 +36,7 @@ from red_dragon_calculator import (
     format_paths,
     state_from_rebuild_result,
 )
+from archive import format_cached_paths, lookup_situation, remember_situation
 
 
 SECTION_NAME_RE = re.compile(r"^\s*(当前效果|牌库中|手牌中|战场|其他)\s*[（(]?\s*\d*\s*[）)]?\s*$")
@@ -407,6 +408,16 @@ class CalculationWorker(QThread):
                 etc_band_remaining=self.etc_band_remaining
             )
 
+            cached = lookup_situation(state)
+
+            if cached:
+                self.result_signal.emit(
+                    self.format_initial_state_note(state)
+                    + format_cached_paths(cached)
+                    + "\n\n（该局面已在存档中，直接输出缓存结果，未重新计算）"
+                )
+                return
+
             def on_progress(done_count, stack_count, pruned_count=0):
                 if self.beam_mode:
                     self.progress_signal.emit(
@@ -438,9 +449,7 @@ class CalculationWorker(QThread):
                     progress_callback=on_progress,
                     found_callback=on_found,
                     prune_stats=prune_stats,
-                    should_stop=self.isInterruptionRequested,
-                    forward_mining=self.forward_mining,
-                    forward_beam_width=self.forward_beam_width
+                    should_stop=self.isInterruptionRequested
                 )
             else:
                 states = enumerate_play_paths(
@@ -454,6 +463,18 @@ class CalculationWorker(QThread):
                     prune_stats=prune_stats,
                     should_stop=self.isInterruptionRequested
                 )
+
+            remember_situation(
+                state,
+                states,
+                params={
+                    "搜索方式": "beam束搜索" if self.beam_mode else "反向符号链证明",
+                    "搜索龙数上限": self.max_alex_count,
+                    "搜索龙数下限": self.min_alex_count,
+                    "路径上限": self.max_paths,
+                    "链条步数上限": self.max_depth,
+                },
+            )
             limit_note = ""
 
             if len(states) >= self.max_paths:

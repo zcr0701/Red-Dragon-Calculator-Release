@@ -6,6 +6,8 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
+import archive
+
 
 MAX_HAND_SIZE = 10
 MAX_BOARD_SIZE = 7
@@ -3528,6 +3530,183 @@ def generate_alex_tails(
     return list(tails.values())
 
 
+def _sim_apply_template_action(sim: _TailSim, action: SymbolicAction) -> bool:
+    """把模板里的任意符号动作应用到一个抽象推演器上，用于计算子链的起始要求。"""
+    name = action.name
+
+    if name == ALEX_TAIL_NAME:
+        sim.play_minion(ALEX_TAIL_NAME)
+        sim.alex_played += 1
+        return True
+
+    if name == SHADOWCASTER_TAIL_NAME and action.target == ALEX_TAIL_NAME:
+        sim.board_need(ALEX_TAIL_NAME)
+        sim.play_minion(SHADOWCASTER_TAIL_NAME)
+        copies = 2 if sim.board.get(SHARK_TAIL_NAME, 0) > 0 else 1
+        sim.add_hand(ALEX_TAIL_NAME, copies)
+        return True
+
+    if name == SHADOWSTEP_TAIL_NAME and action.target == ALEX_TAIL_NAME:
+        sim.board_need(ALEX_TAIL_NAME)
+        sim.play_spell(SHADOWSTEP_TAIL_NAME)
+        sim.remove_board(ALEX_TAIL_NAME)
+        sim.add_hand(ALEX_TAIL_NAME)
+        return True
+
+    if name == DANCE_TAIL_NAME:
+        sim.play_spell(DANCE_TAIL_NAME)
+
+        if sim.board.get(ALEX_TAIL_NAME, 0) > 0:
+            sim.remove_board(ALEX_TAIL_NAME)
+            sim.add_hand(ALEX_TAIL_NAME)
+
+        return True
+
+    if name == POTION_TAIL_NAME:
+        sim.play_spell(POTION_TAIL_NAME)
+
+        if sim.board.get(ALEX_TAIL_NAME, 0) > 0:
+            sim.add_hand(ALEX_TAIL_NAME)
+
+        return True
+
+    if name == ETC_TAIL_NAME:
+        choices = tuple(action.choices)
+
+        if choices:
+            sim.board_need(SHARK_TAIL_NAME)
+            sim.play_minion(ETC_TAIL_NAME)
+            sim.band_req.update(choices)
+
+            for choice in choices:
+                sim.add_hand(choice)
+
+            return True
+
+        sim.play_minion(ETC_TAIL_NAME)
+        return True
+
+    if name == PREP_TAIL_NAME:
+        sim.play_spell(PREP_TAIL_NAME)
+        return True
+
+    if name == BONE_TAIL_NAME:
+        sim.play_spell(BONE_TAIL_NAME)
+        sim.any_friendly_minion = True
+        return True
+
+    if name == SHARK_TAIL_NAME:
+        sim.play_minion(SHARK_TAIL_NAME)
+        return True
+
+    card_def = CARD_DATABASE.get(name)
+
+    if card_def is None:
+        return False
+
+    if card_def.card_type == "minion":
+        sim.play_minion(name)
+    else:
+        sim.play_spell(name)
+
+    return True
+
+
+def build_template_subchain_library(max_gain: int = 6) -> Tuple[List[AlexTail], List[AlexTail]]:
+    """把手工模板拆成子链（起手段 + 尾段），供双向引擎快速构建链条。
+
+    拆分规则：模板动作在“第一张红龙”处切开——
+      - 前半段 = 起手/资源段（0 龙）；
+      - 后半段 = 红龙产出尾段（含 N 龙）。
+    每段都用抽象推演器算出“起始必须满足的手牌/场面/卡池要求”。
+    示例：鱼狐刀暗(刀)牛 = 起手段；鱼刀刀龙 = 尾段；
+          鱼狐刀牛(舞龙)晦步(刀)刀暗刀 = 起手段。
+    """
+    setup_chains: Dict[Tuple, AlexTail] = {}
+    tail_chains: Dict[Tuple, AlexTail] = {}
+    setup_index = [0]
+    tail_index = [0]
+
+    for target in range(1, max_gain + 1):
+        for chain in build_symbolic_chains(target):
+            first_alex_index = None
+
+            for index, action in enumerate(chain.actions):
+                if action.name == ALEX_TAIL_NAME:
+                    first_alex_index = index
+                    break
+
+            if first_alex_index is None:
+                continue
+
+            setup_actions = chain.actions[:first_alex_index]
+            tail_actions = chain.actions[first_alex_index:]
+
+            if setup_actions:
+                sim = _TailSim()
+
+                if all(_sim_apply_template_action(sim, action) for action in setup_actions):
+                    setup_index[0] += 1
+                    key = tuple(
+                        (action.name, action.target, action.choices)
+                        for action in setup_actions
+                    )
+                    setup_chains.setdefault(
+                        key,
+                        AlexTail(
+                            name=f"模板起手段-{setup_index[0]}",
+                            actions=setup_actions,
+                            gain=0,
+                            hand_req={
+                                name: count
+                                for name, count in sim.hand_req.items()
+                                if count > 0
+                            },
+                            board_req={
+                                name: count
+                                for name, count in sim.board_req.items()
+                                if count > 0
+                            },
+                            band_req=tuple(sorted(sim.band_req)),
+                            any_friendly_minion=sim.any_friendly_minion,
+                        ),
+                    )
+
+            sim = _TailSim()
+
+            if all(_sim_apply_template_action(sim, action) for action in tail_actions):
+                tail_index[0] += 1
+                key = (
+                    tuple(
+                        (action.name, action.target, action.choices)
+                        for action in tail_actions
+                    ),
+                    sim.alex_played,
+                )
+                tail_chains.setdefault(
+                    key,
+                    AlexTail(
+                        name=f"模板尾段-{tail_index[0]}",
+                        actions=tail_actions,
+                        gain=sim.alex_played,
+                        hand_req={
+                            name: count
+                            for name, count in sim.hand_req.items()
+                            if count > 0
+                        },
+                        board_req={
+                            name: count
+                            for name, count in sim.board_req.items()
+                            if count > 0
+                        },
+                        band_req=tuple(sorted(sim.band_req)),
+                        any_friendly_minion=sim.any_friendly_minion,
+                    ),
+                )
+
+    return list(setup_chains.values()), list(tail_chains.values())
+
+
 def tail_meets_state(state: GameState, tail: AlexTail) -> bool:
     """检查前向状态是否满足反向尾链的起始资源要求。"""
     hand_counts = Counter(card.name for card in state.hand)
@@ -3641,14 +3820,35 @@ def bidirectional_symbolic_prove_paths(
         prune_stats["双向前向探索状态数"] = len(frontier)
         prune_stats["双向拼接证明"] = "反向尾链生成中"
 
-    tails = generate_alex_tails(max_gain=min(max_alex_count, 6))
+    generated_tails = generate_alex_tails(max_gain=min(max_alex_count, 6))
+    setup_subchains, template_tails = build_template_subchain_library(
+        max_gain=min(max_alex_count, 6)
+    )
+    tails = generated_tails + [
+        tail for tail in template_tails if tail.gain > 0
+    ]
+    seen_tail_keys = set()
+    unique_tails: List[AlexTail] = []
+
+    for tail in tails:
+        key = tuple((action.name, action.target, action.choices) for action in tail.actions)
+
+        if key in seen_tail_keys:
+            continue
+
+        seen_tail_keys.add(key)
+        unique_tails.append(tail)
+
+    tails = unique_tails
     tails_by_gain: Dict[int, List[AlexTail]] = {}
 
     for tail in tails:
         tails_by_gain.setdefault(tail.gain, []).append(tail)
 
     if prune_stats is not None:
-        prune_stats["双向生成尾链数"] = len(tails)
+        prune_stats["双向生成尾链数"] = len(generated_tails)
+        prune_stats["模板子链数（起手+尾段）"] = len(setup_subchains) + len(template_tails)
+        prune_stats["双向拼接候选尾链数"] = len(tails)
         prune_stats["双向拼接证明"] = "拼接验证中"
 
     all_proved: List[GameState] = []
@@ -4421,8 +4621,14 @@ def main() -> int:
     parser.add_argument("--no-bidirectional", action="store_true", help="关闭双向符号链拼接证明（默认开启）")
     parser.add_argument("--show-limit", type=int, default=200)
     parser.add_argument("--json", action="store_true", help="输出 JSON")
+    parser.add_argument("--sync-archive", action="store_true", help="把局面存档提交并推送到云端（GitHub 仓库）")
 
     args = parser.parse_args()
+
+    if args.sync_archive:
+        print(archive.sync_archive_to_cloud())
+        return 0
+
     parsed_deck_names = parse_names(args.deck)
     state = create_state(
         deck_names=parsed_deck_names if args.deck.strip() else None,
@@ -4435,6 +4641,16 @@ def main() -> int:
         play_card_by_name(state, card_name)
 
     if args.search:
+        cached = archive.lookup_situation(state)
+
+        if cached:
+            if args.json:
+                print(json.dumps(cached, ensure_ascii=False, indent=2))
+            else:
+                print(archive.format_cached_paths(cached))
+
+            return 0
+
         if args.beam:
             states = beam_search_paths(
                 initial_state=state,
@@ -4455,6 +4671,18 @@ def main() -> int:
                 forward_beam_width=args.forward_mine_width,
                 use_bidirectional=not args.no_bidirectional
             )
+
+        archive.remember_situation(
+            state,
+            states,
+            params={
+                "搜索方式": "beam束搜索" if args.beam else "反向符号链证明",
+                "搜索龙数上限": args.max_alex_count,
+                "搜索龙数下限": args.min_alex_count,
+                "路径上限": args.max_paths,
+                "链条步数上限": args.max_depth,
+            },
+        )
 
         if args.json:
             print(json.dumps([state_summary(item) for item in states], ensure_ascii=False, indent=2))
