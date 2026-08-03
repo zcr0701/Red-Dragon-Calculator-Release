@@ -1,7 +1,6 @@
 import argparse
 import copy
 import heapq
-import itertools
 import json
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
@@ -86,6 +85,7 @@ class GameState:
     last_spell_original_name: Optional[str] = None
     burned_cards: int = 0
     alex_play_count: int = 0
+    alex_damage: int = 0
     etc_band_remaining: List[str] = field(default_factory=list)
     path: List[str] = field(default_factory=list)
     log: List[str] = field(default_factory=list)
@@ -338,6 +338,13 @@ CARD_DATABASE: Dict[str, CardDef] = {
         effect_id="blackwater_cutlass",
         tags=["tradeable"]
     ),
+    "邪恶短刀": CardDef(
+        name="邪恶短刀",
+        cost=1,
+        card_type="weapon",
+        description="1费1/2武器，无效果。",
+        effect_id=""
+    ),
     "垂钓时光": CardDef(
         name="垂钓时光",
         cost=1,
@@ -505,44 +512,10 @@ CORE_CARD_NAMES = {
     "殒命暗影",
 }
 
-BREAKDANCE_RETURN_PRIORITY = {
-    "生命的缚誓者阿莱克丝塔萨": 0,
-    "暗影施法者": 1,
-    "斯卡布斯·刀油": 2,
-    "鲨鱼之灵": 3,
-    "晦鳞巢母": 4,
-    "狐人老千": 5,
-    "乐队经理精英牛头人酋长": 6,
-}
-
-
 def ordered_breakdance_returning(minions: List[CardInstance]) -> List[CardInstance]:
-    indexed_minions = list(enumerate(minions))
-    seen_by_name: Dict[str, int] = {}
-    weighted_minions = []
-
-    for original_index, minion in indexed_minions:
-        duplicate_index = seen_by_name.get(minion.name, 0)
-        seen_by_name[minion.name] = duplicate_index + 1
-        duplicate_penalty = 0
-
-        if minion.name == "斯卡布斯·刀油" and duplicate_index >= 2:
-            duplicate_penalty = 20
-        elif duplicate_index >= 1:
-            duplicate_penalty = 8
-
-        weighted_minions.append((original_index, duplicate_penalty, minion))
-
-    return [
-        minion
-        for _, _, minion in sorted(
-            weighted_minions,
-            key=lambda item: (
-                BREAKDANCE_RETURN_PRIORITY.get(item[2].name, 100) + item[1],
-                item[0],
-            )
-        )
-    ]
+    # 真炉石规则：群体回手按随从进场顺序结算（先上场的先回手）。
+    # 场面数组从左到右即进场顺序，因此保持原顺序即可。
+    return list(minions)
 
 
 HIGH_COST_DISCOUNT_TARGETS = {
@@ -717,27 +690,6 @@ def make_one_one_copy(card: CardInstance) -> CardInstance:
     copied.temp_cost = 1
     copied.health = 1
     return copied
-
-
-def board_return_priority(card: CardInstance) -> int:
-    priority = {
-        "生命的缚誓者阿莱克丝塔萨": 100,
-        "暗影施法者": 95,
-        "斯卡布斯·刀油": 90,
-        "鲨鱼之灵": 85,
-        "狐人老千": 70,
-        "晦鳞巢母": 60,
-        "乐队经理精英牛头人酋长": 50,
-    }
-    return priority.get(card.name, 0)
-
-
-def ordered_board_cards_for_return(cards: List[CardInstance]) -> List[CardInstance]:
-    return sorted(
-        cards,
-        key=lambda card: board_return_priority(card),
-        reverse=True
-    )
 
 
 def is_spell_like(card: CardInstance) -> bool:
@@ -930,6 +882,12 @@ def minion_trigger_multiplier(state: GameState, card: CardInstance) -> int:
     return 1
 
 
+def alex_damage_amount(state: GameState) -> int:
+    # 红龙战吼对敌方角色造成8点伤害；鲨鱼之灵使战吼触发两次。
+    multiplier = 2 if state.has_shark() else 1
+    return 8 * multiplier
+
+
 def transform_deadly_shadows(state: GameState, spell_card: CardInstance):
     if spell_card.original_name == "殒命暗影":
         return
@@ -1011,6 +969,12 @@ def play_card(
         state.secret_zone.add(card)
     elif card.card_type == "weapon":
         state.weapon = card
+
+    if card.name == "生命的缚誓者阿莱克丝塔萨":
+        state.alex_play_count += 1
+
+        if enemy_target:
+            state.alex_damage += alex_damage_amount(state)
 
     apply_card_effect(
         state=state,
@@ -1217,43 +1181,31 @@ def effect_breakdance(state: GameState, **kwargs):
 def breakdance_search_branches(state: GameState) -> List[GameState]:
     returning = state.board_zone.cards[:]
     free_slots = max(0, MAX_HAND_SIZE - len(state.hand_zone.cards))
+    new_state = state.clone()
+    new_returning = new_state.board_zone.cards[:]
+    new_state.board_zone.cards.clear()
 
     if len(returning) <= free_slots:
-        new_state = state.clone()
-        ordered = ordered_breakdance_returning(new_state.board_zone.cards[:])
-        new_state.board_zone.cards.clear()
-
-        for minion in ordered:
+        # 手牌放得下：按进场顺序全部回手，费用变为1。
+        for minion in ordered_breakdance_returning(new_returning):
             minion.temp_cost = 1
             add_card_to_hand_or_burn(new_state, minion)
 
         return [new_state]
 
-    keep_count = free_slots
-    branches: List[Tuple[int, int, GameState]] = []
+    # 真炉石规则：手牌满时按进场顺序回手，先进场的优先占位，后进场的被消灭。
+    kept = new_returning[:free_slots]
+    burned = new_returning[free_slots:]
 
-    for sequence, keep_indexes in enumerate(itertools.combinations(range(len(returning)), keep_count)):
-        keep_set = set(keep_indexes)
-        new_state = state.clone()
-        new_returning = new_state.board_zone.cards[:]
-        kept = [new_returning[index] for index in keep_indexes]
-        burned = [minion for index, minion in enumerate(new_returning) if index not in keep_set]
-        new_state.board_zone.cards.clear()
+    for minion in ordered_breakdance_returning(kept):
+        minion.temp_cost = 1
+        add_card_to_hand_or_burn(new_state, minion)
 
-        for minion in ordered_breakdance_returning(kept):
-            minion.temp_cost = 1
-            add_card_to_hand_or_burn(new_state, minion)
+    for minion in burned:
+        new_state.burned_cards += 1
+        new_state.add_log(f"爆牌：{minion.name}")
 
-        for minion in burned:
-            new_state.burned_cards += 1
-            new_state.add_log(f"爆牌：{minion.name}")
-
-        score = sum(120 - BREAKDANCE_RETURN_PRIORITY.get(minion.name, 100) for minion in kept)
-        score += len({minion.name for minion in kept}) * 15
-        branches.append((-score, sequence, new_state))
-
-    branches.sort(key=lambda item: (item[0], item[1]))
-    return [branch for _, _, branch in branches[:80]]
+    return [new_state]
 
 
 def effect_alexstrasza(state: GameState, enemy_target: bool = True, **kwargs):
@@ -1359,6 +1311,7 @@ def state_summary(state: GameState) -> Dict:
         "etc_band_remaining": state.etc_band_remaining,
         "burned_cards": state.burned_cards,
         "alex_play_count": state.alex_play_count,
+        "alex_damage": state.alex_damage,
         "path": state.path,
         "next_spell_discount": state.next_spell_discount,
         "next_combo_discount": state.next_combo_discount,
@@ -1548,7 +1501,8 @@ def target_enemy_kill_options(card: CardInstance) -> List[bool]:
 
 def target_enemy_options(card: CardInstance) -> List[bool]:
     if card.effect_id == "alexstrasza":
-        return [False, True]
+        # 先枚举打脸伤害分支，保证去重后保留伤害更高的路径。
+        return [True, False]
 
     return [True]
 
@@ -1597,6 +1551,9 @@ def play_card_base_for_search(
 
     if card.name == "生命的缚誓者阿莱克丝塔萨":
         new_state.alex_play_count += 1
+
+        if enemy_target:
+            new_state.alex_damage += alex_damage_amount(new_state)
 
     if card.card_type == "minion":
         new_state.board_zone.add(card)
@@ -2891,6 +2848,37 @@ def build_symbolic_chains(target_alex_count: int) -> List[SymbolicChain]:
             ]
         )
 
+        add_chain(
+            name="公式预启动鲨鱼舞动重铺五龙链",
+            reasoning=[
+                "覆盖战场预启动鲨鱼之灵的8费五龙：狐人0费起手，狐刀后牛双发现舞动和红龙。",
+                "第一轮红龙后暗影步回刀油、暗影施法者复制红龙、晦鳞回4费、伺机接骨刺杀狐。",
+                "舞动全场按进场顺序全员回手且不爆牌，第二轮用1费红龙、刀油、鲨鱼、晦鳞回费续出三龙。",
+                "本链依赖狐人老千[0费]的运行时费用；真规则下舞动回手按进场顺序，本链舞动时手牌恰好放得下全部随从。",
+            ],
+            actions=[
+                SymbolicAction(foxy),
+                SymbolicAction(scabbs),
+                SymbolicAction(etc, choices=(dance, alex)),
+                SymbolicAction(alex),
+                SymbolicAction(shadowstep, target=scabbs),
+                SymbolicAction(scabbs),
+                SymbolicAction(shadowcaster, target=alex),
+                SymbolicAction(mother),
+                SymbolicAction(preparation),
+                SymbolicAction(bone_spike, target=foxy),
+                SymbolicAction(alex),
+                SymbolicAction(dance),
+                SymbolicAction(alex),
+                SymbolicAction("伪造的幸运币"),
+                SymbolicAction(scabbs),
+                SymbolicAction(shark),
+                SymbolicAction(mother),
+                SymbolicAction(alex),
+                SymbolicAction(alex),
+            ]
+        )
+
     chains.sort(key=lambda chain: (
         0 if chain.name.startswith("公式") else 1 if chain.name.startswith("基础") else 2,
         len(chain.actions),
@@ -3244,6 +3232,113 @@ def enumerate_play_paths(
     )
 
 
+def beam_search_paths(
+    initial_state: GameState,
+    max_depth: int = 100,
+    max_paths: int = 500000,
+    max_alex_count: int = 10,
+    min_alex_count: int = 1,
+    beam_width: int = 4000,
+    progress_callback: Optional[Callable[[int, int, int], None]] = None,
+    found_callback: Optional[Callable[[List[GameState], int], None]] = None,
+    prune_stats: Optional[Dict[str, int]] = None,
+    should_stop: Optional[Callable[[], bool]] = None
+) -> List[GameState]:
+    """正向束搜索：直接枚举真实后继状态，按（红龙数、剩余法力、龙资源）排序保留束宽。
+
+    与反向符号链证明互补，用于验证符号链模板未覆盖的线路。搜索依据与链条验证完全一致
+    （generate_successors），舞动回手同样按真炉石规则结算。
+    """
+    start = initial_state.clone()
+    start.record_log = False
+    min_alex_count = max(1, min(min_alex_count, max_alex_count))
+
+    def potential(state: GameState) -> int:
+        dragons = sum(1 for card in state.hand if "dragon" in card.tags)
+        dragons += sum(1 for card in state.board if "dragon" in card.tags)
+        return dragons
+
+    best: Dict[int, GameState] = {start.alex_play_count: start.clone()}
+    level = [start]
+    seen = set()
+    seen.add((state_key_for_dedup(start), start.alex_play_count))
+    expansions = 0
+    max_reached = start.alex_play_count
+    reached_depth = 0
+
+    for depth in range(1, max_depth + 1):
+        if should_stop is not None and should_stop():
+            break
+
+        if not level:
+            break
+
+        reached_depth = depth
+        next_level: List[GameState] = []
+        next_seen = set()
+
+        for state in level:
+            for successor in generate_successors(state, prune_stats=prune_stats):
+                expansions += 1
+                key = (state_key_for_dedup(successor), successor.alex_play_count)
+
+                if key in next_seen or key in seen:
+                    continue
+
+                next_seen.add(key)
+                next_level.append(successor)
+
+                current = best.get(successor.alex_play_count)
+
+                if current is None or (successor.mana, potential(successor)) > (
+                    current.mana,
+                    potential(current),
+                ):
+                    best[successor.alex_play_count] = successor.clone()
+
+        if not next_level:
+            break
+
+        seen |= next_seen
+        next_level.sort(
+            key=lambda state: (state.alex_play_count, state.mana, potential(state)),
+            reverse=True,
+        )
+        level = next_level[:beam_width]
+
+        if prune_stats is not None:
+            prune_stats["束搜索深度"] = depth
+            prune_stats["束搜索展开状态数"] = expansions
+
+        new_max = max(state.alex_play_count for state in level)
+
+        if new_max > max_reached:
+            max_reached = new_max
+
+            if found_callback is not None and max_reached >= min_alex_count:
+                found_paths = sort_path_states([
+                    item
+                    for count, item in best.items()
+                    if count == max_reached
+                ])[:max_paths]
+                found_callback(found_paths, max_reached)
+
+        if progress_callback is not None:
+            progress_callback(len(next_seen), len(level), expansions)
+
+    if prune_stats is not None:
+        prune_stats["束搜索深度"] = reached_depth
+        prune_stats["束搜索展开状态数"] = expansions
+        prune_stats["束搜索束宽"] = beam_width
+        prune_stats["束搜索最高龙数"] = max(best.keys()) if best else 0
+
+    return sort_path_states([
+        item
+        for count, item in best.items()
+        if min_alex_count <= count <= max_alex_count
+    ])[:max_paths]
+
+
 def sort_path_states(states: List[GameState]) -> List[GameState]:
     return sorted(
         states,
@@ -3336,7 +3431,11 @@ def format_paths(states: List[GameState], limit: int = 200, non_alex_limit: int 
 
     for state in shown_alex_states:
         path = format_path_text(state.path)
-        alex_text = f" | 红龙次数：{state.alex_play_count}" if state.alex_play_count > 0 else ""
+        alex_text = (
+            f" | 红龙次数：{state.alex_play_count} | 伤害：{state.alex_damage}点"
+            if state.alex_play_count > 0
+            else ""
+        )
         lines.append(
             f"{index}. {path} | 需求：{state.initial_mana_crystals}水晶 / {state.initial_mana}法力 | 剩余法力：{state.mana}{alex_text}"
         )
@@ -3473,8 +3572,12 @@ def main() -> int:
     parser.add_argument("--mana", type=int)
     parser.add_argument("--play", action="append", default=[], help="按名称依次使用卡牌，可重复传入")
     parser.add_argument("--search", action="store_true", help="执行符号化链条证明")
+    parser.add_argument("--beam", action="store_true", help="使用正向束搜索（默认关闭，使用反向符号链证明）")
+    parser.add_argument("--beam-width", type=int, default=4000, help="束搜索束宽，默认4000")
     parser.add_argument("--max-depth", type=int, default=100, help="符号链条最大步数")
     parser.add_argument("--max-paths", type=int, default=500000)
+    parser.add_argument("--max-alex-count", type=int, default=10)
+    parser.add_argument("--min-alex-count", type=int, default=1)
     parser.add_argument("--show-limit", type=int, default=200)
     parser.add_argument("--json", action="store_true", help="输出 JSON")
 
@@ -3491,11 +3594,23 @@ def main() -> int:
         play_card_by_name(state, card_name)
 
     if args.search:
-        states = enumerate_play_paths(
-            initial_state=state,
-            max_depth=args.max_depth,
-            max_paths=args.max_paths
-        )
+        if args.beam:
+            states = beam_search_paths(
+                initial_state=state,
+                max_depth=args.max_depth,
+                max_paths=args.max_paths,
+                max_alex_count=args.max_alex_count,
+                min_alex_count=args.min_alex_count,
+                beam_width=args.beam_width
+            )
+        else:
+            states = enumerate_play_paths(
+                initial_state=state,
+                max_depth=args.max_depth,
+                max_paths=args.max_paths,
+                max_alex_count=args.max_alex_count,
+                min_alex_count=args.min_alex_count
+            )
 
         if args.json:
             print(json.dumps([state_summary(item) for item in states], ensure_ascii=False, indent=2))

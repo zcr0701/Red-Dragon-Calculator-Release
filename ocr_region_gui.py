@@ -1,3 +1,4 @@
+import re
 import sys
 import time
 from datetime import datetime
@@ -20,13 +21,100 @@ from PyQt5.QtWidgets import (
 )
 
 from ocr_interface import OCRInterface
-from rebuild_hand import format_result, rebuild_hand_from_text
+from rebuild_hand import CARD_COSTS, format_result, rebuild_hand_from_text
 from red_dragon_calculator import (
     ETC_BAND,
+    beam_search_paths,
     enumerate_play_paths,
     format_paths,
     state_from_rebuild_result,
 )
+
+
+SECTION_NAME_RE = re.compile(r"^\s*(当前效果|牌库中|手牌中|战场|其他)\s*[（(]?\s*\d*\s*[）)]?\s*$")
+COST_ONLY_RE = re.compile(r"^\s*(\d+)\s*费?(?:\s*[,，、]\s*\d+\s*血?)?\s*$")
+ZONE_LINE_RE = re.compile(r"^\s*(\d+)\s*费?(?:\s*[,，、]\s*\d+\s*血?)?\s*(.+)$")
+
+
+def parse_manual_zone_lines(text: str):
+    """把手动输入区的一行行文字转成 [(cost, name)]。
+
+    支持三种写法：
+    - “3费 晦鳞巢母” / “4,3 鲨鱼之灵”（费用在前，卡名在后）；
+    - 纯卡名（自动取卡库默认费用，如 狐人老千 -> 2）；
+    - OCR 式两行一组（“3” 换行 “晦鳞巢母”）。
+    """
+    entries = []
+    pending_cost = None
+    warnings = []
+
+    for raw in text.splitlines():
+        line = raw.strip()
+
+        if not line or SECTION_NAME_RE.match(line):
+            continue
+
+        cost_only = COST_ONLY_RE.match(line)
+
+        if cost_only:
+            pending_cost = int(cost_only.group(1))
+            continue
+
+        with_cost = ZONE_LINE_RE.match(line)
+
+        if with_cost:
+            entries.append((int(with_cost.group(1)), with_cost.group(2).strip()))
+            pending_cost = None
+            continue
+
+        cost = CARD_COSTS.get(line) if pending_cost is None else pending_cost
+
+        if cost is None:
+            warnings.append(f"缺少费用且卡库无默认费用：{line}（该行已跳过）")
+            pending_cost = None
+            continue
+
+        entries.append((cost, line))
+        pending_cost = None
+
+    return entries, warnings
+
+
+def build_manual_section_text(hand_text: str, board_text: str, effect_text: str):
+    """把手动输入区拼成 rebuild_hand_from_text 认识的区段文本。"""
+    hand_entries, hand_warnings = parse_manual_zone_lines(hand_text)
+    board_entries, board_warnings = parse_manual_zone_lines(board_text)
+    effect_entries = [
+        line.strip()
+        for line in effect_text.splitlines()
+        if line.strip()
+    ]
+    lines = []
+
+    def append_zone(title: str, entries):
+        if not entries:
+            return
+
+        lines.append(f"{title}({len(entries)})")
+
+        for cost, name in entries:
+            if cost is None:
+                lines.append(name)
+            else:
+                lines.append(str(cost))
+                lines.append(name)
+
+    append_zone("手牌中", hand_entries)
+    append_zone("战场", board_entries)
+
+    if effect_entries:
+        lines.append(f"当前效果({len(effect_entries)})")
+        lines.extend(effect_entries)
+
+    # 解析器用“其他(x)”作为最后一个区段的结束标记，加一个空区避免边界警告。
+    lines.append("其他(0)")
+
+    return "\n".join(lines), hand_warnings + board_warnings
 
 
 class OCRWorker(QThread):
@@ -69,7 +157,7 @@ class CalculationWorker(QThread):
     result_signal = pyqtSignal(str)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, rebuild_result, mana_crystals, mana, max_depth=100, max_paths=500000, max_alex_count=10, min_alex_count=1, deadly_shadow_hand_indexes=None, etc_band_remaining=None):
+    def __init__(self, rebuild_result, mana_crystals, mana, max_depth=100, max_paths=500000, max_alex_count=10, min_alex_count=1, deadly_shadow_hand_indexes=None, etc_band_remaining=None, beam_mode=False):
         super().__init__()
         self.rebuild_result = rebuild_result
         self.mana_crystals = mana_crystals
@@ -80,6 +168,8 @@ class CalculationWorker(QThread):
         self.min_alex_count = min_alex_count
         self.deadly_shadow_hand_indexes = deadly_shadow_hand_indexes or []
         self.etc_band_remaining = list(etc_band_remaining) if etc_band_remaining is not None else ETC_BAND[:]
+        self.beam_mode = bool(beam_mode)
+        self.stats_title = "束搜索统计：" if self.beam_mode else "符号链条证明统计："
 
     def format_initial_state_note(self, state):
         def card_cost_health_text(card):
@@ -92,8 +182,9 @@ class CalculationWorker(QThread):
 
             return f"{cost_text}费"
 
+        search_mode_text = "beam束搜索" if self.beam_mode else "反向符号链证明"
         lines = [
-            f"计算参数：{self.mana_crystals}水晶 / {self.mana}法力 / 链条步数上限 {self.max_depth} / 路径上限 {self.max_paths} / 搜索龙数上限 {self.max_alex_count} / 搜索龙数下限 {self.min_alex_count}",
+            f"计算参数：{self.mana_crystals}水晶 / {self.mana}法力 / 链条步数上限 {self.max_depth} / 路径上限 {self.max_paths} / 搜索龙数上限 {self.max_alex_count} / 搜索龙数下限 {self.min_alex_count} / 搜索方式：{search_mode_text}",
         ]
         marked_cards = []
 
@@ -137,7 +228,7 @@ class CalculationWorker(QThread):
 
     def format_prune_stats(self, prune_stats):
         if not prune_stats:
-            return "符号链条证明统计：暂无记录\n"
+            return f"{self.stats_title}暂无记录\n"
 
         meta_keys = {"当前证明目标", "已证明龙数"}
         regular_stats = {
@@ -151,7 +242,7 @@ class CalculationWorker(QThread):
             for key, value in prune_stats.items()
             if isinstance(value, int) and str(key).startswith("链条失败详情：")
         }
-        lines = ["符号链条证明统计："]
+        lines = [self.stats_title]
 
         if "已证明龙数" in prune_stats:
             lines.append(f"- 已证明龙数：{prune_stats['已证明龙数']}")
@@ -212,6 +303,12 @@ class CalculationWorker(QThread):
             )
 
             def on_progress(done_count, stack_count, pruned_count=0):
+                if self.beam_mode:
+                    self.progress_signal.emit(
+                        f"正在束搜索路径：已保留 {done_count} 个状态，当前束 {stack_count} 个状态，累计展开 {pruned_count} 次..."
+                    )
+                    return
+
                 self.progress_signal.emit(
                     f"正在符号化证明路径：已找到 {done_count} 条目标路径，剩余候选链 {stack_count} 条，复用/失败记录 {pruned_count} 条..."
                 )
@@ -220,22 +317,36 @@ class CalculationWorker(QThread):
                 self.partial_result_signal.emit(
                     self.format_initial_state_note(state)
                     + self.format_prune_stats(prune_stats)
-                    + f"已即时发现 {len(found_states)} 条 {target_alex_count} 龙路径，仍在继续计算剩余链条；可点击“中止计算”立即导出当前全部结果。\n\n"
+                    + f"已即时发现 {len(found_states)} 条 {target_alex_count} 龙路径，仍在继续计算；可点击“中止计算”立即导出当前全部结果。\n\n"
                     + format_paths(found_states, limit=300)
                 )
 
             prune_stats = {}
-            states = enumerate_play_paths(
-                initial_state=state,
-                max_depth=self.max_depth,
-                max_paths=self.max_paths,
-                max_alex_count=self.max_alex_count,
-                min_alex_count=self.min_alex_count,
-                progress_callback=on_progress,
-                found_callback=on_found,
-                prune_stats=prune_stats,
-                should_stop=self.isInterruptionRequested
-            )
+            if self.beam_mode:
+                states = beam_search_paths(
+                    initial_state=state,
+                    max_depth=self.max_depth,
+                    max_paths=self.max_paths,
+                    max_alex_count=self.max_alex_count,
+                    min_alex_count=self.min_alex_count,
+                    beam_width=4000,
+                    progress_callback=on_progress,
+                    found_callback=on_found,
+                    prune_stats=prune_stats,
+                    should_stop=self.isInterruptionRequested
+                )
+            else:
+                states = enumerate_play_paths(
+                    initial_state=state,
+                    max_depth=self.max_depth,
+                    max_paths=self.max_paths,
+                    max_alex_count=self.max_alex_count,
+                    min_alex_count=self.min_alex_count,
+                    progress_callback=on_progress,
+                    found_callback=on_found,
+                    prune_stats=prune_stats,
+                    should_stop=self.isInterruptionRequested
+                )
             limit_note = ""
 
             if len(states) >= self.max_paths:
@@ -350,6 +461,7 @@ class MainWindow(QWidget):
         self.selectButton = QPushButton("框选区域")
         self.startButton = QPushButton("开始识别")
         self.stopButton = QPushButton("停止识别")
+        self.manualInputButton = QPushButton("手动输入")
         self.calculateButton = QPushButton("开始计算")
         self.cancelCalculationButton = QPushButton("中止计算")
         self.startButton.setEnabled(False)
@@ -360,6 +472,7 @@ class MainWindow(QWidget):
         self.selectButton.clicked.connect(self.open_selector)
         self.startButton.clicked.connect(self.start_ocr)
         self.stopButton.clicked.connect(self.stop_ocr)
+        self.manualInputButton.clicked.connect(self.toggle_manual_input)
         self.calculateButton.clicked.connect(self.start_calculation)
         self.cancelCalculationButton.clicked.connect(self.cancel_calculation)
 
@@ -367,6 +480,7 @@ class MainWindow(QWidget):
         button_layout.addWidget(self.selectButton)
         button_layout.addWidget(self.startButton)
         button_layout.addWidget(self.stopButton)
+        button_layout.addWidget(self.manualInputButton)
         button_layout.addWidget(self.calculateButton)
         button_layout.addWidget(self.cancelCalculationButton)
 
@@ -396,6 +510,9 @@ class MainWindow(QWidget):
         mana_layout.addWidget(self.maxAlexInput)
         mana_layout.addWidget(QLabel("搜索龙数下限："))
         mana_layout.addWidget(self.minAlexInput)
+        self.beamModeCheck = QCheckBox("beam模式")
+        self.beamModeCheck.setToolTip("正向束搜索（默认关闭）。勾选后用束搜索直接枚举真实后继状态，可用于验证符号链未覆盖的线路。")
+        mana_layout.addWidget(self.beamModeCheck)
         mana_layout.addStretch()
 
         self.deadlyShadowCheck = QCheckBox("标记殒命暗影")
@@ -426,6 +543,69 @@ class MainWindow(QWidget):
         etc_layout.addWidget(QLabel("取消勾选表示这张已经被选走"))
         etc_layout.addStretch()
 
+        self.manualInputPanel = QWidget()
+        self.manualInputPanel.setVisible(False)
+        manual_layout = QVBoxLayout()
+        manual_layout.setContentsMargins(0, 4, 0, 4)
+        manual_help = QLabel(
+            "手动输入格式：每个区逐行填卡牌，可写“费用 卡名”（如 3费 晦鳞巢母、4,3 鲨鱼之灵），"
+            "也可以只写卡名（自动取卡库默认费用），或按 OCR 格式两行一组（费用行+卡名行）。"
+            "填好后点“解析并应用”，会复用现有正则规则生成数据。"
+        )
+        manual_help.setWordWrap(True)
+        manual_layout.addWidget(manual_help)
+
+        manual_zone_row = QHBoxLayout()
+
+        manual_hand_panel = QWidget()
+        manual_hand_layout = QVBoxLayout()
+        manual_hand_layout.setContentsMargins(0, 0, 0, 0)
+        manual_hand_layout.addWidget(QLabel("手牌栏"))
+        self.manualHandEdit = QTextEdit()
+        self.manualHandEdit.setPlaceholderText("例：\n0费 狐人老千\n4费 斯卡布斯·刀油\n5费 暗影施法者")
+        self.manualHandEdit.setFixedHeight(150)
+        manual_hand_layout.addWidget(self.manualHandEdit)
+        manual_hand_panel.setLayout(manual_hand_layout)
+
+        manual_board_panel = QWidget()
+        manual_board_layout = QVBoxLayout()
+        manual_board_layout.setContentsMargins(0, 0, 0, 0)
+        manual_board_layout.addWidget(QLabel("战场（随从栏）"))
+        self.manualBoardEdit = QTextEdit()
+        self.manualBoardEdit.setPlaceholderText("例：\n4费 鲨鱼之灵")
+        self.manualBoardEdit.setFixedHeight(150)
+        manual_board_layout.addWidget(self.manualBoardEdit)
+        manual_board_panel.setLayout(manual_board_layout)
+
+        manual_effect_panel = QWidget()
+        manual_effect_layout = QVBoxLayout()
+        manual_effect_layout.setContentsMargins(0, 0, 0, 0)
+        manual_effect_layout.addWidget(QLabel("当前效果（可选）"))
+        self.manualEffectEdit = QTextEdit()
+        self.manualEffectEdit.setPlaceholderText("例：\n斯卡布斯·刀油\n锯齿骨刺")
+        self.manualEffectEdit.setFixedHeight(150)
+        manual_effect_layout.addWidget(self.manualEffectEdit)
+        manual_effect_panel.setLayout(manual_effect_layout)
+
+        manual_zone_row.addWidget(manual_hand_panel)
+        manual_zone_row.addWidget(manual_board_panel)
+        manual_zone_row.addWidget(manual_effect_panel)
+        manual_layout.addLayout(manual_zone_row)
+
+        manual_button_row = QHBoxLayout()
+        self.manualExampleButton = QPushButton("填入示例")
+        self.manualApplyButton = QPushButton("解析并应用")
+        self.manualClearButton = QPushButton("清空")
+        self.manualExampleButton.clicked.connect(self.fill_manual_example)
+        self.manualApplyButton.clicked.connect(self.apply_manual_input)
+        self.manualClearButton.clicked.connect(self.clear_manual_input)
+        manual_button_row.addWidget(self.manualExampleButton)
+        manual_button_row.addWidget(self.manualApplyButton)
+        manual_button_row.addWidget(self.manualClearButton)
+        manual_button_row.addStretch()
+        manual_layout.addLayout(manual_button_row)
+        self.manualInputPanel.setLayout(manual_layout)
+
         self.ocrText = QTextEdit()
         self.ocrText.setReadOnly(True)
         self.handText = QTextEdit()
@@ -450,7 +630,8 @@ class MainWindow(QWidget):
 
         ocr_panel = QWidget()
         ocr_layout = QVBoxLayout()
-        ocr_layout.addWidget(QLabel("OCR识别文本"))
+        self.ocrTitleLabel = QLabel("OCR识别文本")
+        ocr_layout.addWidget(self.ocrTitleLabel)
         ocr_layout.addWidget(self.ocrText)
         ocr_panel.setLayout(ocr_layout)
 
@@ -478,6 +659,7 @@ class MainWindow(QWidget):
         layout.addLayout(mana_layout)
         layout.addLayout(deadly_shadow_layout)
         layout.addLayout(etc_layout)
+        layout.addWidget(self.manualInputPanel)
         layout.addWidget(splitter)
         self.setLayout(layout)
 
@@ -486,13 +668,71 @@ class MainWindow(QWidget):
         self.setResult("识别结果会显示在这里", "重建后的牌库与手牌会显示在这里", None)
         self.calcText.setPlainText("计算结果会显示在这里")
 
-    def setResult(self, ocr_text, hand_text, rebuild_result=None):
+    def setResult(self, ocr_text, hand_text, rebuild_result=None, source="ocr"):
         self.ocrText.setPlainText(ocr_text if ocr_text else "未识别到文字")
         self.handText.setPlainText(hand_text if hand_text else "暂无重建结果")
+        self.ocrTitleLabel.setText("OCR识别文本" if source == "ocr" else "手动输入文本（已按现有规则解析）")
 
         if rebuild_result is not None:
             self.latest_rebuild_result = rebuild_result
             self.calculateButton.setEnabled(True)
+
+    def toggle_manual_input(self):
+        visible = self.manualInputPanel.isHidden()
+        self.manualInputPanel.setVisible(visible)
+        self.manualInputButton.setText("收起手动输入" if visible else "手动输入")
+
+    def fill_manual_example(self):
+        self.manualHandEdit.setPlainText(
+            "3费 晦鳞巢母\n"
+            "5费 暗影施法者\n"
+            "0费 伪造的幸运币\n"
+            "4费 斯卡布斯·刀油\n"
+            "4费 乐队经理精英牛头人酋长\n"
+            "0费 伺机待发\n"
+            "0费 狐人老千\n"
+            "2费 锯齿骨刺\n"
+            "0费 暗影步"
+        )
+        self.manualBoardEdit.setPlainText("4费 鲨鱼之灵")
+        self.manualEffectEdit.setPlainText("")
+        self.statusLabel.setText("状态：已填入示例，可点击“解析并应用”")
+
+    def clear_manual_input(self):
+        self.manualHandEdit.clear()
+        self.manualBoardEdit.clear()
+        self.manualEffectEdit.clear()
+        self.statusLabel.setText("状态：手动输入区已清空")
+
+    def apply_manual_input(self):
+        section_text, zone_warnings = build_manual_section_text(
+            hand_text=self.manualHandEdit.toPlainText(),
+            board_text=self.manualBoardEdit.toPlainText(),
+            effect_text=self.manualEffectEdit.toPlainText()
+        )
+
+        if not section_text.strip():
+            QMessageBox.warning(self, "提示", "请先在手动输入区填入卡牌内容。")
+            return
+
+        try:
+            result = rebuild_hand_from_text(section_text)
+        except Exception as e:
+            QMessageBox.warning(self, "解析失败", str(e))
+            return
+
+        self.setResult(
+            ocr_text=section_text,
+            hand_text=format_result(result),
+            rebuild_result=result,
+            source="manual"
+        )
+        self.statusLabel.setText("状态：手动输入已解析，可点击“开始计算”")
+
+        all_warnings = zone_warnings + result.warnings
+
+        if all_warnings:
+            QMessageBox.warning(self, "解析警告", "\n".join(all_warnings[:10]))
 
     def open_selector(self):
         if self.worker is not None:
@@ -665,7 +905,8 @@ class MainWindow(QWidget):
             max_alex_count=max_alex_count,
             min_alex_count=min_alex_count,
             deadly_shadow_hand_indexes=deadly_shadow_hand_indexes,
-            etc_band_remaining=self.get_etc_band_remaining()
+            etc_band_remaining=self.get_etc_band_remaining(),
+            beam_mode=self.beamModeCheck.isChecked()
         )
         self.calc_worker.progress_signal.connect(self.on_calculation_progress)
         self.calc_worker.partial_result_signal.connect(self.on_calculation_partial)

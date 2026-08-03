@@ -38,6 +38,11 @@
       "description": ""
     },
     {
+      "name": "邪恶短刀",
+      "aliases": [],
+      "description": "1费1/2武器，无效果"
+    },
+    {
       "name": "异教地图",
       "aliases": [],
       "description": ""
