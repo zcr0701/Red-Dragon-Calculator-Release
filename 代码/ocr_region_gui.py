@@ -70,6 +70,38 @@ class ScreenClampMixin:
     避免在 moveEvent 里再 move() 与系统拖动互相拉扯导致的闪烁抽搐。
     """
 
+    def _window_borders(self, hwnd):
+        """返回窗口四边隐形边框宽度 (left, top, right, bottom)。
+
+        Windows 可缩放窗口左右/底部有透明缩放边框（约 7px），
+        WM_WINDOWPOSCHANGING 里的 cx/cy 含这些边框；按可见区域钳制才能真正贴边。
+        """
+        cached = getattr(self, "_border_cache", None)
+
+        if cached is not None and cached[0] == hwnd:
+            return cached[1]
+
+        user32 = ctypes.windll.user32
+        frame = ctypes.wintypes.RECT()
+        client = ctypes.wintypes.RECT()
+        pt = ctypes.wintypes.POINT(0, 0)
+
+        if (
+            not user32.GetWindowRect(hwnd, ctypes.byref(frame))
+            or not user32.GetClientRect(hwnd, ctypes.byref(client))
+            or not user32.ClientToScreen(hwnd, ctypes.byref(pt))
+        ):
+            return (0, 0, 0, 0)
+
+        borders = (
+            pt.x - frame.left,
+            pt.y - frame.top,
+            frame.right - (pt.x + client.right),
+            frame.bottom - (pt.y + client.bottom),
+        )
+        self._border_cache = (hwnd, borders)
+        return borders
+
     def nativeEvent(self, eventType, message):
         if sys.platform == "win32" and eventType == b"windows_generic_MSG":
             self._native_clamp_ok = True
@@ -80,11 +112,14 @@ class ScreenClampMixin:
                     wp = _WINDOWPOS.from_address(int(msg.lParam))
 
                     if not (wp.flags & _SWP_NOMOVE):
+                        bl, bt, br, bb = self._window_borders(wp.hwnd)
                         screen = QApplication.primaryScreen().availableGeometry()
-                        max_x = screen.x() + max(0, screen.width() - wp.cx)
-                        max_y = screen.y() + max(0, screen.height() - wp.cy)
-                        new_x = min(max(wp.x, screen.x()), max_x)
-                        new_y = min(max(wp.y, screen.y()), max_y)
+                        min_x = screen.x() - bl
+                        min_y = screen.y() - bt
+                        max_x = screen.x() + screen.width() - wp.cx + br
+                        max_y = screen.y() + screen.height() - wp.cy + bb
+                        new_x = min(max(wp.x, min_x), max_x)
+                        new_y = min(max(wp.y, min_y), max_y)
 
                         if new_x != wp.x or new_y != wp.y:
                             wp.x = new_x
