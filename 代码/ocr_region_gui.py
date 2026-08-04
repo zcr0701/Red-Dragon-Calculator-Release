@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QLineEdit,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QTextEdit,
     QVBoxLayout,
@@ -1251,12 +1252,15 @@ class QuickPanel(ScreenClampMixin, QDialog):
         stack_layout.addWidget(beam_section)
         stack_layout.addStretch(1)
         stack_container = QWidget()
+        # 宽度跟随视口（窗口横向拉伸时路径框一起变宽/变窄并自动换行）
+        stack_container.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         stack_container.setLayout(stack_layout)
 
         # 内容放进滚动区：窗口尺寸固定，内容超出时滚动而不是把窗口顶大
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(stack_container)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setFrameShape(QFrame.NoFrame)
 
         layout = QVBoxLayout()
