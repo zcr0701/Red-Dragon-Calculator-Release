@@ -10,6 +10,7 @@ from PyQt5.QtGui import QColor, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -791,10 +792,14 @@ class MainWindow(QWidget):
         manual_layout.addLayout(manual_button_row)
         self.manualInputPanel.setLayout(manual_layout)
 
+        # OCR 识别文本框按需求隐藏（只显示手牌框与计算结果），
+        # 保留部件仅用于兼容 setResult 调用。
         self.ocrText = QTextEdit()
         self.ocrText.setReadOnly(True)
-        self.handText = QTextEdit()
-        self.handText.setReadOnly(True)
+        self.ocrText.setVisible(False)
+        self.ocrTitleLabel = QLabel("OCR识别文本")
+        self.ocrTitleLabel.setVisible(False)
+
         self.calcText = QTextEdit()
         self.calcText.setReadOnly(True)
 
@@ -809,21 +814,50 @@ class MainWindow(QWidget):
             border-radius:8px;
         }
         """
-        self.ocrText.setStyleSheet(text_style)
-        self.handText.setStyleSheet(text_style)
         self.calcText.setStyleSheet(text_style)
+        self.ocrText.setStyleSheet(text_style)
 
-        ocr_panel = QWidget()
-        ocr_layout = QVBoxLayout()
-        self.ocrTitleLabel = QLabel("OCR识别文本")
-        ocr_layout.addWidget(self.ocrTitleLabel)
-        ocr_layout.addWidget(self.ocrText)
-        ocr_panel.setLayout(ocr_layout)
+        slot_style = """
+        QLabel{
+            background:white;
+            color:#333;
+            font-size:16px;
+            font-family:微软雅黑;
+            border:1px solid #ddd;
+            border-radius:8px;
+            padding:4px;
+        }
+        """
 
+        # 手牌：10 个固定位置（5 列 × 2 行），显示该位置卡牌
         hand_panel = QWidget()
         hand_layout = QVBoxLayout()
-        hand_layout.addWidget(QLabel("重建牌库与手牌"))
-        hand_layout.addWidget(self.handText)
+        hand_layout.addWidget(QLabel("手牌（10 格固定）"))
+        hand_grid = QGridLayout()
+        self.hand_slots = []
+
+        for index in range(10):
+            slot = QLabel("空")
+            slot.setAlignment(Qt.AlignCenter)
+            slot.setStyleSheet(slot_style)
+            slot.setMinimumHeight(36)
+            self.hand_slots.append(slot)
+            hand_grid.addWidget(slot, index // 5, index % 5)
+
+        hand_layout.addLayout(hand_grid)
+        hand_layout.addWidget(QLabel("战场（7 格固定）"))
+        board_grid = QGridLayout()
+        self.board_slots = []
+
+        for index in range(7):
+            slot = QLabel("空")
+            slot.setAlignment(Qt.AlignCenter)
+            slot.setStyleSheet(slot_style)
+            slot.setMinimumHeight(36)
+            self.board_slots.append(slot)
+            board_grid.addWidget(slot, index // 4, index % 4)
+
+        hand_layout.addLayout(board_grid)
         hand_panel.setLayout(hand_layout)
 
         calc_panel = QWidget()
@@ -833,10 +867,9 @@ class MainWindow(QWidget):
         calc_panel.setLayout(calc_layout)
 
         splitter = QSplitter(Qt.Vertical)
-        splitter.addWidget(ocr_panel)
         splitter.addWidget(hand_panel)
         splitter.addWidget(calc_panel)
-        splitter.setSizes([220, 320, 320])
+        splitter.setSizes([320, 440])
 
         layout = QVBoxLayout()
         layout.addWidget(self.statusLabel)
@@ -848,15 +881,38 @@ class MainWindow(QWidget):
         layout.addWidget(splitter)
         self.setLayout(layout)
 
-        self.resize(760, 880)
+        self.resize(780, 900)
         self.move(180, 80)
         self.setResult("识别结果会显示在这里", "重建后的牌库与手牌会显示在这里", None)
         self.calcText.setPlainText("计算结果会显示在这里")
 
+    def _slot_text(self, index: int, card) -> str:
+        if card is None:
+            return "空"
+
+        cost = getattr(card, "cost", None)
+        cost_text = "*费" if cost is None else f"{cost}费"
+        health = getattr(card, "health", None)
+        health_text = f",{health}血" if health is not None else ""
+        name = getattr(card, "name", "") or getattr(card, "recognized_name", "") or "?"
+        count = max(1, int(getattr(card, "count", 1) or 1))
+        count_text = f"×{count}" if count > 1 else ""
+        return f"{index}. {name}{count_text}[{cost_text}{health_text}]"
+
     def setResult(self, ocr_text, hand_text, rebuild_result=None, source="ocr"):
+        # OCR 文本框已隐藏，仅保留文本用于兼容
         self.ocrText.setPlainText(ocr_text if ocr_text else "未识别到文字")
-        self.handText.setPlainText(hand_text if hand_text else "暂无重建结果")
         self.ocrTitleLabel.setText("OCR识别文本" if source == "ocr" else "手动输入文本（已按现有规则解析）")
+        hand_cards = list(getattr(rebuild_result, "cards", None) or [])
+        board_cards = list(getattr(rebuild_result, "battlefield_cards", None) or [])
+
+        for index, slot in enumerate(self.hand_slots):
+            card = hand_cards[index] if index < len(hand_cards) else None
+            slot.setText(self._slot_text(index + 1, card))
+
+        for index, slot in enumerate(self.board_slots):
+            card = board_cards[index] if index < len(board_cards) else None
+            slot.setText(self._slot_text(index + 1, card))
 
         if rebuild_result is not None:
             self.latest_rebuild_result = rebuild_result
