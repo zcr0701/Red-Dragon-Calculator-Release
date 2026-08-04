@@ -21,9 +21,32 @@ from typing import Any, Dict, List, Optional, Tuple
 
 ARCHIVE_DIR = Path(__file__).resolve().parent.parent / "存档"
 ARCHIVE_PATH = ARCHIVE_DIR / "红龙贼-情况存档.json"
+FORMULA_PATH = ARCHIVE_DIR / "红龙贼-公式表.json"
 
 _ALEX_NAME = "生命的缚誓者阿莱克丝塔萨"
 _COIN_CARD_NAMES = frozenset({"幸运币", "伪造的幸运币"})
+
+# 核心牌归纳（其余全部视为杂牌，只计数量）：
+# 鱼/狐/刀/牛/晦/暗/殒/步/骨/伺/币/舞/龙/药
+CORE_CARD_GROUPS = {
+    "鱼": "鲨鱼之灵",
+    "狐": "狐人老千",
+    "刀": "斯卡布斯·刀油",
+    "牛": "乐队经理精英牛头人酋长",
+    "晦": "晦鳞巢母",
+    "暗": "暗影施法者",
+    "殒": "殒命暗影",
+    "步": "暗影步",
+    "骨": "锯齿骨刺",
+    "伺": "伺机待发",
+    "币": None,  # 幸运币 / 伪造的幸运币 合并
+    "舞": "舞动全场（ft.迦罗娜）",
+    "龙": "生命的缚誓者阿莱克丝塔萨",
+    "药": "幻觉药水",
+}
+_CORE_NAME_TO_KEY = {
+    name: key for key, name in CORE_CARD_GROUPS.items() if name
+}
 
 
 def _card_key(card) -> Tuple:
@@ -341,5 +364,197 @@ def format_cached_paths(entry: Dict[str, Any]) -> str:
 
         for path_text in paths[count_text]:
             lines.append("  " + path_text)
+
+    return "\n".join(lines)
+
+
+# =====================================================================
+# 公式表：把局面抽象归一化（手牌乱序/杂牌任意变化视为同一情况），
+# 记录该初局状态（抽象手牌 + 随从栏 + 水晶/法力）下的
+# 最高龙数路径 与 最高伤害路径。
+# =====================================================================
+def abstract_hand(state) -> Tuple:
+    """手牌抽象：核心牌单独计数（币合并），其余全部计为杂牌数量。"""
+    counts: Dict[str, int] = {}
+    filler = 0
+
+    for card in state.hand:
+        if card.name in _COIN_CARD_NAMES:
+            counts["币"] = counts.get("币", 0) + 1
+        elif card.name in _CORE_NAME_TO_KEY:
+            key = _CORE_NAME_TO_KEY[card.name]
+            counts[key] = counts.get(key, 0) + 1
+        else:
+            filler += 1
+
+    if filler:
+        counts["杂牌"] = filler
+
+    return tuple(sorted(counts.items()))
+
+
+def abstract_board(state) -> Tuple:
+    """随从栏抽象：核心随从单独计数，其余计为杂牌数量。"""
+    counts: Dict[str, int] = {}
+    filler = 0
+
+    for card in state.board:
+        if card.name in _CORE_NAME_TO_KEY:
+            key = _CORE_NAME_TO_KEY[card.name]
+            counts[key] = counts.get(key, 0) + 1
+        else:
+            filler += 1
+
+    if filler:
+        counts["杂牌"] = filler
+
+    return tuple(sorted(counts.items()))
+
+
+def formula_key(state) -> str:
+    """初局状态键 =（抽象手牌, 抽象随从栏, 水晶, 法力）。"""
+    return json.dumps(
+        {
+            "手牌": abstract_hand(state),
+            "随从栏": abstract_board(state),
+            "水晶": state.mana_crystals,
+            "法力": state.mana,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def load_formula(formula_path: Optional[Path] = None) -> Dict[str, Any]:
+    path = Path(formula_path) if formula_path else FORMULA_PATH
+
+    if not path.exists():
+        return {"version": 1, "entries": {}}
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"version": 1, "entries": {}}
+
+
+def save_formula(table: Dict[str, Any], formula_path: Optional[Path] = None) -> Path:
+    path = Path(formula_path) if formula_path else FORMULA_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".json.tmp")
+
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(table, f, ensure_ascii=False, indent=2)
+
+    tmp_path.replace(path)
+    return path
+
+
+def _best_path_record(item) -> Dict[str, Any]:
+    return {
+        "龙数": item.alex_play_count,
+        "伤害": item.alex_damage,
+        "剩余法力": item.mana,
+        "路径": " -> ".join(item.path),
+    }
+
+
+def lookup_formula(state, formula_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """计算前查公式表：抽象局面（手牌乱序/杂牌变化）一致即命中。"""
+    table = load_formula(formula_path)
+    return table.get("entries", {}).get(formula_key(state))
+
+
+def update_formula(
+    state,
+    results: List[Any],
+    formula_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """计算后更新公式表（去重）：按抽象局面合并最高龙数/最高伤害路径。"""
+    table = load_formula(formula_path)
+    entries = table.setdefault("entries", {})
+    key = formula_key(state)
+    entry = entries.get(key)
+    best_dragons = None
+    best_damage = None
+
+    for item in results:
+        record = _best_path_record(item)
+
+        if best_dragons is None or (
+            record["龙数"],
+            record["伤害"],
+        ) > (best_dragons["龙数"], best_dragons["伤害"]):
+            best_dragons = record
+
+        if best_damage is None or (
+            record["伤害"],
+            record["龙数"],
+        ) > (best_damage["伤害"], best_damage["龙数"]):
+            best_damage = record
+
+    if entry is None:
+        entry = {
+            "抽象手牌": dict(abstract_hand(state)),
+            "抽象随从栏": dict(abstract_board(state)),
+            "水晶": state.mana_crystals,
+            "法力": state.mana,
+            "最高龙数路径": None,
+            "最高伤害路径": None,
+            "示例手牌": "，".join(
+                _card_label(card) for card in sorted(
+                    state.hand,
+                    key=lambda card: (card.current_cost() or 0, card.name),
+                )
+            ),
+        }
+        entries[key] = entry
+
+    # 只升不降合并
+    if best_dragons is not None and (
+        entry["最高龙数路径"] is None
+        or (best_dragons["龙数"], best_dragons["伤害"])
+        > (
+            entry["最高龙数路径"]["龙数"],
+            entry["最高龙数路径"]["伤害"],
+        )
+    ):
+        entry["最高龙数路径"] = best_dragons
+
+    if best_damage is not None and (
+        entry["最高伤害路径"] is None
+        or (best_damage["伤害"], best_damage["龙数"])
+        > (
+            entry["最高伤害路径"]["伤害"],
+            entry["最高伤害路径"]["龙数"],
+        )
+    ):
+        entry["最高伤害路径"] = best_damage
+
+    save_formula(table, formula_path)
+    return entry
+
+
+def format_formula_hit(entry: Dict[str, Any]) -> str:
+    """命中公式表的展示文案。"""
+    lines = [
+        "命中公式表（抽象局面一致：手牌乱序/杂牌变化视为同一种情况）：",
+        "",
+        f"抽象手牌：{json.dumps(entry.get('抽象手牌', {}), ensure_ascii=False)}",
+        f"抽象随从栏：{json.dumps(entry.get('抽象随从栏', {}), ensure_ascii=False)}",
+        f"初局：{entry.get('水晶', '?')}水晶 / {entry.get('法力', '?')}法力",
+        f"示例手牌：{entry.get('示例手牌', '')}",
+        "",
+    ]
+    best_dragons = entry.get("最高龙数路径")
+    best_damage = entry.get("最高伤害路径")
+
+    if best_dragons:
+        lines.append(f"最高龙数：{best_dragons['龙数']}龙 / {best_dragons['伤害']}伤 / 剩{best_dragons['剩余法力']}法力")
+        lines.append("  " + best_dragons["路径"])
+
+    if best_damage:
+        lines.append(f"最高伤害：{best_damage['伤害']}伤 / {best_damage['龙数']}龙 / 剩{best_damage['剩余法力']}法力")
+        lines.append("  " + best_damage["路径"])
 
     return "\n".join(lines)

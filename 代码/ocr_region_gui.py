@@ -36,7 +36,12 @@ from red_dragon_calculator import (
     format_paths,
     state_from_rebuild_result,
 )
-from archive import format_cached_paths, lookup_situation, remember_situation
+from archive import (
+    format_cached_paths,
+    lookup_situation,
+    remember_situation,
+    update_formula,
+)
 
 
 SECTION_NAME_RE = re.compile(r"^\s*(当前效果|牌库中|手牌中|战场|其他)\s*[（(]?\s*\d*\s*[）)]?\s*$")
@@ -480,6 +485,7 @@ class CalculationWorker(QThread):
                     "计算总耗时(秒)": round(elapsed_seconds, 1),
                 },
             )
+            update_formula(state, states)
             limit_note = ""
 
             if len(states) >= self.max_paths:

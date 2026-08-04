@@ -6140,7 +6140,14 @@ def main() -> int:
 
     if args.search:
         cached = archive.lookup_situation(state)
+        formula_hit = archive.lookup_formula(state)
         search_started = time.time()
+
+        if formula_hit and args.json:
+            print(json.dumps(formula_hit, ensure_ascii=False, indent=2))
+        elif formula_hit:
+            print(archive.format_formula_hit(formula_hit))
+            print("\n（以上为公式表缓存，正在重新计算；若搜出更高结果会自动更新公式表）")
 
         if cached:
             if args.json:
@@ -6185,6 +6192,7 @@ def main() -> int:
                 "计算总耗时(秒)": round(elapsed_seconds, 1),
             },
         )
+        archive.update_formula(state, states)
 
         if args.json:
             print(json.dumps([state_summary(item) for item in states], ensure_ascii=False, indent=2))
