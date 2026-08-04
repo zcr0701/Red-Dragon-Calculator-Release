@@ -609,6 +609,21 @@ class CalculationWorker(QThread):
         output_path.write_text(header + body, encoding="utf-8")
         return output_path
 
+    def _format_best(self, states) -> str:
+        """筛选最高伤害路径，只保留一条（伤害相同的只取第一条）。"""
+        best_damage = max((item.alex_damage for item in states), default=0)
+        best = [item for item in states if item.alex_damage == best_damage]
+
+        if not best:
+            return "（未搜到红龙路径）"
+
+        item = best[0]
+        return (
+            f"1. {' -> '.join(item.path)}"
+            f" | 龙数：{item.alex_play_count} | 伤害：{item.alex_damage}点"
+            f" | 剩余法力：{item.mana}"
+        )
+
     def run(self):
         try:
             state = state_from_rebuild_result(
@@ -651,6 +666,27 @@ class CalculationWorker(QThread):
             prune_stats = {}
             search_started = time.time()
             if self.beam_mode:
+                # beam 模式先跑双向链瞬间出结果，再跑 beam 束搜索
+                bidir_states = enumerate_play_paths(
+                    initial_state=state,
+                    max_depth=self.max_depth,
+                    max_paths=self.max_paths,
+                    max_alex_count=self.max_alex_count,
+                    min_alex_count=self.min_alex_count,
+                    progress_callback=None,
+                    found_callback=None,
+                    prune_stats={},
+                    should_stop=self.isInterruptionRequested,
+                    forward_mining=False,
+                    forward_depth=self.operator_depth,
+                )
+                self.best_result_signal.emit(False, self._format_best(bidir_states))
+                self.partial_result_signal.emit(
+                    self.params_line()
+                    + "\n\n【双向链阶段结果】\n"
+                    + format_paths(bidir_states, limit=300)
+                )
+
                 states = beam_search_paths(
                     initial_state=state,
                     max_depth=self.beam_depth,
@@ -711,25 +747,8 @@ class CalculationWorker(QThread):
                 limit_note=limit_note
             )
 
-            # 筛选最高伤害路径，单独发给界面放进对应框
-            best_damage = max((item.alex_damage for item in states), default=0)
-            best_states = [item for item in states if item.alex_damage == best_damage]
-
-            if best_states:
-                best_lines = []
-
-                for idx, item in enumerate(best_states, start=1):
-                    best_lines.append(
-                        f"{idx}. {' -> '.join(item.path)}"
-                        f" | 龙数：{item.alex_play_count} | 伤害：{item.alex_damage}点"
-                        f" | 剩余法力：{item.mana}"
-                    )
-
-                best_text = "\n".join(best_lines)
-            else:
-                best_text = "（未搜到红龙路径）"
-
-            self.best_result_signal.emit(self.beam_mode, best_text)
+            # 筛选最高伤害路径（只保留一条），单独发给界面放进对应框
+            self.best_result_signal.emit(self.beam_mode, self._format_best(states))
 
             self.result_signal.emit(
                 self.params_line()
@@ -1116,6 +1135,8 @@ class QuickPanel(ScreenClampMixin, QDialog):
                 self._fit_edit(edit, cap)
 
         toggle.toggled.connect(on_toggle)
+        # 初始折叠/展开状态同步到面板（setChecked 在 connect 之前调用，不会触发信号）
+        panel.setVisible(default_open)
         section = QWidget()
         slay = QVBoxLayout()
         slay.setContentsMargins(0, 0, 0, 0)
