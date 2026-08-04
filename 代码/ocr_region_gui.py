@@ -633,6 +633,9 @@ class MainWindow(QWidget):
         self.worker = None
         self.calc_worker = None
         self.latest_rebuild_result = None
+        # 状态区的水晶/法力只跟随 OCR 扫描结果，不读手动输入框
+        self.scan_crystals = None
+        self.scan_mana = None
         self.ocr_api = OCRInterface(lang="ch")
 
         self.overlay = SelectionOverlay()
@@ -749,7 +752,7 @@ class MainWindow(QWidget):
                     box.blockSignals(False)
             return handler
 
-        for label, card_name in self.etcBandOptions:
+        for card_name, label in self.etcBandOptions:
             box = QCheckBox(label)
             box.setChecked(card_name in {"舞动全场（ft.迦罗娜）", "幻觉药水", "生命的缚誓者阿莱克丝塔萨"})
             box.toggled.connect(make_etc_toggler(box))
@@ -867,23 +870,24 @@ class MainWindow(QWidget):
         QLabel{
             background:white;
             color:#333;
-            font-size:16px;
+            font-size:13px;
             font-family:微软雅黑;
             border:1px solid #ddd;
             border-radius:8px;
-            padding:4px;
+            padding:2px;
         }
         """
         toggle_style = """
         QPushButton{
             background:#f0f0f0;
             color:#333;
-            font-size:13px;
+            font-size:15px;
             font-family:微软雅黑;
             border:1px solid #ccc;
             border-radius:6px;
-            padding:4px 8px;
+            padding:8px 10px;
             text-align:left;
+            min-height:34px;
         }
         QPushButton:checked{ background:#e8e8ff; }
         """
@@ -896,6 +900,7 @@ class MainWindow(QWidget):
         self.handToggle.setCheckable(True)
         self.handToggle.setChecked(True)
         self.handToggle.setStyleSheet(toggle_style)
+        self.handToggle.setMinimumHeight(38)
         self.handPanel = QWidget()
         hand_panel_layout = QVBoxLayout()
         hand_panel_layout.setContentsMargins(4, 2, 4, 2)
@@ -907,7 +912,7 @@ class MainWindow(QWidget):
             slot = QLabel("空")
             slot.setAlignment(Qt.AlignCenter)
             slot.setStyleSheet(slot_style)
-            slot.setMinimumHeight(36)
+            slot.setMinimumHeight(28)
             self.hand_slots.append(slot)
             hand_grid.addWidget(slot, index // 5, index % 5)
 
@@ -926,6 +931,7 @@ class MainWindow(QWidget):
         self.boardToggle.setCheckable(True)
         self.boardToggle.setChecked(False)
         self.boardToggle.setStyleSheet(toggle_style)
+        self.boardToggle.setMinimumHeight(38)
         self.boardPanel = QWidget()
         board_panel_layout = QVBoxLayout()
         board_panel_layout.setContentsMargins(4, 2, 4, 2)
@@ -937,7 +943,7 @@ class MainWindow(QWidget):
             slot = QLabel("空")
             slot.setAlignment(Qt.AlignCenter)
             slot.setStyleSheet(slot_style)
-            slot.setMinimumHeight(36)
+            slot.setMinimumHeight(28)
             self.board_slots.append(slot)
             board_grid.addWidget(slot, index // 4, index % 4)
 
@@ -956,6 +962,7 @@ class MainWindow(QWidget):
         self.statusToggle.setCheckable(True)
         self.statusToggle.setChecked(False)
         self.statusToggle.setStyleSheet(toggle_style)
+        self.statusToggle.setMinimumHeight(38)
         self.statusPanel = QWidget()
         status_panel_layout = QHBoxLayout()
         status_panel_layout.setContentsMargins(4, 2, 4, 2)
@@ -977,12 +984,18 @@ class MainWindow(QWidget):
         calc_layout.addWidget(self.calcText)
         calc_panel.setLayout(calc_layout)
 
-        splitter = QSplitter(Qt.Vertical)
-        splitter.addWidget(hand_section)
-        splitter.addWidget(board_section)
-        splitter.addWidget(status_section)
-        splitter.addWidget(calc_panel)
-        splitter.setSizes([360, 40, 40, 400])
+        # 用普通垂直布局替代 QSplitter：折叠某个区块后，其余区块自动往上堆到一起，
+        # 计算结果区自动填满剩余空间。
+        stack_layout = QVBoxLayout()
+        stack_layout.setContentsMargins(0, 0, 0, 0)
+        stack_layout.setSpacing(0)
+        stack_layout.addWidget(hand_section)
+        stack_layout.addWidget(board_section)
+        stack_layout.addWidget(status_section)
+        stack_layout.addWidget(calc_panel)
+        stack_layout.setStretchFactor(calc_panel, 1)
+        stack_container = QWidget()
+        stack_container.setLayout(stack_layout)
 
         layout = QVBoxLayout()
         layout.addWidget(self.statusLabel)
@@ -991,7 +1004,7 @@ class MainWindow(QWidget):
         layout.addLayout(deadly_shadow_layout)
         layout.addLayout(etc_layout)
         layout.addWidget(self.manualInputPanel)
-        layout.addWidget(splitter)
+        layout.addWidget(stack_container)
         self.setLayout(layout)
 
         self.resize(780, 900)
@@ -1020,8 +1033,8 @@ class MainWindow(QWidget):
         board_cards = list(getattr(rebuild_result, "battlefield_cards", None) or [])
 
         if mana_crystals is not None and mana is not None:
-            self.crystalInput.setText(str(mana_crystals))
-            self.manaInput.setText(str(mana))
+            self.scan_crystals = int(mana_crystals)
+            self.scan_mana = int(mana)
 
         for index, slot in enumerate(self.hand_slots):
             card = hand_cards[index] if index < len(hand_cards) else None
@@ -1038,8 +1051,12 @@ class MainWindow(QWidget):
         self.update_status_display()
 
     def update_status_display(self):
-        crystals = self.crystalInput.text().strip() or "?"
-        mana = self.manaInput.text().strip() or "?"
+        if self.scan_crystals is not None and self.scan_mana is not None:
+            crystals = str(self.scan_crystals)
+            mana = str(self.scan_mana)
+        else:
+            crystals = "?"
+            mana = "?"
         band = "、".join(
             card_name for card_name, checkbox in self.etcBandChecks if checkbox.isChecked()
         ) or "空"
@@ -1219,12 +1236,17 @@ class MainWindow(QWidget):
             QMessageBox.information(self, "提示", "当前正在计算，请稍等。")
             return
 
-        try:
-            mana_crystals = int(self.crystalInput.text().strip())
-            mana = int(self.manaInput.text().strip())
-        except ValueError:
-            QMessageBox.warning(self, "提示", "水晶和法力必须是数字。")
-            return
+        if self.scan_crystals is not None and self.scan_mana is not None:
+            # 已扫描到水晶/法力：以扫描结果为准
+            mana_crystals = self.scan_crystals
+            mana = self.scan_mana
+        else:
+            try:
+                mana_crystals = int(self.crystalInput.text().strip())
+                mana = int(self.manaInput.text().strip())
+            except ValueError:
+                QMessageBox.warning(self, "提示", "水晶和法力必须是数字。")
+                return
 
         try:
             max_depth = int(self.maxDepthInput.text().strip())
