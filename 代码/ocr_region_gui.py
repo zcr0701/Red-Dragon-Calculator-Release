@@ -1421,7 +1421,7 @@ class QuickPanel(ScreenClampMixin, QDialog):
             box.setMinimumHeight(30)
             box.setHtml(
                 f"<div>第{index}轮：{' -> '.join(round_steps)}</div>"
-                f"<div style='color:#888;font-size:14px;'>缩写：{abbreviate_path(round_steps)}</div>"
+                f"<div style='color:#333;font-size:20px;'>缩写：{abbreviate_path(round_steps)}</div>"
             )
             container.addWidget(box)
             self._fit_edit(box, 220)
