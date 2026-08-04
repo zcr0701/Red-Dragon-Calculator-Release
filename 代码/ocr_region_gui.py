@@ -275,7 +275,7 @@ def build_manual_section_text(
 
 
 class OCRWorker(QThread):
-    result_signal = pyqtSignal(str, str, object, object, object)
+    result_signal = pyqtSignal(str, str, object, object, object, str)
     error_signal = pyqtSignal(str)
 
     def __init__(self, get_box_func, get_mana_box_func, ocr_api):
@@ -302,6 +302,7 @@ class OCRWorker(QThread):
                 hand_text = format_result(hand_result)
                 crystals, mana = last_crystals, last_mana
                 mana_box = self.get_mana_box_func()
+                mana_text = ""
 
                 if mana_box is not None:
                     mana_text = self.ocr_api.recognize_box(mana_box)
@@ -311,7 +312,7 @@ class OCRWorker(QThread):
                         crystals, mana = parsed
                         last_crystals, last_mana = crystals, mana
 
-                self.result_signal.emit(ocr_text, hand_text, hand_result, crystals, mana)
+                self.result_signal.emit(ocr_text, hand_text, hand_result, crystals, mana, mana_text)
             except Exception as e:
                 msg = f"OCR错误: {e}"
                 print(msg)
@@ -681,6 +682,7 @@ class MainWindow(QWidget):
 
         self.box = None
         self.mana_box = None
+        self._select_target = "main"
         self.worker = None
         self.calc_worker = None
         self.latest_rebuild_result = None
@@ -695,7 +697,8 @@ class MainWindow(QWidget):
         self.statusLabel = QLabel("状态：请先点击“框选区域”")
         self.statusLabel.setStyleSheet("font-size:16px;font-family:微软雅黑;")
 
-        self.selectButton = QPushButton("框选区域")
+        self.selectButton = QPushButton("框选手牌/战场")
+        self.selectManaButton = QPushButton("框选水晶/法力")
         self.startButton = QPushButton("开始识别")
         self.stopButton = QPushButton("停止识别")
         self.manualInputButton = QPushButton("手动输入")
@@ -707,6 +710,7 @@ class MainWindow(QWidget):
         self.cancelCalculationButton.setEnabled(False)
 
         self.selectButton.clicked.connect(self.open_selector)
+        self.selectManaButton.clicked.connect(self.open_mana_selector)
         self.startButton.clicked.connect(self.start_ocr)
         self.stopButton.clicked.connect(self.stop_ocr)
         self.manualInputButton.clicked.connect(self.toggle_manual_input)
@@ -715,6 +719,7 @@ class MainWindow(QWidget):
 
         button_layout = QHBoxLayout()
         button_layout.addWidget(self.selectButton)
+        button_layout.addWidget(self.selectManaButton)
         button_layout.addWidget(self.startButton)
         button_layout.addWidget(self.stopButton)
         button_layout.addWidget(self.manualInputButton)
@@ -892,13 +897,15 @@ class MainWindow(QWidget):
         manual_layout.addLayout(manual_button_row)
         self.manualInputPanel.setLayout(manual_layout)
 
-        # OCR 识别文本框按需求隐藏（只显示手牌框与计算结果），
-        # 保留部件仅用于兼容 setResult 调用。
+        # OCR 原始文本显示区：主区域 + 水晶/法力区域分开显示，便于核对识别结果
         self.ocrText = QTextEdit()
         self.ocrText.setReadOnly(True)
-        self.ocrText.setVisible(False)
-        self.ocrTitleLabel = QLabel("OCR识别文本")
-        self.ocrTitleLabel.setVisible(False)
+        self.ocrText.setFixedHeight(88)
+        self.ocrTitleLabel = QLabel("OCR原始文本（手牌/战场）")
+        self.manaOcrText = QTextEdit()
+        self.manaOcrText.setReadOnly(True)
+        self.manaOcrText.setFixedHeight(44)
+        self.manaOcrTitleLabel = QLabel("OCR原始文本（水晶/法力）")
 
         self.calcText = QTextEdit()
         self.calcText.setReadOnly(True)
@@ -915,7 +922,19 @@ class MainWindow(QWidget):
         }
         """
         self.calcText.setStyleSheet(text_style)
-        self.ocrText.setStyleSheet(text_style)
+        ocr_raw_style = """
+        QTextEdit{
+            color:#444;
+            background:#fafafa;
+            font-size:13px;
+            font-family:微软雅黑;
+            padding:4px;
+            border:1px solid #ddd;
+            border-radius:6px;
+        }
+        """
+        self.ocrText.setStyleSheet(ocr_raw_style)
+        self.manaOcrText.setStyleSheet(ocr_raw_style)
 
         slot_style = """
         QLabel{
@@ -1043,6 +1062,15 @@ class MainWindow(QWidget):
         stack_layout.addWidget(hand_section)
         stack_layout.addWidget(board_section)
         stack_layout.addWidget(status_section)
+        ocr_raw_section = QWidget()
+        ocr_raw_layout = QVBoxLayout()
+        ocr_raw_layout.setContentsMargins(4, 2, 4, 2)
+        ocr_raw_layout.addWidget(self.ocrTitleLabel)
+        ocr_raw_layout.addWidget(self.ocrText)
+        ocr_raw_layout.addWidget(self.manaOcrTitleLabel)
+        ocr_raw_layout.addWidget(self.manaOcrText)
+        ocr_raw_section.setLayout(ocr_raw_layout)
+        stack_layout.addWidget(ocr_raw_section)
         stack_layout.addWidget(calc_panel)
         stack_layout.setStretchFactor(calc_panel, 1)
         stack_container = QWidget()
@@ -1076,10 +1104,13 @@ class MainWindow(QWidget):
         count_text = f"×{count}" if count > 1 else ""
         return f"{index}. {name}{count_text}[{cost_text}{health_text}]"
 
-    def setResult(self, ocr_text, hand_text, rebuild_result=None, source="ocr", mana_crystals=None, mana=None):
-        # OCR 文本框已隐藏，仅保留文本用于兼容
+    def setResult(self, ocr_text, hand_text, rebuild_result=None, source="ocr",
+                  mana_crystals=None, mana=None, mana_raw_text=""):
         self.ocrText.setPlainText(ocr_text if ocr_text else "未识别到文字")
-        self.ocrTitleLabel.setText("OCR识别文本" if source == "ocr" else "手动输入文本（已按现有规则解析）")
+        self.manaOcrText.setPlainText(mana_raw_text if mana_raw_text else "（未框选或未识别）")
+        self.ocrTitleLabel.setText(
+            "OCR原始文本（手牌/战场）" if source == "ocr" else "手动输入文本（已按现有规则解析）"
+        )
         hand_cards = list(getattr(rebuild_result, "cards", None) or [])
         board_cards = list(getattr(rebuild_result, "battlefield_cards", None) or [])
 
@@ -1188,22 +1219,36 @@ class MainWindow(QWidget):
             QMessageBox.information(self, "提示", "请先停止识别，再重新框选区域。")
             return
 
-        self.statusLabel.setText("状态：拖拽鼠标框选需要 OCR 的区域，按 Esc 可取消")
-        self.overlay.close_on_select = False
+        self._select_target = "main"
+        self.statusLabel.setText("状态：拖拽鼠标框选手牌/战场区域，按 Esc 可取消")
+        self.overlay.close_on_select = True
+        self.overlay.showFullScreen()
+        self.overlay.raise_()
+        self.overlay.activateWindow()
+
+    def open_mana_selector(self):
+        if self.worker is not None:
+            QMessageBox.information(self, "提示", "请先停止识别，再重新框选区域。")
+            return
+
+        self._select_target = "mana"
+        self.statusLabel.setText("状态：拖拽鼠标框选水晶/法力区域（格式 A/B，如 3/3），按 Esc 可取消")
+        self.overlay.close_on_select = True
         self.overlay.showFullScreen()
         self.overlay.raise_()
         self.overlay.activateWindow()
 
     def on_area_selected(self, box):
-        if self.box is None:
-            self.box = box
-            self.statusLabel.setText("状态：已选主区域（手牌/战场），请继续框选水晶/法力区域（格式 A/B，如 4/4）")
-        else:
+        if self._select_target == "mana":
             self.mana_box = box
-            self.overlay.close_on_select = True
-            self.overlay.hide()
-            self.startButton.setEnabled(True)
-            self.statusLabel.setText("状态：已选主区域 + 法力区域，点击“开始识别”")
+            self.statusLabel.setText("状态：已选水晶/法力区域，可点击“开始识别”")
+        else:
+            self.box = box
+            self.statusLabel.setText("状态：已选手牌/战场区域，可再框选水晶/法力区域")
+        self._refresh_start_enabled()
+
+    def _refresh_start_enabled(self):
+        self.startButton.setEnabled(self.box is not None and self.mana_box is not None)
 
     def get_box(self):
         return self.box
