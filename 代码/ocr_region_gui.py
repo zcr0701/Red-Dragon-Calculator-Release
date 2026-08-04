@@ -736,28 +736,23 @@ class QuickPanel(QDialog):
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
         self.setMinimumWidth(780)
 
-        # ---- 顶部操作按钮 ----
-        self.selectButton = QPushButton("框选手牌/战场")
-        self.selectManaButton = QPushButton("框选水晶/法力")
+        # ---- 顶部操作按钮：识别为开始/停止切换按钮，设置按钮弹出后台设置窗口 ----
         self.startButton = QPushButton("开始识别")
-        self.stopButton = QPushButton("停止识别")
         self.calculateButton = QPushButton("开始计算")
         self.cancelCalculationButton = QPushButton("中止计算")
+        self.settingsButton = QPushButton("设置")
         self.startButton.setEnabled(False)
-        self.stopButton.setEnabled(False)
         self.calculateButton.setEnabled(False)
         self.cancelCalculationButton.setEnabled(False)
 
-        self.selectButton.clicked.connect(owner.open_selector)
-        self.selectManaButton.clicked.connect(owner.open_mana_selector)
-        self.startButton.clicked.connect(owner.start_ocr)
-        self.stopButton.clicked.connect(owner.stop_ocr)
+        self.startButton.clicked.connect(self.on_start_toggle)
         self.calculateButton.clicked.connect(owner.start_calculation)
         self.cancelCalculationButton.clicked.connect(owner.cancel_calculation)
+        self.settingsButton.clicked.connect(owner.toggle_settings_window)
 
         button_layout = QHBoxLayout()
-        for btn in (self.selectButton, self.selectManaButton, self.startButton,
-                    self.stopButton, self.calculateButton, self.cancelCalculationButton):
+        for btn in (self.startButton, self.calculateButton,
+                    self.cancelCalculationButton, self.settingsButton):
             button_layout.addWidget(btn)
 
         # ---- 殒命暗影标记 ----
@@ -800,12 +795,28 @@ class QuickPanel(QDialog):
             box.toggled.connect(make_etc_toggler(box))
             self.etcBandChecks.append((card_name, box))
 
-        etc_layout = QHBoxLayout()
-        etc_layout.addWidget(QLabel("牛头人酋长剩余卡池："))
+        # 牛头人卡池做成折叠区块（默认展开）
+        self.etcToggle = QPushButton("▸ 牛头人酋长剩余卡池（最多勾选 3 张）")
+        self.etcToggle.setCheckable(True)
+        self.etcToggle.setChecked(True)
+        self.etcToggle.setStyleSheet(self.toggle_style)
+        self.etcToggle.setMinimumHeight(38)
+        self.etcPanel = QWidget()
+        etc_panel_layout = QHBoxLayout()
+        etc_panel_layout.setContentsMargins(4, 2, 4, 2)
+        etc_panel_layout.addWidget(QLabel("剩余卡池："))
         for _card_name, box in self.etcBandChecks:
-            etc_layout.addWidget(box)
-        etc_layout.addWidget(QLabel("最多勾选 3 张；取消勾选表示这张已被选走"))
-        etc_layout.addStretch()
+            etc_panel_layout.addWidget(box)
+        etc_panel_layout.addWidget(QLabel("取消勾选表示这张已被选走"))
+        etc_panel_layout.addStretch()
+        self.etcPanel.setLayout(etc_panel_layout)
+        self.etcToggle.toggled.connect(self.etcPanel.setVisible)
+        etc_section = QWidget()
+        etc_section_layout = QVBoxLayout()
+        etc_section_layout.setContentsMargins(0, 0, 0, 0)
+        etc_section_layout.addWidget(self.etcToggle)
+        etc_section_layout.addWidget(self.etcPanel)
+        etc_section.setLayout(etc_section_layout)
 
         # ---- 手牌折叠区块（10 格固定，默认展开） ----
         hand_section = QWidget()
@@ -887,18 +898,6 @@ class QuickPanel(QDialog):
         status_section_layout.addWidget(self.statusPanel)
         status_section.setLayout(status_section_layout)
 
-        # ---- OCR 原始文本 ----
-        self.ocrTitleLabel = QLabel("OCR原始文本（手牌/战场）")
-        self.ocrText = QTextEdit()
-        self.ocrText.setReadOnly(True)
-        self.ocrText.setFixedHeight(88)
-        self.ocrText.setStyleSheet(self.ocr_raw_style)
-        self.manaOcrTitleLabel = QLabel("OCR原始文本（水晶/法力）")
-        self.manaOcrText = QTextEdit()
-        self.manaOcrText.setReadOnly(True)
-        self.manaOcrText.setFixedHeight(44)
-        self.manaOcrText.setStyleSheet(self.ocr_raw_style)
-
         # ---- 计算结果 ----
         self.calcText = QTextEdit()
         self.calcText.setReadOnly(True)
@@ -915,13 +914,10 @@ class QuickPanel(QDialog):
         stack_layout = QVBoxLayout()
         stack_layout.setContentsMargins(0, 0, 0, 0)
         stack_layout.setSpacing(0)
+        stack_layout.addWidget(etc_section)
         stack_layout.addWidget(hand_section)
         stack_layout.addWidget(board_section)
         stack_layout.addWidget(status_section)
-        stack_layout.addWidget(self.ocrTitleLabel)
-        stack_layout.addWidget(self.ocrText)
-        stack_layout.addWidget(self.manaOcrTitleLabel)
-        stack_layout.addWidget(self.manaOcrText)
         stack_layout.addWidget(calc_panel)
         stack_layout.setStretchFactor(calc_panel, 1)
         stack_container = QWidget()
@@ -930,10 +926,16 @@ class QuickPanel(QDialog):
         layout = QVBoxLayout()
         layout.addLayout(button_layout)
         layout.addLayout(deadly_layout)
-        layout.addLayout(etc_layout)
         layout.addWidget(stack_container)
         self.setLayout(layout)
         self.resize(780, 900)
+
+    def on_start_toggle(self):
+        """开始识别 / 停止识别 切换：点击开始扫描，再点停止；识别到结果后自动恢复。"""
+        if self.startButton.text() == "开始识别":
+            self.owner.start_ocr()
+        else:
+            self.owner.stop_ocr()
 
 
 class MainWindow(QWidget):
@@ -1087,22 +1089,59 @@ class MainWindow(QWidget):
         manual_layout.addLayout(manual_button_row)
         self.manualInputPanel.setLayout(manual_layout)
 
-        # 设置窗口布局：参数 + 手动输入，其余操作全部放进弹窗
+        # ---- 框选区域（放到设置窗口） ----
+        self.selectButton = QPushButton("框选手牌/战场")
+        self.selectManaButton = QPushButton("框选水晶/法力")
+        self.selectButton.clicked.connect(self.open_selector)
+        self.selectManaButton.clicked.connect(self.open_mana_selector)
+        select_layout = QHBoxLayout()
+        select_layout.addWidget(QLabel("框选 OCR 区域："))
+        select_layout.addWidget(self.selectButton)
+        select_layout.addWidget(self.selectManaButton)
+        select_layout.addStretch()
+
+        # ---- OCR 原始文本（放到设置窗口） ----
+        self.ocrTitleLabel = QLabel("OCR原始文本（手牌/战场）")
+        self.ocrText = QTextEdit()
+        self.ocrText.setReadOnly(True)
+        self.ocrText.setFixedHeight(88)
+        self.ocrText.setStyleSheet(QuickPanel.ocr_raw_style)
+        self.manaOcrTitleLabel = QLabel("OCR原始文本（水晶/法力）")
+        self.manaOcrText = QTextEdit()
+        self.manaOcrText.setReadOnly(True)
+        self.manaOcrText.setFixedHeight(44)
+        self.manaOcrText.setStyleSheet(QuickPanel.ocr_raw_style)
+
+        # 设置窗口布局：参数 + 手动输入 + 框选 + OCR原始文本
         settings_layout = QVBoxLayout()
         settings_layout.addWidget(self.statusLabel)
+        settings_layout.addLayout(select_layout)
         settings_layout.addLayout(mana_layout)
         settings_layout.addWidget(self.manualInputButton)
         settings_layout.addWidget(self.manualInputPanel)
+        settings_layout.addWidget(self.ocrTitleLabel)
+        settings_layout.addWidget(self.ocrText)
+        settings_layout.addWidget(self.manaOcrTitleLabel)
+        settings_layout.addWidget(self.manaOcrText)
         settings_layout.addStretch()
         self.setLayout(settings_layout)
-        self.resize(760, 480)
+        self.resize(760, 620)
         self.move(120, 80)
 
-        # 操作弹窗（识别/计算/牛池/殒命/手牌·战场·状态/OCR原始文本/计算结果）
+        # 操作弹窗（识别/计算/牛池/殒命/手牌·战场·状态/计算结果），默认只显示弹窗
         self.panel = QuickPanel(self)
         self.panel.show()
         self.setResult("识别结果会显示在这里", "重建后的牌库与手牌会显示在这里", None)
         self.panel.calcText.setPlainText("计算结果会显示在这里")
+
+    def toggle_settings_window(self):
+        """点“设置”才弹出/收起后台设置窗口。"""
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
 
     def _slot_text(self, index: int, card) -> str:
         if card is None:
@@ -1121,9 +1160,9 @@ class MainWindow(QWidget):
     # (ocr_text, hand_text, hand_result, crystals, mana, mana_raw_text)
     def setResult(self, ocr_text, hand_text, rebuild_result=None,
                   mana_crystals=None, mana=None, mana_raw_text="", source="ocr"):
-        self.panel.ocrText.setPlainText(ocr_text if ocr_text else "未识别到文字")
-        self.panel.manaOcrText.setPlainText(mana_raw_text if mana_raw_text else "（未框选或未识别）")
-        self.panel.ocrTitleLabel.setText(
+        self.ocrText.setPlainText(ocr_text if ocr_text else "未识别到文字")
+        self.manaOcrText.setPlainText(mana_raw_text if mana_raw_text else "（未框选或未识别）")
+        self.ocrTitleLabel.setText(
             "OCR原始文本（手牌/战场）" if source == "ocr" else "手动输入文本（已按现有规则解析）"
         )
         hand_cards = list(getattr(rebuild_result, "cards", None) or [])
@@ -1336,7 +1375,7 @@ class MainWindow(QWidget):
 
     def start_ocr(self):
         if self.box is None:
-            QMessageBox.warning(self, "提示", "请先框选手牌/战场区域。")
+            QMessageBox.warning(self, "提示", "请先在设置窗口框选手牌/战场区域。")
             return
 
         if self.worker is not None:
@@ -1351,10 +1390,7 @@ class MainWindow(QWidget):
         self.worker.start()
 
         self.statusLabel.setText("状态：正在扫描识别（0.1s 循环，识别到结果自动停止）")
-        self.panel.selectButton.setEnabled(False)
-        self.panel.selectManaButton.setEnabled(False)
-        self.panel.startButton.setEnabled(False)
-        self.panel.stopButton.setEnabled(True)
+        self.panel.startButton.setText("停止识别")
 
     def start_calculation(self):
         if self.latest_rebuild_result is None:
@@ -1511,10 +1547,8 @@ class MainWindow(QWidget):
         self._auto_stop = False
 
         self.statusLabel.setText("状态：已停止识别，可重新框选区域")
-        self.panel.selectButton.setEnabled(True)
-        self.panel.selectManaButton.setEnabled(True)
+        self.panel.startButton.setText("开始识别")
         self.panel.startButton.setEnabled(self.box is not None and self.mana_box is not None)
-        self.panel.stopButton.setEnabled(False)
 
     def on_ocr_error(self, msg):
         self.statusLabel.setText(msg)
@@ -1533,6 +1567,6 @@ class MainWindow(QWidget):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     gui = MainWindow()
-    gui.show()
+    # 设置窗口默认隐藏，点弹窗里的“设置”才弹出
     gui.panel.show()
     sys.exit(app.exec_())
