@@ -1104,8 +1104,10 @@ class MainWindow(QWidget):
         count_text = f"×{count}" if count > 1 else ""
         return f"{index}. {name}{count_text}[{cost_text}{health_text}]"
 
-    def setResult(self, ocr_text, hand_text, rebuild_result=None, source="ocr",
-                  mana_crystals=None, mana=None, mana_raw_text=""):
+    # 参数顺序与 OCRWorker.result_signal 一致：
+    # (ocr_text, hand_text, hand_result, crystals, mana, mana_raw_text)
+    def setResult(self, ocr_text, hand_text, rebuild_result=None,
+                  mana_crystals=None, mana=None, mana_raw_text="", source="ocr"):
         self.ocrText.setPlainText(ocr_text if ocr_text else "未识别到文字")
         self.manaOcrText.setPlainText(mana_raw_text if mana_raw_text else "（未框选或未识别）")
         self.ocrTitleLabel.setText(
