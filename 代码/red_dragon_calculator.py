@@ -556,14 +556,14 @@ CARD_DATABASE: Dict[str, CardDef] = {
     ),
     "幸运彗星": CardDef(
         name="幸运彗星",
-        cost=1,
+        cost=2,
         card_type="spell",
         description="发现一张连击随从牌。你使用的下一张连击随从牌的连击会触发两次。",
         effect_id="lucky_comet"
     ),
     "战略转移": CardDef(
         name="战略转移",
-        cost=3,
+        cost=1,
         card_type="spell",
         description="将所有友方随从移回你的手牌。",
         effect_id="strategic_transfer"
