@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from PyQt5.QtCore import Qt, QRect, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QRect, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
@@ -413,6 +413,7 @@ class CalculationWorker(QThread):
     progress_signal = pyqtSignal(str)
     partial_result_signal = pyqtSignal(str)
     result_signal = pyqtSignal(str)
+    best_result_signal = pyqtSignal(bool, str)
     error_signal = pyqtSignal(str)
 
     def __init__(self, rebuild_result, mana_crystals, mana, max_depth=100, max_paths=1000000, max_alex_count=10, min_alex_count=1, deadly_shadow_hand_indexes=None, etc_band_remaining=None, beam_mode=False, operator_depth=5, beam_width=3000, beam_depth=25):
@@ -681,6 +682,26 @@ class CalculationWorker(QThread):
                 stop_note=stop_note,
                 limit_note=limit_note
             )
+
+            # 筛选最高伤害路径，单独发给界面放进对应框
+            best_damage = max((item.alex_damage for item in states), default=0)
+            best_states = [item for item in states if item.alex_damage == best_damage]
+
+            if best_states:
+                best_lines = []
+
+                for idx, item in enumerate(best_states, start=1):
+                    best_lines.append(
+                        f"{idx}. {' -> '.join(item.path)}"
+                        f" | 龙数：{item.alex_play_count} | 伤害：{item.alex_damage}点"
+                        f" | 剩余法力：{item.mana}"
+                    )
+
+                best_text = "\n".join(best_lines)
+            else:
+                best_text = "（未搜到红龙路径）"
+
+            self.best_result_signal.emit(self.beam_mode, best_text)
 
             self.result_signal.emit(
                 self.params_line()
@@ -974,20 +995,43 @@ class QuickPanel(ScreenClampMixin, QDialog):
         status_section_layout.addWidget(self.statusPanel)
         status_section.setLayout(status_section_layout)
 
-        # ---- 计算结果 ----
-        self.calcText = QTextEdit()
-        self.calcText.setReadOnly(True)
-        self.calcText.setStyleSheet(self.calc_text_style)
+        # ---- 计算进度小字 ----
         self.progressLabel = QLabel("")
         self.progressLabel.setStyleSheet("font-size:12px;color:#666;padding:2px 4px;")
-        calc_panel = QWidget()
-        calc_layout = QVBoxLayout()
-        calc_title = QLabel("出牌路径计算")
-        calc_title.setStyleSheet("font-size:14px;color:#333;")
-        calc_layout.addWidget(calc_title)
-        calc_layout.addWidget(self.progressLabel)
-        calc_layout.addWidget(self.calcText)
-        calc_panel.setLayout(calc_layout)
+
+        # ---- 三个结果框（自动适应内容高度，保证刚好能看完全） ----
+        result_style = """
+        QTextEdit{
+            color:#333;
+            background:white;
+            font-size:14px;
+            font-family:微软雅黑;
+            padding:6px;
+            border:1px solid #ddd;
+            border-radius:6px;
+        }
+        """
+
+        def make_result_edit():
+            edit = QTextEdit()
+            edit.setReadOnly(True)
+            edit.setStyleSheet(result_style)
+            edit.setMinimumHeight(36)
+            return edit
+
+        self.fullText = make_result_edit()
+        self.bidirText = make_result_edit()
+        self.beamText = make_result_edit()
+
+        self.fullToggle, self.fullPanel, full_section = self._make_fold_section(
+            "完整路径计算结果", False, self.fullText, 900
+        )
+        self.bidirToggle, self.bidirPanel, bidir_section = self._make_fold_section(
+            "双向链计算最高伤害路径", True, self.bidirText, 420
+        )
+        self.beamToggle, self.beamPanel, beam_section = self._make_fold_section(
+            "beam束状计算最高伤害路径", True, self.beamText, 420
+        )
 
         # ---- 殒命位置与牛头人卡池：同一行，牛头人展开后在其下一行 ----
         actions_section = QWidget()
@@ -1011,8 +1055,11 @@ class QuickPanel(ScreenClampMixin, QDialog):
         stack_layout.addWidget(board_section)
         stack_layout.addWidget(status_section)
         stack_layout.addWidget(actions_section)
-        stack_layout.addWidget(calc_panel)
-        stack_layout.setStretchFactor(calc_panel, 1)
+        stack_layout.addWidget(self.progressLabel)
+        stack_layout.addWidget(full_section)
+        stack_layout.addWidget(bidir_section)
+        stack_layout.addWidget(beam_section)
+        stack_layout.addStretch(1)
         stack_container = QWidget()
         stack_container.setLayout(stack_layout)
 
@@ -1021,6 +1068,47 @@ class QuickPanel(ScreenClampMixin, QDialog):
         layout.addWidget(stack_container)
         self.setLayout(layout)
         self.resize(600, 960)
+
+    def _make_fold_section(self, title, default_open, edit, cap):
+        """生成一个折叠区块：标题按钮 + 可自动适应高度的文本框。"""
+        toggle = QPushButton("▸ " + title)
+        toggle.setCheckable(True)
+        toggle.setChecked(default_open)
+        toggle.setStyleSheet(self.toggle_style)
+        toggle.setMinimumHeight(38)
+        panel = QWidget()
+        lay = QVBoxLayout()
+        lay.setContentsMargins(4, 2, 4, 2)
+        lay.addWidget(edit)
+        panel.setLayout(lay)
+
+        def on_toggle(checked):
+            panel.setVisible(checked)
+            if checked:
+                self._fit_edit(edit, cap)
+
+        toggle.toggled.connect(on_toggle)
+        section = QWidget()
+        slay = QVBoxLayout()
+        slay.setContentsMargins(0, 0, 0, 0)
+        slay.addWidget(toggle)
+        slay.addWidget(panel)
+        section.setLayout(slay)
+        return toggle, panel, section
+
+    def _fit_edit(self, edit, cap=520):
+        """文本框自动适应内容高度（刚好能看完全，超出上限则滚动）。"""
+
+        def fit():
+            width = edit.viewport().width()
+            if width <= 0:
+                return
+            doc = edit.document()
+            doc.setTextWidth(width)
+            height = int(doc.size().height()) + 12
+            edit.setFixedHeight(max(36, min(height, cap)))
+
+        QTimer.singleShot(0, fit)
 
     def on_start_toggle(self):
         """开始识别 / 停止识别 切换：点击开始扫描，再点停止；识别到结果后自动恢复。"""
@@ -1272,7 +1360,11 @@ class MainWindow(ScreenClampMixin, QWidget):
         self.panel = QuickPanel(self)
         self.panel.show()
         self.setResult("识别结果会显示在这里", "重建后的牌库与手牌会显示在这里", None)
-        self.panel.calcText.setPlainText("计算结果会显示在这里")
+        self.panel.fullText.setPlainText("计算完成后，完整路径结果会显示在这里（可折叠）")
+        self.panel.bidirText.setPlainText("双向链计算完成后，最高伤害路径显示在这里")
+        self.panel.beamText.setPlainText("beam束计算完成后，最高伤害路径显示在这里")
+        self.panel._fit_edit(self.panel.bidirText, 420)
+        self.panel._fit_edit(self.panel.beamText, 420)
 
     def toggle_settings_window(self):
         """点“设置”才弹出/收起后台设置窗口。"""
@@ -1644,11 +1736,14 @@ class MainWindow(ScreenClampMixin, QWidget):
             QMessageBox.warning(self, "提示", str(e))
             return
 
-        self.panel.calcText.setPlainText("正在计算所有可行出牌路径...")
+        self.panel.fullText.setPlainText("正在计算所有可行出牌路径...")
+        self.panel.bidirText.setPlainText("")
+        self.panel.beamText.setPlainText("")
         self.panel.progressLabel.setText("")
         # 合并后的按钮在计算期间要可点（此时是“中止计算”）
         self.panel.calculateButton.setEnabled(True)
         self.panel.calculateButton.setText("中止计算")
+        self._calc_beam_mode = bool(self.beamModeCheck.isChecked())
 
         self.calc_worker = CalculationWorker(
             rebuild_result=self.latest_rebuild_result,
@@ -1668,6 +1763,7 @@ class MainWindow(ScreenClampMixin, QWidget):
         self.calc_worker.progress_signal.connect(self.on_calculation_progress)
         self.calc_worker.partial_result_signal.connect(self.on_calculation_partial)
         self.calc_worker.result_signal.connect(self.on_calculation_finished)
+        self.calc_worker.best_result_signal.connect(self.on_best_result)
         self.calc_worker.error_signal.connect(self.on_calculation_error)
         self.calc_worker.finished.connect(self.on_calculation_thread_finished)
         self.calc_worker.start()
@@ -1676,7 +1772,7 @@ class MainWindow(ScreenClampMixin, QWidget):
         if self.calc_worker is None:
             return
 
-        self.panel.calcText.append("\n正在中止计算，将展示并导出已经算出的全部结果...")
+        self.panel.fullText.append("\n正在中止计算，将展示并导出已经算出的全部结果...")
         self.panel.calculateButton.setText("开始计算")
         self.calc_worker.requestInterruption()
 
@@ -1686,15 +1782,27 @@ class MainWindow(ScreenClampMixin, QWidget):
         self.panel.progressLabel.setText(text)
 
     def on_calculation_partial(self, text):
-        self.panel.calcText.setPlainText(text)
+        self.panel.fullText.setPlainText(text)
+        self.panel._fit_edit(self.panel.fullText, 900)
 
     def on_calculation_finished(self, text):
-        self.panel.calcText.setPlainText(text)
+        self.panel.fullText.setPlainText(text)
+        self.panel._fit_edit(self.panel.fullText, 900)
         self.statusLabel.setText("状态：计算完成，完整路径文档已生成")
 
     def on_calculation_error(self, msg):
-        self.panel.calcText.setPlainText(msg)
+        self.panel.fullText.setPlainText(msg)
+        self.panel._fit_edit(self.panel.fullText, 900)
         self.statusLabel.setText("状态：计算失败")
+
+    def on_best_result(self, beam_mode, text):
+        """双向链/beam 计算完成后，把最高伤害路径放进对应框并自动适应高度。"""
+        if beam_mode:
+            self.panel.beamText.setPlainText(text)
+            self.panel._fit_edit(self.panel.beamText, 420)
+        else:
+            self.panel.bidirText.setPlainText(text)
+            self.panel._fit_edit(self.panel.bidirText, 420)
 
     def on_calculation_thread_finished(self):
         self.calc_worker = None
