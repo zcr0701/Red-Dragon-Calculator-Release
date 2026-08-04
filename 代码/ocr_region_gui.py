@@ -1,3 +1,5 @@
+import ctypes
+import ctypes.wintypes
 import re
 import sys
 import time
@@ -43,6 +45,53 @@ from archive import (
     remember_situation,
     update_formula,
 )
+
+
+if sys.platform == "win32":
+    class _WINDOWPOS(ctypes.Structure):
+        _fields_ = [
+            ("hwnd", ctypes.wintypes.HWND),
+            ("hwndInsertAfter", ctypes.wintypes.HWND),
+            ("x", ctypes.c_int),
+            ("y", ctypes.c_int),
+            ("cx", ctypes.c_int),
+            ("cy", ctypes.c_int),
+            ("flags", ctypes.c_uint),
+        ]
+
+    _WM_WINDOWPOSCHANGING = 0x0046
+    _SWP_NOMOVE = 0x0002
+
+
+class ScreenClampMixin:
+    """拖动窗口贴住屏幕边界（Windows 原生消息级钳制）。
+
+    在 WM_WINDOWPOSCHANGING 里直接改写窗口目标位置，系统不会把窗口移出屏幕，
+    避免在 moveEvent 里再 move() 与系统拖动互相拉扯导致的闪烁抽搐。
+    """
+
+    def nativeEvent(self, eventType, message):
+        if sys.platform == "win32" and eventType == b"windows_generic_MSG":
+            try:
+                msg = ctypes.wintypes.MSG.from_address(int(message))
+
+                if msg.message == _WM_WINDOWPOSCHANGING:
+                    wp = _WINDOWPOS.from_address(int(msg.lParam))
+
+                    if not (wp.flags & _SWP_NOMOVE):
+                        screen = QApplication.primaryScreen().availableGeometry()
+                        max_x = screen.x() + max(0, screen.width() - wp.cx)
+                        max_y = screen.y() + max(0, screen.height() - wp.cy)
+                        new_x = min(max(wp.x, screen.x()), max_x)
+                        new_y = min(max(wp.y, screen.y()), max_y)
+
+                        if new_x != wp.x or new_y != wp.y:
+                            wp.x = new_x
+                            wp.y = new_y
+                            return True, 0
+            except Exception:
+                pass
+        return super().nativeEvent(eventType, message)
 
 
 SECTION_NAME_RE = re.compile(r"^\s*(当前效果|牌库中|手牌中|战场|其他)\s*[（(]?\s*\d*\s*[）)]?\s*$")
@@ -674,7 +723,7 @@ class SelectionOverlay(QWidget):
             painter.drawRect(selected_rect)
 
 
-class QuickPanel(QDialog):
+class QuickPanel(ScreenClampMixin, QDialog):
     """主操作弹窗：识别 / 计算 / 牛池勾选 / 殒命标记 / 手牌·战场·状态显示 / OCR原始文本 / 计算结果。
 
     引擎与设置都在 MainWindow（后台设置窗口），弹窗只负责操作和展示。
@@ -977,7 +1026,7 @@ class QuickPanel(QDialog):
             self._clamp_move = False
 
 
-class MainWindow(QWidget):
+class MainWindow(ScreenClampMixin, QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("红龙贼计算器 · 设置")
