@@ -44,6 +44,7 @@ from red_dragon_calculator import (
     enumerate_play_paths,
     find_cpp_core,
     format_paths,
+    make_card,
     state_from_rebuild_result,
 )
 from archive import (
@@ -1013,7 +1014,7 @@ class QuickPanel(ScreenClampMixin, QDialog):
         self.owner = owner
         self.setWindowTitle("红龙贼计算器")
         self._native_clamp_ok = False
-        flags = self.windowFlags() | Qt.WindowStaysOnTopHint
+        flags = self.windowFlags() | Qt.WindowStaysOnTopHint | Qt.WindowMinimizeButtonHint
         flags &= ~Qt.WindowContextHelpButtonHint  # 去掉标题栏的 “?” 帮助按钮
         self.setWindowFlags(flags)
         self.setMinimumWidth(520)
@@ -1123,7 +1124,7 @@ class QuickPanel(ScreenClampMixin, QDialog):
         board_section = QWidget()
         board_section_layout = QVBoxLayout()
         board_section_layout.setContentsMargins(0, 0, 0, 0)
-        self.boardToggle = QPushButton("▸ 战场（7 格固定）")
+        self.boardToggle = QPushButton("▸ 随从（7 格固定）")
         self.boardToggle.setCheckable(True)
         self.boardToggle.setChecked(False)
         self.boardToggle.setStyleSheet(self.toggle_style)
@@ -1528,7 +1529,7 @@ class MainWindow(ScreenClampMixin, QWidget):
         manual_board_panel = QWidget()
         manual_board_layout = QVBoxLayout()
         manual_board_layout.setContentsMargins(0, 0, 0, 0)
-        manual_board_layout.addWidget(QLabel("战场（随从栏）"))
+        manual_board_layout.addWidget(QLabel("随从栏"))
         self.manualBoardEdit = QTextEdit()
         self.manualBoardEdit.setPlaceholderText("例：\n4 鲨鱼之灵 3\n2 狐 2\n4 刀油 3")
         self.manualBoardEdit.setFixedHeight(150)
@@ -1669,7 +1670,19 @@ class MainWindow(ScreenClampMixin, QWidget):
             "OCR原始文本（手牌/战场）" if source == "ocr" else "手动输入文本（已按现有规则解析）"
         )
         hand_cards = list(getattr(rebuild_result, "cards", None) or [])
-        board_cards = list(getattr(rebuild_result, "battlefield_cards", None) or [])
+        # 随从栏只装随从，武器/奥秘不再识别
+        board_cards = []
+
+        for card in (getattr(rebuild_result, "battlefield_cards", None) or []):
+            name = getattr(card, "name", "") or ""
+
+            try:
+                if make_card(name).card_type == "minion":
+                    board_cards.append(card)
+            except Exception:
+                continue
+
+        board_cards = board_cards[:7]
 
         if mana_crystals is not None and mana is not None:
             self.scan_crystals = int(mana_crystals)

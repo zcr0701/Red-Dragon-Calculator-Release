@@ -6267,12 +6267,9 @@ def state_from_rebuild_result(
             if card is None:
                 continue
 
+            # 随从栏只装随从，不再识别武器/奥秘
             if card.card_type == "minion" and len(board_cards) < MAX_BOARD_SIZE:
                 board_cards.append(card)
-            elif card.card_type == "secret" and len(secret_cards) < MAX_SECRET_SIZE:
-                secret_cards.append(card)
-            elif card.card_type == "weapon":
-                weapon_card = card
 
     merged_shadow_indexes = list(deadly_shadow_hand_indexes or [])
 

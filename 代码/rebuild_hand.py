@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Tuple
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = BASE_DIR / "card_config.json"
 
-SECTION_RE = re.compile(r"^\s*(当前效果|牌库中|手牌中|战场|其他)\s*[（(]\s*(\d+)\s*[）)]\s*$")
+SECTION_RE = re.compile(r"^\s*(当前效果|牌库中|手牌中|战场|随从|其他)\s*[（(]\s*(\d+)\s*[）)]\s*$")
 COST_RE = re.compile(r"^\s*(\d+)\s*$")
 
 CARD_COSTS = {
@@ -342,7 +342,7 @@ def get_section_positions(lines: List[str], result: HandRebuildResult) -> Dict[s
             positions.setdefault("手牌中", index)
             continue
 
-        if section_name == "战场":
+        if section_name in ("战场", "随从"):
             result.expected_battlefield_count = section_count
             positions.setdefault("战场", index)
             continue
@@ -791,7 +791,7 @@ def rebuild_hand_from_lines(
     )
     result.battlefield_cards = parse_card_block(
         zone_lines=battlefield_lines,
-        zone_name="战场",
+        zone_name="随从",
         card_configs=card_configs,
         min_common_chars=min_common_chars,
         result=result
@@ -813,7 +813,7 @@ def rebuild_hand_from_lines(
 
     if result.expected_battlefield_count is not None and result.battlefield_total_count != result.expected_battlefield_count:
         result.warnings.append(
-            f"重建战场数量 {result.battlefield_total_count} 与标题数量 {result.expected_battlefield_count} 不一致"
+            f"重建随从数量 {result.battlefield_total_count} 与标题数量 {result.expected_battlefield_count} 不一致"
         )
 
     return result
@@ -867,7 +867,7 @@ def format_result(result: HandRebuildResult) -> str:
 
     if result.expected_battlefield_count is not None or result.battlefield_cards:
         lines.append("")
-        lines.extend(format_card_lines("战场明细", result.battlefield_cards))
+        lines.extend(format_card_lines("随从明细", result.battlefield_cards))
 
     if result.warnings:
         lines.append("")
