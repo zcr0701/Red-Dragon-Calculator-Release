@@ -38,7 +38,6 @@ from red_dragon_calculator import (
     state_from_rebuild_result,
 )
 from archive import (
-    format_cached_paths,
     lookup_situation,
     remember_situation,
     update_formula,
@@ -50,6 +49,7 @@ COST_ONLY_RE = re.compile(r"^\s*(\d+)\s*费?\s*$")
 COMMA_ZONE_RE = re.compile(r"^\s*(\d+)\s*[,，、]\s*(\d+)\s*血?\s*(.+)$")
 STAR_ONLY_RE = re.compile(r"^[*★☆＊]+\s*$")
 STAR_COST_RE = re.compile(r"^[*★☆＊]+\s*(.+)$")
+MANA_RATIO_RE = re.compile(r"(\d+)\s*[/／]\s*(\d+)")
 
 _MANUAL_CARD_CONFIGS, _MANUAL_MIN_COMMON_CHARS = load_card_config()
 
@@ -223,34 +223,50 @@ def build_manual_section_text(
 
 
 class OCRWorker(QThread):
-    result_signal = pyqtSignal(str, str, object)
+    result_signal = pyqtSignal(str, str, object, object, object)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, get_box_func, ocr_api):
+    def __init__(self, get_box_func, get_mana_box_func, ocr_api):
         super().__init__()
         self.get_box_func = get_box_func
+        self.get_mana_box_func = get_mana_box_func
         self.ocr_api = ocr_api
         self.running = True
 
     def run(self):
+        last_crystals = None
+        last_mana = None
+
         while self.running:
             try:
                 box = self.get_box_func()
 
                 if box is None:
-                    time.sleep(0.1)
+                    time.sleep(0.2)
                     continue
 
                 ocr_text = self.ocr_api.recognize_box(box)
                 hand_result = rebuild_hand_from_text(ocr_text)
                 hand_text = format_result(hand_result)
-                self.result_signal.emit(ocr_text, hand_text, hand_result)
+                crystals, mana = last_crystals, last_mana
+                mana_box = self.get_mana_box_func()
+
+                if mana_box is not None:
+                    mana_text = self.ocr_api.recognize_box(mana_box)
+                    match = MANA_RATIO_RE.search(mana_text)
+
+                    if match:
+                        crystals = int(match.group(1))
+                        mana = int(match.group(2))
+                        last_crystals, last_mana = crystals, mana
+
+                self.result_signal.emit(ocr_text, hand_text, hand_result, crystals, mana)
             except Exception as e:
                 msg = f"OCR错误: {e}"
                 print(msg)
                 self.error_signal.emit(msg)
 
-            time.sleep(0.1)
+            time.sleep(0.2)
 
     def stop(self):
         self.running = False
@@ -337,6 +353,31 @@ class CalculationWorker(QThread):
         lines.append("")
         return "\n".join(lines)
 
+    def params_line(self) -> str:
+        return (
+            f"计算参数：{self.mana_crystals}水晶 / {self.mana}法力 | "
+            f"链条步数上限{self.max_depth} | 路径上限{self.max_paths} | "
+            f"搜索龙数 {self.min_alex_count}~{self.max_alex_count} | "
+            f"{'beam束搜索' if self.beam_mode else '双向符号链证明'}"
+        )
+
+    def format_cached_paths_minimal(self, entry) -> str:
+        lines = ["命中存档："]
+        paths = entry.get("路径", {})
+
+        if not paths:
+            lines.append("（该局面此前未搜到红龙路径）")
+            return "\n".join(lines)
+
+        best = str(max(int(count) for count in paths))
+        lines.append(f"最多龙数：{best}龙")
+
+        for count_text in sorted(paths, key=lambda item: -int(item)):
+            for path_text in paths[count_text]:
+                lines.append("  " + path_text)
+
+        return "\n".join(lines)
+
     def format_prune_stats(self, prune_stats):
         if not prune_stats:
             return f"{self.stats_title}暂无记录\n"
@@ -418,8 +459,9 @@ class CalculationWorker(QThread):
             if cached:
                 # 立即展示缓存，但不返回：后台继续完整计算，搜出更高龙数就更新存档
                 self.partial_result_signal.emit(
-                    self.format_initial_state_note(state)
-                    + format_cached_paths(cached)
+                    self.params_line()
+                    + "\n\n"
+                    + self.format_cached_paths_minimal(cached)
                     + "\n\n（以上为缓存结果，正在后台重新计算；若搜出更高龙数的新路径，会自动更新存档并展示新结果）"
                 )
 
@@ -436,9 +478,8 @@ class CalculationWorker(QThread):
 
             def on_found(found_states, target_alex_count):
                 self.partial_result_signal.emit(
-                    self.format_initial_state_note(state)
-                    + self.format_prune_stats(prune_stats)
-                    + f"已即时发现 {len(found_states)} 条 {target_alex_count} 龙路径，仍在继续计算；可点击“中止计算”立即导出当前全部结果。\n\n"
+                    self.params_line()
+                    + f"\n\n已即时发现 {len(found_states)} 条 {target_alex_count} 龙路径，仍在继续计算；可点击“中止计算”立即导出当前全部结果。\n\n"
                     + format_paths(found_states, limit=300)
                 )
 
@@ -504,15 +545,11 @@ class CalculationWorker(QThread):
                 stop_note=stop_note,
                 limit_note=limit_note
             )
-            export_note = f"完整路径文档已生成：{export_path}\n"
 
             self.result_signal.emit(
-                self.format_initial_state_note(state)
-                + self.format_prune_stats(prune_stats)
-                + f"计算总耗时：{elapsed_seconds:.1f} 秒\n\n"
-                + stop_note
-                + limit_note
-                + export_note
+                self.params_line()
+                + "\n\n"
+                + (stop_note + limit_note if (stop_note or limit_note) else "")
                 + format_paths(states, limit=300)
             )
         except Exception as e:
@@ -588,6 +625,7 @@ class MainWindow(QWidget):
         self.setWindowFlags(Qt.WindowStaysOnTopHint)
 
         self.box = None
+        self.mana_box = None
         self.worker = None
         self.calc_worker = None
         self.latest_rebuild_result = None
@@ -821,55 +859,110 @@ class MainWindow(QWidget):
         QLabel{
             background:white;
             color:#333;
-            font-size:16px;
+            font-size:12px;
             font-family:微软雅黑;
             border:1px solid #ddd;
-            border-radius:8px;
-            padding:4px;
+            border-radius:6px;
+            padding:2px;
         }
         """
+        toggle_style = """
+        QPushButton{
+            background:#f0f0f0;
+            color:#333;
+            font-size:13px;
+            font-family:微软雅黑;
+            border:1px solid #ccc;
+            border-radius:6px;
+            padding:4px 8px;
+            text-align:left;
+        }
+        QPushButton:checked{ background:#e8e8ff; }
+        """
 
-        # 手牌：10 个固定位置（5 列 × 2 行），显示该位置卡牌
-        hand_panel = QWidget()
-        hand_layout = QVBoxLayout()
-        hand_layout.addWidget(QLabel("手牌（10 格固定）"))
+        # 手牌/战场：折叠展开区块 + 固定格（10 手牌 + 7 战场），小号显示
+        cards_section = QWidget()
+        cards_section_layout = QVBoxLayout()
+        cards_section_layout.setContentsMargins(0, 0, 0, 0)
+        self.cardsToggle = QPushButton("▸ 手牌 / 战场（10 + 7 格固定）")
+        self.cardsToggle.setCheckable(True)
+        self.cardsToggle.setChecked(True)
+        self.cardsToggle.setStyleSheet(toggle_style)
+        self.cardsPanel = QWidget()
+        cards_panel_layout = QVBoxLayout()
+        cards_panel_layout.setContentsMargins(4, 2, 4, 2)
+        hand_title = QLabel("手牌（10 格）")
+        hand_title.setStyleSheet("font-size:13px;color:#666;")
+        cards_panel_layout.addWidget(hand_title)
         hand_grid = QGridLayout()
+        hand_grid.setSpacing(2)
         self.hand_slots = []
 
         for index in range(10):
             slot = QLabel("空")
             slot.setAlignment(Qt.AlignCenter)
             slot.setStyleSheet(slot_style)
-            slot.setMinimumHeight(36)
+            slot.setMinimumHeight(26)
             self.hand_slots.append(slot)
             hand_grid.addWidget(slot, index // 5, index % 5)
 
-        hand_layout.addLayout(hand_grid)
-        hand_layout.addWidget(QLabel("战场（7 格固定）"))
+        cards_panel_layout.addLayout(hand_grid)
+        board_title = QLabel("战场（7 格）")
+        board_title.setStyleSheet("font-size:13px;color:#666;")
+        cards_panel_layout.addWidget(board_title)
         board_grid = QGridLayout()
+        board_grid.setSpacing(2)
         self.board_slots = []
 
         for index in range(7):
             slot = QLabel("空")
             slot.setAlignment(Qt.AlignCenter)
             slot.setStyleSheet(slot_style)
-            slot.setMinimumHeight(36)
+            slot.setMinimumHeight(26)
             self.board_slots.append(slot)
             board_grid.addWidget(slot, index // 4, index % 4)
 
-        hand_layout.addLayout(board_grid)
-        hand_panel.setLayout(hand_layout)
+        cards_panel_layout.addLayout(board_grid)
+        self.cardsPanel.setLayout(cards_panel_layout)
+        self.cardsToggle.toggled.connect(self.cardsPanel.setVisible)
+        cards_section_layout.addWidget(self.cardsToggle)
+        cards_section_layout.addWidget(self.cardsPanel)
+        cards_section.setLayout(cards_section_layout)
+
+        # 状态：折叠展开区块（水晶/法力/牛池/殒命）
+        status_section = QWidget()
+        status_section_layout = QVBoxLayout()
+        status_section_layout.setContentsMargins(0, 0, 0, 0)
+        self.statusToggle = QPushButton("▸ 状态（水晶 / 法力 / 牛池 / 殒命）")
+        self.statusToggle.setCheckable(True)
+        self.statusToggle.setChecked(True)
+        self.statusToggle.setStyleSheet(toggle_style)
+        self.statusPanel = QWidget()
+        status_panel_layout = QHBoxLayout()
+        status_panel_layout.setContentsMargins(4, 2, 4, 2)
+        self.statusSummaryLabel = QLabel("水晶 ? / 法力 ?　|　牛池：-　|　殒命：-")
+        self.statusSummaryLabel.setStyleSheet("font-size:13px;color:#333;")
+        status_panel_layout.addWidget(self.statusSummaryLabel)
+        status_panel_layout.addStretch()
+        self.statusPanel.setLayout(status_panel_layout)
+        self.statusToggle.toggled.connect(self.statusPanel.setVisible)
+        status_section_layout.addWidget(self.statusToggle)
+        status_section_layout.addWidget(self.statusPanel)
+        status_section.setLayout(status_section_layout)
 
         calc_panel = QWidget()
         calc_layout = QVBoxLayout()
-        calc_layout.addWidget(QLabel("出牌路径计算"))
+        calc_title = QLabel("出牌路径计算")
+        calc_title.setStyleSheet("font-size:14px;color:#333;")
+        calc_layout.addWidget(calc_title)
         calc_layout.addWidget(self.calcText)
         calc_panel.setLayout(calc_layout)
 
         splitter = QSplitter(Qt.Vertical)
-        splitter.addWidget(hand_panel)
+        splitter.addWidget(cards_section)
+        splitter.addWidget(status_section)
         splitter.addWidget(calc_panel)
-        splitter.setSizes([320, 440])
+        splitter.setSizes([280, 60, 440])
 
         layout = QVBoxLayout()
         layout.addWidget(self.statusLabel)
@@ -899,12 +992,16 @@ class MainWindow(QWidget):
         count_text = f"×{count}" if count > 1 else ""
         return f"{index}. {name}{count_text}[{cost_text}{health_text}]"
 
-    def setResult(self, ocr_text, hand_text, rebuild_result=None, source="ocr"):
+    def setResult(self, ocr_text, hand_text, rebuild_result=None, source="ocr", mana_crystals=None, mana=None):
         # OCR 文本框已隐藏，仅保留文本用于兼容
         self.ocrText.setPlainText(ocr_text if ocr_text else "未识别到文字")
         self.ocrTitleLabel.setText("OCR识别文本" if source == "ocr" else "手动输入文本（已按现有规则解析）")
         hand_cards = list(getattr(rebuild_result, "cards", None) or [])
         board_cards = list(getattr(rebuild_result, "battlefield_cards", None) or [])
+
+        if mana_crystals is not None and mana is not None:
+            self.crystalInput.setText(str(mana_crystals))
+            self.manaInput.setText(str(mana))
 
         for index, slot in enumerate(self.hand_slots):
             card = hand_cards[index] if index < len(hand_cards) else None
@@ -917,6 +1014,19 @@ class MainWindow(QWidget):
         if rebuild_result is not None:
             self.latest_rebuild_result = rebuild_result
             self.calculateButton.setEnabled(True)
+
+        self.update_status_display()
+
+    def update_status_display(self):
+        crystals = self.crystalInput.text().strip() or "?"
+        mana = self.manaInput.text().strip() or "?"
+        band = "、".join(
+            card_name for card_name, checkbox in self.etcBandChecks if checkbox.isChecked()
+        ) or "空"
+        deadly_text = self.deadlyShadowInput.text().strip() or "未标记"
+        self.statusSummaryLabel.setText(
+            f"水晶 {crystals} / 法力 {mana}　|　牛池：{band}　|　殒命：{deadly_text}"
+        )
 
     def toggle_manual_input(self):
         visible = self.manualInputPanel.isHidden()
@@ -996,12 +1106,20 @@ class MainWindow(QWidget):
         self.overlay.activateWindow()
 
     def on_area_selected(self, box):
-        self.box = box
-        self.startButton.setEnabled(True)
-        self.statusLabel.setText(f"状态：已选择区域 {box}，点击“开始识别”")
+        if self.box is None:
+            self.box = box
+            self.statusLabel.setText("状态：已选主区域（手牌/战场），请再框选水晶/法力区域（格式 A/B，如 4/4）")
+            self.open_selector()
+        else:
+            self.mana_box = box
+            self.startButton.setEnabled(True)
+            self.statusLabel.setText(f"状态：已选主区域 {self.box} + 法力区域 {self.mana_box}，点击“开始识别”")
 
     def get_box(self):
         return self.box
+
+    def get_mana_box(self):
+        return self.mana_box
 
     def get_deadly_shadow_hand_indexes(self):
         if not self.deadlyShadowCheck.isChecked():
@@ -1060,7 +1178,7 @@ class MainWindow(QWidget):
         if self.worker is not None:
             return
 
-        self.worker = OCRWorker(self.get_box, self.ocr_api)
+        self.worker = OCRWorker(self.get_box, self.get_mana_box, self.ocr_api)
         self.worker.result_signal.connect(self.setResult)
         self.worker.error_signal.connect(self.on_ocr_error)
         self.worker.start()
