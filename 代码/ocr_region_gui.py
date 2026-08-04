@@ -36,7 +36,10 @@ from rebuild_hand import (
 from red_dragon_calculator import (
     ETC_BAND,
     beam_search_paths,
+    cpp_beam_search_paths,
+    cpp_symbolic_prove_paths,
     enumerate_play_paths,
+    find_cpp_core,
     format_paths,
     state_from_rebuild_result,
 )
@@ -657,6 +660,14 @@ class CalculationWorker(QThread):
                 )
 
             def on_found(found_states, target_alex_count):
+                if isinstance(found_states, int):
+                    # C++ 核心实时回调：(龙数, 当前最高伤害)
+                    self.partial_result_signal.emit(
+                        self.params_line()
+                        + f"\n\n已即时发现 {found_states} 龙路径（当前最高伤害 {target_alex_count} 点），仍在计算；可点击“中止计算”立即导出当前全部结果。\n\n"
+                    )
+                    return
+
                 self.partial_result_signal.emit(
                     self.params_line()
                     + f"\n\n已即时发现 {len(found_states)} 条 {target_alex_count} 龙路径，仍在继续计算；可点击“中止计算”立即导出当前全部结果。\n\n"
@@ -665,21 +676,33 @@ class CalculationWorker(QThread):
 
             prune_stats = {}
             search_started = time.time()
+            cpp_exe = find_cpp_core()
             if self.beam_mode:
                 # beam 模式先跑双向链瞬间出结果，再跑 beam 束搜索
-                bidir_states = enumerate_play_paths(
-                    initial_state=state,
-                    max_depth=self.max_depth,
-                    max_paths=self.max_paths,
-                    max_alex_count=self.max_alex_count,
-                    min_alex_count=self.min_alex_count,
-                    progress_callback=None,
-                    found_callback=None,
-                    prune_stats={},
-                    should_stop=self.isInterruptionRequested,
-                    forward_mining=False,
-                    forward_depth=self.operator_depth,
-                )
+                if cpp_exe is not None:
+                    bidir_states, _bidir_stats = cpp_symbolic_prove_paths(
+                        initial_state=state,
+                        max_depth=self.max_depth,
+                        max_paths=self.max_paths,
+                        max_alex_count=self.max_alex_count,
+                        min_alex_count=self.min_alex_count,
+                        forward_depth=self.operator_depth,
+                        exe_path=cpp_exe,
+                    )
+                else:
+                    bidir_states = enumerate_play_paths(
+                        initial_state=state,
+                        max_depth=self.max_depth,
+                        max_paths=self.max_paths,
+                        max_alex_count=self.max_alex_count,
+                        min_alex_count=self.min_alex_count,
+                        progress_callback=None,
+                        found_callback=None,
+                        prune_stats={},
+                        should_stop=self.isInterruptionRequested,
+                        forward_mining=False,
+                        forward_depth=self.operator_depth,
+                    )
                 self.best_result_signal.emit(False, self._format_best(bidir_states))
                 self.partial_result_signal.emit(
                     self.params_line()
@@ -687,32 +710,65 @@ class CalculationWorker(QThread):
                     + format_paths(bidir_states, limit=300)
                 )
 
-                states = beam_search_paths(
-                    initial_state=state,
-                    max_depth=self.beam_depth,
-                    max_paths=self.max_paths,
-                    max_alex_count=self.max_alex_count,
-                    min_alex_count=self.min_alex_count,
-                    beam_width=self.beam_width,
-                    progress_callback=on_progress,
-                    found_callback=on_found,
-                    prune_stats=prune_stats,
-                    should_stop=self.isInterruptionRequested
-                )
+                if cpp_exe is not None:
+                    states = cpp_beam_search_paths(
+                        initial_state=state,
+                        max_depth=self.beam_depth,
+                        max_paths=self.max_paths,
+                        max_alex_count=self.max_alex_count,
+                        min_alex_count=self.min_alex_count,
+                        beam_width=self.beam_width,
+                        exe_path=cpp_exe,
+                        progress_callback=on_progress,
+                        found_callback=on_found,
+                        should_stop=self.isInterruptionRequested,
+                    )
+                    prune_stats["束搜索束宽"] = self.beam_width
+                    prune_stats["束搜索深度"] = self.beam_depth
+                    prune_stats["计算核心"] = "C++"
+                else:
+                    states = beam_search_paths(
+                        initial_state=state,
+                        max_depth=self.beam_depth,
+                        max_paths=self.max_paths,
+                        max_alex_count=self.max_alex_count,
+                        min_alex_count=self.min_alex_count,
+                        beam_width=self.beam_width,
+                        progress_callback=on_progress,
+                        found_callback=on_found,
+                        prune_stats=prune_stats,
+                        should_stop=self.isInterruptionRequested
+                    )
             else:
-                states = enumerate_play_paths(
-                    initial_state=state,
-                    max_depth=self.max_depth,
-                    max_paths=self.max_paths,
-                    max_alex_count=self.max_alex_count,
-                    min_alex_count=self.min_alex_count,
-                    progress_callback=on_progress,
-                    found_callback=on_found,
-                    prune_stats=prune_stats,
-                    should_stop=self.isInterruptionRequested,
-                    forward_mining=False,
-                    forward_depth=self.operator_depth,
-                )
+                if cpp_exe is not None:
+                    states, cpp_stats = cpp_symbolic_prove_paths(
+                        initial_state=state,
+                        max_depth=self.max_depth,
+                        max_paths=self.max_paths,
+                        max_alex_count=self.max_alex_count,
+                        min_alex_count=self.min_alex_count,
+                        forward_depth=self.operator_depth,
+                        exe_path=cpp_exe,
+                        progress_callback=on_progress,
+                        found_callback=on_found,
+                        should_stop=self.isInterruptionRequested,
+                    )
+                    prune_stats.update(cpp_stats)
+                    prune_stats["计算核心"] = "C++"
+                else:
+                    states = enumerate_play_paths(
+                        initial_state=state,
+                        max_depth=self.max_depth,
+                        max_paths=self.max_paths,
+                        max_alex_count=self.max_alex_count,
+                        min_alex_count=self.min_alex_count,
+                        progress_callback=on_progress,
+                        found_callback=on_found,
+                        prune_stats=prune_stats,
+                        should_stop=self.isInterruptionRequested,
+                        forward_mining=False,
+                        forward_depth=self.operator_depth,
+                    )
 
             elapsed_seconds = time.time() - search_started
 

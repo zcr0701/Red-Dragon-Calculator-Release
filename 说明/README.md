@@ -8,6 +8,9 @@
 炉石传说/
 ├── 代码/
 │   ├── red_dragon_calculator.py    # 红龙路径计算核心：卡牌定义、状态模型、双向符号链（反向链+子链）、beam 束搜索
+│   ├── red_dragon_core.cpp         # C++ 计算核心：beam 束搜索 + 双向符号链证明（含链数据 red_dragon_chain_data.inc）
+│   ├── red_dragon_calculator.exe   # 统一入口 exe：C++ 加速 beam/双向链计算，--python 可透传调 Python（OCR/存档等）
+│   ├── build_core.bat              # 重新编译统一入口 exe（MinGW g++）
 │   ├── archive.py                  # 局面存档：计算前查重、计算后归档、同步到云端（GitHub 仓库）
 │   ├── rebuild_hand.py             # OCR 文本 → 手牌/牌库/战场/当前效果 重建逻辑（含手动输入解析）
 │   ├── ocr_region_gui.py           # OCR 图形界面（PyQt5）：截图区域 + 手动输入面板 + 计算入口
@@ -26,6 +29,27 @@
 ```
 
 ## 运行方式
+
+### C++ 统一入口（GUI 自动使用，找不到 exe 时回退纯 Python）
+
+- GUI 计算时若存在 `代码/red_dragon_calculator.exe`，beam 束搜索与双向符号链都走 C++ 核心（实测约 3~5 倍加速，结果与 Python 逐条一致）；找不到则自动回退 Python 引擎。
+- 重新编译：
+
+```powershell
+代码\build_core.bat
+```
+
+- 命令行直接调用（stdin 喂 JSON 局面，stdout 出 JSON 结果；PROGRESS/FOUND 实时进度走 stderr）：
+
+```powershell
+Get-Content 局面.json | 代码\red_dragon_calculator.exe --json
+```
+
+- `--python` 透传：把后续参数原样交给 Python 解释器（宽字符命令行，中文路径不乱码），用于 OCR/存档/公式表等仍由 Python 负责的部分：
+
+```powershell
+代码\red_dragon_calculator.exe --python 代码/red_dragon_calculator.py --sync-archive
+```
 
 ### 命令行（不需要 GUI 依赖）
 

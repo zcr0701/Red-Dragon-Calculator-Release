@@ -1,9 +1,12 @@
 import argparse
 import heapq
 import json
+import subprocess
+import threading
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 import archive
@@ -5872,6 +5875,249 @@ def sort_path_states(states: List[GameState]) -> List[GameState]:
             item.initial_mana_crystals,
             item.initial_mana
         )
+    )
+
+
+class CppBeamPath:
+    """C++ 核心返回的轻量路径对象，字段与 GameState 对齐，供 format_paths/存档/公式表使用。"""
+
+    __slots__ = (
+        "path", "alex_play_count", "alex_damage", "mana",
+        "initial_mana_crystals", "initial_mana",
+    )
+
+    def __init__(self, path, alex_play_count, alex_damage, mana,
+                 initial_mana_crystals, initial_mana):
+        self.path = path
+        self.alex_play_count = alex_play_count
+        self.alex_damage = alex_damage
+        self.mana = mana
+        self.initial_mana_crystals = initial_mana_crystals
+        self.initial_mana = initial_mana
+
+
+def find_cpp_core(exe_path: Optional[str] = None) -> Optional[str]:
+    """定位统一入口 C++ 核心 red_dragon_calculator.exe（其次 red_dragon_core.exe）。"""
+    if exe_path:
+        p = Path(exe_path)
+        if p.is_file():
+            return str(p)
+        return None
+
+    candidates = [
+        Path(__file__).resolve().parent / "red_dragon_calculator.exe",
+        Path(__file__).resolve().parent / "red_dragon_core.exe",
+        Path(__file__).resolve().parent.parent / "work" / "red_dragon_core.exe",
+    ]
+
+    for p in candidates:
+        if p.is_file():
+            return str(p)
+
+    return None
+
+
+def _cpp_search_payload(
+    initial_state: GameState,
+    min_alex_count: int,
+    max_alex_count: int,
+    max_paths: int,
+    max_depth: int,
+    beam_width: int,
+    mode: str,
+    forward_depth: int = 5,
+) -> Dict[str, object]:
+    return {
+        "crystals": initial_state.mana_crystals,
+        "mana": initial_state.mana,
+        "min_alex": min_alex_count,
+        "max_alex": max_alex_count,
+        "width": beam_width,
+        "depth": max_depth,
+        "max_paths": max_paths,
+        "mode": mode,
+        "forward_depth": forward_depth,
+        "deck_is_known": initial_state.deck_is_known,
+        "deck": [{"name": c.name} for c in initial_state.deck],
+        "hand": [
+            {
+                "name": c.name,
+                "temp_cost": c.current_cost() if c.current_cost() is not None else -1,
+                "locked": bool(getattr(c, "locked_one_cost", False)),
+                "deadly": bool(getattr(c, "is_deadly_shadow", False)),
+            }
+            for c in initial_state.hand
+        ],
+        "board": [
+            {
+                "name": c.name,
+                "health": c.health if c.health is not None else -1,
+                "temp_cost": c.current_cost() if c.current_cost() is not None else -1,
+            }
+            for c in initial_state.board
+        ],
+        "secrets": [{"name": c.name} for c in initial_state.secrets],
+        "weapon": {"name": initial_state.weapon.name} if initial_state.weapon else None,
+        "etc_band": list(initial_state.etc_band_remaining),
+    }
+
+
+def _run_cpp_search(
+    exe: str,
+    payload: Dict[str, object],
+    initial_state: GameState,
+    min_alex_count: int,
+    progress_callback: Optional[Callable[[int, int, int], None]] = None,
+    found_callback: Optional[Callable[[int, int], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> Tuple[List[CppBeamPath], Dict[str, object]]:
+    proc = subprocess.Popen(
+        [exe, "--json"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    stdout_chunks: List[str] = []
+
+    def feed_stdin():
+        try:
+            proc.stdin.write(json.dumps(payload, ensure_ascii=False))
+            proc.stdin.flush()
+            proc.stdin.close()
+        except Exception:
+            pass
+
+    threading.Thread(target=feed_stdin, daemon=True).start()
+
+    def drain_stdout():
+        try:
+            for chunk in proc.stdout:
+                stdout_chunks.append(chunk)
+        except Exception:
+            pass
+
+    stdout_thread = threading.Thread(target=drain_stdout, daemon=True)
+    stdout_thread.start()
+
+    def drain_stderr():
+        for raw in proc.stderr:
+            line = raw.strip()
+
+            if line.startswith("PROGRESS "):
+                parts = line.split()
+
+                if len(parts) == 4 and progress_callback is not None:
+                    progress_callback(int(parts[1]), int(parts[2]), int(parts[3]))
+            elif line.startswith("FOUND "):
+                parts = line.split()
+
+                if len(parts) == 3 and found_callback is not None:
+                    count = int(parts[1])
+
+                    if count >= max(1, min_alex_count):
+                        found_callback(count, int(parts[2]))
+
+    reader = threading.Thread(target=drain_stderr, daemon=True)
+    reader.start()
+
+    while proc.poll() is None:
+        if should_stop is not None and should_stop():
+            proc.kill()
+            proc.wait()
+            raise InterruptedError("计算已中止（用户中断）")
+        time.sleep(0.05)
+
+    reader.join(timeout=2.0)
+    stdout_thread.join(timeout=3.0)
+    stdout_text = "".join(stdout_chunks)
+    data = json.loads(stdout_text)
+    results: List[CppBeamPath] = []
+
+    for item in data.get("results", []):
+        results.append(
+            CppBeamPath(
+                path=item["path"],
+                alex_play_count=item["dragons"],
+                alex_damage=item["damage"],
+                mana=item["mana"],
+                initial_mana_crystals=initial_state.initial_mana_crystals,
+                initial_mana=initial_state.initial_mana,
+            )
+        )
+
+    stats_out: Dict[str, object] = {}
+
+    for key, value in (data.get("stats") or {}).items():
+        if isinstance(value, bool):
+            stats_out[key] = "是" if value else "否"
+        elif isinstance(value, (int, float)):
+            stats_out[key] = int(value)
+        else:
+            stats_out[key] = str(value)
+
+    return results, stats_out
+
+
+def cpp_beam_search_paths(
+    initial_state: GameState,
+    max_depth: int = 100,
+    max_paths: int = 1000000,
+    max_alex_count: int = 10,
+    min_alex_count: int = 1,
+    beam_width: int = 3000,
+    exe_path: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int, int], None]] = None,
+    found_callback: Optional[Callable[[int, int], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> List[CppBeamPath]:
+    """调用 C++ 束搜索核心（规则与 beam_search_paths 逐条对齐），返回轻量路径对象。"""
+    exe = find_cpp_core(exe_path)
+
+    if exe is None:
+        raise FileNotFoundError("未找到 C++ 计算核心，请先编译 代码/red_dragon_core.cpp")
+
+    payload = _cpp_search_payload(
+        initial_state, min_alex_count, max_alex_count, max_paths,
+        max_depth, beam_width, mode="beam",
+    )
+    results, _stats = _run_cpp_search(
+        exe, payload, initial_state, min_alex_count,
+        progress_callback=progress_callback,
+        found_callback=found_callback,
+        should_stop=should_stop,
+    )
+    return results
+
+
+def cpp_symbolic_prove_paths(
+    initial_state: GameState,
+    max_depth: int = 100,
+    max_paths: int = 1000000,
+    max_alex_count: int = 10,
+    min_alex_count: int = 1,
+    forward_depth: int = 5,
+    exe_path: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int, int], None]] = None,
+    found_callback: Optional[Callable[[int, int], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> Tuple[List[CppBeamPath], Dict[str, object]]:
+    """调用 C++ 双向符号链证明核心（符号链 + 子链/引理 + 离散骨架）。"""
+    exe = find_cpp_core(exe_path)
+
+    if exe is None:
+        raise FileNotFoundError("未找到 C++ 计算核心，请先编译 代码/red_dragon_core.cpp")
+
+    payload = _cpp_search_payload(
+        initial_state, min_alex_count, max_alex_count, max_paths,
+        max_depth, 3000, mode="symbolic", forward_depth=forward_depth,
+    )
+    return _run_cpp_search(
+        exe, payload, initial_state, min_alex_count,
+        progress_callback=progress_callback,
+        found_callback=found_callback,
+        should_stop=should_stop,
     )
 
 
