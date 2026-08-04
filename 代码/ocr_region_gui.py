@@ -408,7 +408,6 @@ class CalculationWorker(QThread):
 
     def params_line(self) -> str:
         return (
-            f"计算参数：{self.mana_crystals}水晶 / {self.mana}法力 | "
             f"链条步数上限{self.max_depth} | 路径上限{self.max_paths} | "
             f"搜索龙数 {self.min_alex_count}~{self.max_alex_count} | "
             f"{'beam束搜索' if self.beam_mode else '双向符号链证明'}"
@@ -739,20 +738,16 @@ class QuickPanel(QDialog):
         # ---- 顶部操作按钮：识别为开始/停止切换按钮，设置按钮弹出后台设置窗口 ----
         self.startButton = QPushButton("开始识别")
         self.calculateButton = QPushButton("开始计算")
-        self.cancelCalculationButton = QPushButton("中止计算")
         self.settingsButton = QPushButton("设置")
         self.startButton.setEnabled(False)
         self.calculateButton.setEnabled(False)
-        self.cancelCalculationButton.setEnabled(False)
 
         self.startButton.clicked.connect(self.on_start_toggle)
-        self.calculateButton.clicked.connect(owner.start_calculation)
-        self.cancelCalculationButton.clicked.connect(owner.cancel_calculation)
+        self.calculateButton.clicked.connect(self.on_calc_toggle)
         self.settingsButton.clicked.connect(owner.toggle_settings_window)
 
         button_layout = QHBoxLayout()
-        for btn in (self.startButton, self.calculateButton,
-                    self.cancelCalculationButton, self.settingsButton):
+        for btn in (self.startButton, self.calculateButton, self.settingsButton):
             button_layout.addWidget(btn)
 
         # ---- 殒命暗影标记 ----
@@ -805,7 +800,6 @@ class QuickPanel(QDialog):
         etc_panel_layout = QVBoxLayout()
         etc_panel_layout.setContentsMargins(4, 2, 4, 2)
         etc_checkbox_row = QHBoxLayout()
-        etc_checkbox_row.addWidget(QLabel("剩余卡池："))
         for _card_name, box in self.etcBandChecks:
             etc_checkbox_row.addWidget(box)
         etc_checkbox_row.addStretch()
@@ -906,11 +900,14 @@ class QuickPanel(QDialog):
         self.calcText = QTextEdit()
         self.calcText.setReadOnly(True)
         self.calcText.setStyleSheet(self.calc_text_style)
+        self.progressLabel = QLabel("")
+        self.progressLabel.setStyleSheet("font-size:12px;color:#666;padding:2px 4px;")
         calc_panel = QWidget()
         calc_layout = QVBoxLayout()
         calc_title = QLabel("出牌路径计算")
         calc_title.setStyleSheet("font-size:14px;color:#333;")
         calc_layout.addWidget(calc_title)
+        calc_layout.addWidget(self.progressLabel)
         calc_layout.addWidget(self.calcText)
         calc_panel.setLayout(calc_layout)
 
@@ -940,6 +937,13 @@ class QuickPanel(QDialog):
             self.owner.start_ocr()
         else:
             self.owner.stop_ocr()
+
+    def on_calc_toggle(self):
+        """开始计算 / 中止计算 切换。"""
+        if self.calculateButton.text() == "开始计算":
+            self.owner.start_calculation()
+        else:
+            self.owner.cancel_calculation()
 
     def closeEvent(self, event):
         """关闭主弹窗 = 关闭整个程序（连设置窗口一起关）。"""
@@ -1508,8 +1512,9 @@ class MainWindow(QWidget):
             return
 
         self.panel.calcText.setPlainText("正在计算所有可行出牌路径...")
+        self.panel.progressLabel.setText("")
         self.panel.calculateButton.setEnabled(False)
-        self.panel.cancelCalculationButton.setEnabled(True)
+        self.panel.calculateButton.setText("中止计算")
 
         self.calc_worker = CalculationWorker(
             rebuild_result=self.latest_rebuild_result,
@@ -1538,11 +1543,13 @@ class MainWindow(QWidget):
             return
 
         self.panel.calcText.append("\n正在中止计算，将展示并导出已经算出的全部结果...")
-        self.panel.cancelCalculationButton.setEnabled(False)
+        self.panel.calculateButton.setText("开始计算")
         self.calc_worker.requestInterruption()
 
     def on_calculation_progress(self, text):
         self.statusLabel.setText("状态：" + text)
+        # 路径上方小字实时显示链/剪分支/beam束数据
+        self.panel.progressLabel.setText(text)
 
     def on_calculation_partial(self, text):
         self.panel.calcText.setPlainText(text)
@@ -1557,8 +1564,8 @@ class MainWindow(QWidget):
 
     def on_calculation_thread_finished(self):
         self.calc_worker = None
+        self.panel.calculateButton.setText("开始计算")
         self.panel.calculateButton.setEnabled(self.latest_rebuild_result is not None)
-        self.panel.cancelCalculationButton.setEnabled(False)
 
     def stop_ocr(self):
         if self.worker is None:
