@@ -73,8 +73,10 @@ class ScreenClampMixin:
     def _window_borders(self, hwnd):
         """返回窗口四边隐形边框宽度 (left, top, right, bottom)。
 
-        Windows 可缩放窗口左右/底部有透明缩放边框（约 7px），
-        WM_WINDOWPOSCHANGING 里的 cx/cy 含这些边框；按可见区域钳制才能真正贴边。
+        Windows 可缩放窗口四周有透明缩放边框（约 7px），WM_WINDOWPOSCHANGING 里的
+        cx/cy 含这些边框；按“可见区域”钳制才能真正贴边。
+        用 DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS) 直接取可见边框矩形，
+        避免把标题栏高度误当成上边框。
         """
         cached = getattr(self, "_border_cache", None)
 
@@ -83,22 +85,47 @@ class ScreenClampMixin:
 
         user32 = ctypes.windll.user32
         frame = ctypes.wintypes.RECT()
-        client = ctypes.wintypes.RECT()
-        pt = ctypes.wintypes.POINT(0, 0)
-
-        if (
-            not user32.GetWindowRect(hwnd, ctypes.byref(frame))
-            or not user32.GetClientRect(hwnd, ctypes.byref(client))
-            or not user32.ClientToScreen(hwnd, ctypes.byref(pt))
-        ):
+        if not user32.GetWindowRect(hwnd, ctypes.byref(frame)):
             return (0, 0, 0, 0)
 
-        borders = (
-            pt.x - frame.left,
-            pt.y - frame.top,
-            frame.right - (pt.x + client.right),
-            frame.bottom - (pt.y + client.bottom),
-        )
+        visible = None
+
+        try:
+            dwmapi = ctypes.windll.dwmapi
+            visible_rect = ctypes.wintypes.RECT()
+
+            if dwmapi.DwmGetWindowAttribute(
+                hwnd, 9, ctypes.byref(visible_rect), ctypes.sizeof(visible_rect)
+            ) == 0:
+                visible = visible_rect
+        except Exception:
+            visible = None
+
+        if visible is not None and (visible.left or visible.top or visible.right or visible.bottom):
+            borders = (
+                visible.left - frame.left,
+                visible.top - frame.top,
+                frame.right - visible.right,
+                frame.bottom - visible.bottom,
+            )
+        else:
+            # 兜底：左/右/底用客户端区域差值，顶部用 1px 缩放边框
+            client = ctypes.wintypes.RECT()
+            pt = ctypes.wintypes.POINT(0, 0)
+
+            if (
+                not user32.GetClientRect(hwnd, ctypes.byref(client))
+                or not user32.ClientToScreen(hwnd, ctypes.byref(pt))
+            ):
+                return (0, 0, 0, 0)
+
+            borders = (
+                pt.x - frame.left,
+                1,
+                frame.right - (pt.x + client.right),
+                frame.bottom - (pt.y + client.bottom),
+            )
+
         self._border_cache = (hwnd, borders)
         return borders
 
@@ -113,7 +140,8 @@ class ScreenClampMixin:
 
                     if not (wp.flags & _SWP_NOMOVE):
                         bl, bt, br, bb = self._window_borders(wp.hwnd)
-                        screen = QApplication.primaryScreen().availableGeometry()
+                        # 用整个屏幕范围钳制（含任务栏区域），贴边无空隙
+                        screen = QApplication.primaryScreen().geometry()
                         min_x = screen.x() - bl
                         min_y = screen.y() - bt
                         max_x = screen.x() + screen.width() - wp.cx + br
