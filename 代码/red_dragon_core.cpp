@@ -2608,7 +2608,7 @@ int main(int argc, char** argv) {
 #endif
     bool use_json = false;
     string hand_text, board_text, band_text;
-    int crystals = 8, mana = 8, min_alex = 1, max_alex = 10, width = 3000, depth = 40, max_paths = 1000000;
+    int crystals = 8, mana = 8, min_alex = 1, max_alex = 10, width = 5000, depth = 30, max_paths = 1000000;
     int deadly_index = -1;
     int forward_depth = 5;
     string mode = "beam";

@@ -657,7 +657,15 @@ def make_card_from_rebuild_entry(card_entry) -> Optional[CardInstance]:
     name = getattr(card_entry, "name", "")
 
     if name not in CARD_DATABASE:
-        return None
+        # 未写入数据的牌视作杂牌：保留在手牌里占位，不可打出，不影响搜索
+        return CardInstance(
+            name="杂牌",
+            cost=None,
+            original_name=name or "未知",
+            card_type="unknown",
+            description="",
+            effect_id="unknown",
+        )
 
     card = make_card(
         name=name,
