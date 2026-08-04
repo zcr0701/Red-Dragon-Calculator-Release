@@ -49,7 +49,59 @@ COST_ONLY_RE = re.compile(r"^\s*(\d+)\s*费?\s*$")
 COMMA_ZONE_RE = re.compile(r"^\s*(\d+)\s*[,，、]\s*(\d+)\s*血?\s*(.+)$")
 STAR_ONLY_RE = re.compile(r"^[*★☆＊]+\s*$")
 STAR_COST_RE = re.compile(r"^[*★☆＊]+\s*(.+)$")
-MANA_RATIO_RE = re.compile(r"(\d+)\s*[/／]\s*(\d+)")
+
+
+def parse_mana_ratio(text: str) -> Optional[Tuple[int, int]]:
+    """从第二个 OCR 框的文本里解析 水晶/法力，格式 A/B（A=水晶，B=法力）。
+
+    兼容 OCR 常见变形：全角数字、分隔符被识别成 / ／ ╱ | ｜ . · ： , 或空格、
+    数字被拆成两行（“3\\n3”）、以及“水晶3 / 法力3”带关键词写法。
+    取文本中最靠前且取值在合理区间（0~20）的一对数字。
+    """
+    if not text:
+        return None
+
+    norm = text.translate(
+        str.maketrans(
+            "０１２３４５６７８９／｜，。：",
+            "0123456789/|,.:",
+        )
+    )
+
+    # 带关键词：水晶 N ... 法力 M
+    crystal_kw = re.search(r"水晶\s*(\d+)", norm)
+    mana_kw = re.search(r"法力\s*(\d+)", norm)
+
+    if crystal_kw and mana_kw:
+        crystals, mana = int(crystal_kw.group(1)), int(mana_kw.group(1))
+
+        if 0 <= crystals <= 20 and 0 <= mana <= 20:
+            return crystals, mana
+
+    patterns = (
+        r"(\d+)\s*[/╱\\|｜]\s*(\d+)",
+        r"(\d+)\s*[:：]\s*(\d+)",
+        r"(\d+)\s*[.．·•・]\s*(\d+)",
+        r"(\d+)\s*[,，]\s*(\d+)",
+        r"(\d+)\s*\n\s*(\d+)",
+        r"(\d+)\s+(\d+)",
+    )
+    best = None
+
+    for pattern in patterns:
+        for match in re.finditer(pattern, norm):
+            crystals, mana = int(match.group(1)), int(match.group(2))
+
+            if not (0 <= crystals <= 20 and 0 <= mana <= 20):
+                continue
+
+            if best is None or match.start() < best[0]:
+                best = (match.start(), crystals, mana)
+
+    if best is None:
+        return None
+
+    return best[1], best[2]
 
 _MANUAL_CARD_CONFIGS, _MANUAL_MIN_COMMON_CHARS = load_card_config()
 
@@ -253,11 +305,10 @@ class OCRWorker(QThread):
 
                 if mana_box is not None:
                     mana_text = self.ocr_api.recognize_box(mana_box)
-                    match = MANA_RATIO_RE.search(mana_text)
+                    parsed = parse_mana_ratio(mana_text)
 
-                    if match:
-                        crystals = int(match.group(1))
-                        mana = int(match.group(2))
+                    if parsed is not None:
+                        crystals, mana = parsed
                         last_crystals, last_mana = crystals, mana
 
                 self.result_signal.emit(ocr_text, hand_text, hand_result, crystals, mana)
