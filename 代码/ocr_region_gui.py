@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from PyQt5.QtCore import Qt, QRect, QThread, pyqtSignal
-from PyQt5.QtGui import QColor, QPainter, QPen
+from PyQt5.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -806,13 +806,12 @@ class QuickPanel(ScreenClampMixin, QDialog):
         self.deadlyShadowCheck = QCheckBox("殒命暗影位置")
         self.deadlyShadowInput = QLineEdit()
         self.deadlyShadowInput.setPlaceholderText("手牌序号")
-        self.deadlyShadowInput.setFixedWidth(68)
+        # 宽度刚好容纳“手牌序号”四个字
+        self.deadlyShadowInput.setFixedWidth(
+            QFontMetrics(self.deadlyShadowInput.font()).horizontalAdvance("手牌序号") + 14
+        )
         self.deadlyShadowInput.setEnabled(False)
         self.deadlyShadowCheck.toggled.connect(self.deadlyShadowInput.setEnabled)
-        deadly_layout = QHBoxLayout()
-        deadly_layout.addWidget(self.deadlyShadowCheck)
-        deadly_layout.addWidget(self.deadlyShadowInput)
-        deadly_layout.addStretch()
 
         # ---- 牛头人酋长剩余卡池：最多勾选 3 张 ----
         self.etcBandChecks: List[Tuple[str, QCheckBox]] = []
@@ -960,12 +959,11 @@ class QuickPanel(ScreenClampMixin, QDialog):
         actions_layout = QVBoxLayout()
         actions_layout.setContentsMargins(4, 2, 4, 2)
         actions_row = QHBoxLayout()
-        # 牛头人剩余卡池在左，殒命暗影位置在右
-        etc_half = QHBoxLayout()
-        etc_half.addWidget(self.etcToggle)
-        etc_half.addStretch()
-        actions_row.addLayout(etc_half)
-        actions_row.addLayout(deadly_layout)
+        # 牛头人剩余卡池按钮和殒命暗影位置紧贴在一起
+        actions_row.addWidget(self.etcToggle)
+        actions_row.addWidget(self.deadlyShadowCheck)
+        actions_row.addWidget(self.deadlyShadowInput)
+        actions_row.addStretch()
         actions_layout.addLayout(actions_row)
         actions_layout.addWidget(self.etcPanel)
         actions_section.setLayout(actions_layout)
