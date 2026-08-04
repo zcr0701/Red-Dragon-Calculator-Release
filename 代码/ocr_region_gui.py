@@ -568,6 +568,7 @@ class SelectionOverlay(QWidget):
         self.setGeometry(QApplication.primaryScreen().geometry())
         self.start = None
         self.end = None
+        self.close_on_select = False
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -598,7 +599,10 @@ class SelectionOverlay(QWidget):
             print("选择区域:", box)
             self.selected_signal.emit(box)
 
-        self.hide()
+        # 连续选框模式：框完第一个框不退出，继续框第二个（水晶/法力）
+        if self.close_on_select:
+            self.hide()
+
         self.update()
 
     def keyPressEvent(self, event):
@@ -680,10 +684,6 @@ class MainWindow(QWidget):
         self.minAlexInput.setFixedWidth(60)
 
         mana_layout = QHBoxLayout()
-        mana_layout.addWidget(QLabel("水晶："))
-        mana_layout.addWidget(self.crystalInput)
-        mana_layout.addWidget(QLabel("法力："))
-        mana_layout.addWidget(self.manaInput)
         mana_layout.addWidget(QLabel("链条步数上限："))
         mana_layout.addWidget(self.maxDepthInput)
         mana_layout.addWidget(QLabel("双向算子深度："))
@@ -779,6 +779,14 @@ class MainWindow(QWidget):
         manual_help.setWordWrap(True)
         manual_layout.addWidget(manual_help)
 
+        manual_mana_row = QHBoxLayout()
+        manual_mana_row.addWidget(QLabel("水晶："))
+        manual_mana_row.addWidget(self.crystalInput)
+        manual_mana_row.addWidget(QLabel("法力："))
+        manual_mana_row.addWidget(self.manaInput)
+        manual_mana_row.addStretch()
+        manual_layout.addLayout(manual_mana_row)
+
         manual_zone_row = QHBoxLayout()
 
         manual_hand_panel = QWidget()
@@ -859,11 +867,11 @@ class MainWindow(QWidget):
         QLabel{
             background:white;
             color:#333;
-            font-size:12px;
+            font-size:16px;
             font-family:微软雅黑;
             border:1px solid #ddd;
-            border-radius:6px;
-            padding:2px;
+            border-radius:8px;
+            padding:4px;
         }
         """
         toggle_style = """
@@ -880,20 +888,17 @@ class MainWindow(QWidget):
         QPushButton:checked{ background:#e8e8ff; }
         """
 
-        # 手牌/战场：折叠展开区块 + 固定格（10 手牌 + 7 战场），小号显示
-        cards_section = QWidget()
-        cards_section_layout = QVBoxLayout()
-        cards_section_layout.setContentsMargins(0, 0, 0, 0)
-        self.cardsToggle = QPushButton("▸ 手牌 / 战场（10 + 7 格固定）")
-        self.cardsToggle.setCheckable(True)
-        self.cardsToggle.setChecked(True)
-        self.cardsToggle.setStyleSheet(toggle_style)
-        self.cardsPanel = QWidget()
-        cards_panel_layout = QVBoxLayout()
-        cards_panel_layout.setContentsMargins(4, 2, 4, 2)
-        hand_title = QLabel("手牌（10 格）")
-        hand_title.setStyleSheet("font-size:13px;color:#666;")
-        cards_panel_layout.addWidget(hand_title)
+        # 手牌：独立折叠区块（10 格固定），默认展开
+        hand_section = QWidget()
+        hand_section_layout = QVBoxLayout()
+        hand_section_layout.setContentsMargins(0, 0, 0, 0)
+        self.handToggle = QPushButton("▸ 手牌（10 格固定）")
+        self.handToggle.setCheckable(True)
+        self.handToggle.setChecked(True)
+        self.handToggle.setStyleSheet(toggle_style)
+        self.handPanel = QWidget()
+        hand_panel_layout = QVBoxLayout()
+        hand_panel_layout.setContentsMargins(4, 2, 4, 2)
         hand_grid = QGridLayout()
         hand_grid.setSpacing(2)
         self.hand_slots = []
@@ -902,14 +907,28 @@ class MainWindow(QWidget):
             slot = QLabel("空")
             slot.setAlignment(Qt.AlignCenter)
             slot.setStyleSheet(slot_style)
-            slot.setMinimumHeight(26)
+            slot.setMinimumHeight(36)
             self.hand_slots.append(slot)
             hand_grid.addWidget(slot, index // 5, index % 5)
 
-        cards_panel_layout.addLayout(hand_grid)
-        board_title = QLabel("战场（7 格）")
-        board_title.setStyleSheet("font-size:13px;color:#666;")
-        cards_panel_layout.addWidget(board_title)
+        hand_panel_layout.addLayout(hand_grid)
+        self.handPanel.setLayout(hand_panel_layout)
+        self.handToggle.toggled.connect(self.handPanel.setVisible)
+        hand_section_layout.addWidget(self.handToggle)
+        hand_section_layout.addWidget(self.handPanel)
+        hand_section.setLayout(hand_section_layout)
+
+        # 战场：独立折叠区块（7 格固定），默认收起
+        board_section = QWidget()
+        board_section_layout = QVBoxLayout()
+        board_section_layout.setContentsMargins(0, 0, 0, 0)
+        self.boardToggle = QPushButton("▸ 战场（7 格固定）")
+        self.boardToggle.setCheckable(True)
+        self.boardToggle.setChecked(False)
+        self.boardToggle.setStyleSheet(toggle_style)
+        self.boardPanel = QWidget()
+        board_panel_layout = QVBoxLayout()
+        board_panel_layout.setContentsMargins(4, 2, 4, 2)
         board_grid = QGridLayout()
         board_grid.setSpacing(2)
         self.board_slots = []
@@ -918,16 +937,16 @@ class MainWindow(QWidget):
             slot = QLabel("空")
             slot.setAlignment(Qt.AlignCenter)
             slot.setStyleSheet(slot_style)
-            slot.setMinimumHeight(26)
+            slot.setMinimumHeight(36)
             self.board_slots.append(slot)
             board_grid.addWidget(slot, index // 4, index % 4)
 
-        cards_panel_layout.addLayout(board_grid)
-        self.cardsPanel.setLayout(cards_panel_layout)
-        self.cardsToggle.toggled.connect(self.cardsPanel.setVisible)
-        cards_section_layout.addWidget(self.cardsToggle)
-        cards_section_layout.addWidget(self.cardsPanel)
-        cards_section.setLayout(cards_section_layout)
+        board_panel_layout.addLayout(board_grid)
+        self.boardPanel.setLayout(board_panel_layout)
+        self.boardToggle.toggled.connect(self.boardPanel.setVisible)
+        board_section_layout.addWidget(self.boardToggle)
+        board_section_layout.addWidget(self.boardPanel)
+        board_section.setLayout(board_section_layout)
 
         # 状态：折叠展开区块（水晶/法力/牛池/殒命）
         status_section = QWidget()
@@ -935,7 +954,7 @@ class MainWindow(QWidget):
         status_section_layout.setContentsMargins(0, 0, 0, 0)
         self.statusToggle = QPushButton("▸ 状态（水晶 / 法力 / 牛池 / 殒命）")
         self.statusToggle.setCheckable(True)
-        self.statusToggle.setChecked(True)
+        self.statusToggle.setChecked(False)
         self.statusToggle.setStyleSheet(toggle_style)
         self.statusPanel = QWidget()
         status_panel_layout = QHBoxLayout()
@@ -959,10 +978,11 @@ class MainWindow(QWidget):
         calc_panel.setLayout(calc_layout)
 
         splitter = QSplitter(Qt.Vertical)
-        splitter.addWidget(cards_section)
+        splitter.addWidget(hand_section)
+        splitter.addWidget(board_section)
         splitter.addWidget(status_section)
         splitter.addWidget(calc_panel)
-        splitter.setSizes([280, 60, 440])
+        splitter.setSizes([360, 40, 40, 400])
 
         layout = QVBoxLayout()
         layout.addWidget(self.statusLabel)
@@ -1101,6 +1121,7 @@ class MainWindow(QWidget):
             return
 
         self.statusLabel.setText("状态：拖拽鼠标框选需要 OCR 的区域，按 Esc 可取消")
+        self.overlay.close_on_select = False
         self.overlay.showFullScreen()
         self.overlay.raise_()
         self.overlay.activateWindow()
@@ -1108,12 +1129,13 @@ class MainWindow(QWidget):
     def on_area_selected(self, box):
         if self.box is None:
             self.box = box
-            self.statusLabel.setText("状态：已选主区域（手牌/战场），请再框选水晶/法力区域（格式 A/B，如 4/4）")
-            self.open_selector()
+            self.statusLabel.setText("状态：已选主区域（手牌/战场），请继续框选水晶/法力区域（格式 A/B，如 4/4）")
         else:
             self.mana_box = box
+            self.overlay.close_on_select = True
+            self.overlay.hide()
             self.startButton.setEnabled(True)
-            self.statusLabel.setText(f"状态：已选主区域 {self.box} + 法力区域 {self.mana_box}，点击“开始识别”")
+            self.statusLabel.setText("状态：已选主区域 + 法力区域，点击“开始识别”")
 
     def get_box(self):
         return self.box
