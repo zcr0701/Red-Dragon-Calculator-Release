@@ -734,7 +734,7 @@ class QuickPanel(QDialog):
         self.owner = owner
         self.setWindowTitle("红龙贼计算器")
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
-        self.setMinimumWidth(780)
+        self.setMinimumWidth(560)
 
         # ---- 顶部操作按钮：识别为开始/停止切换按钮，设置按钮弹出后台设置窗口 ----
         self.startButton = QPushButton("开始识别")
@@ -802,13 +802,17 @@ class QuickPanel(QDialog):
         self.etcToggle.setStyleSheet(self.toggle_style)
         self.etcToggle.setMinimumHeight(38)
         self.etcPanel = QWidget()
-        etc_panel_layout = QHBoxLayout()
+        etc_panel_layout = QVBoxLayout()
         etc_panel_layout.setContentsMargins(4, 2, 4, 2)
-        etc_panel_layout.addWidget(QLabel("剩余卡池："))
+        etc_checkbox_row = QHBoxLayout()
+        etc_checkbox_row.addWidget(QLabel("剩余卡池："))
         for _card_name, box in self.etcBandChecks:
-            etc_panel_layout.addWidget(box)
-        etc_panel_layout.addWidget(QLabel("取消勾选表示这张已被选走"))
-        etc_panel_layout.addStretch()
+            etc_checkbox_row.addWidget(box)
+        etc_checkbox_row.addStretch()
+        etc_panel_layout.addLayout(etc_checkbox_row)
+        etc_hint = QLabel("取消勾选表示这张已被选走")
+        etc_hint.setStyleSheet("font-size:12px;color:#888;")
+        etc_panel_layout.addWidget(etc_hint)
         self.etcPanel.setLayout(etc_panel_layout)
         self.etcToggle.toggled.connect(self.etcPanel.setVisible)
         etc_section = QWidget()
@@ -928,7 +932,7 @@ class QuickPanel(QDialog):
         layout.addLayout(deadly_layout)
         layout.addWidget(stack_container)
         self.setLayout(layout)
-        self.resize(780, 900)
+        self.resize(600, 960)
 
     def on_start_toggle(self):
         """开始识别 / 停止识别 切换：点击开始扫描，再点停止；识别到结果后自动恢复。"""
@@ -936,6 +940,15 @@ class QuickPanel(QDialog):
             self.owner.start_ocr()
         else:
             self.owner.stop_ocr()
+
+    def closeEvent(self, event):
+        """关闭主弹窗 = 关闭整个程序（连设置窗口一起关）。"""
+        self.owner.stop_ocr()
+        if self.owner.calc_worker is not None:
+            self.owner.calc_worker.requestInterruption()
+            self.owner.calc_worker.wait()
+        self.owner.close()
+        event.accept()
 
 
 class MainWindow(QWidget):
@@ -983,18 +996,24 @@ class MainWindow(QWidget):
         self.minAlexInput = QLineEdit("1")
         self.minAlexInput.setFixedWidth(60)
 
-        mana_layout = QHBoxLayout()
-        mana_layout.addWidget(QLabel("链条步数上限："))
-        mana_layout.addWidget(self.maxDepthInput)
-        mana_layout.addWidget(QLabel("双向算子深度："))
-        mana_layout.addWidget(self.operatorDepthInput)
-        mana_layout.addWidget(QLabel("搜索龙数上限："))
-        mana_layout.addWidget(self.maxAlexInput)
-        mana_layout.addWidget(QLabel("搜索龙数下限："))
-        mana_layout.addWidget(self.minAlexInput)
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("链长上限："))
+        search_row.addWidget(self.maxDepthInput)
+        search_row.addWidget(QLabel("算子深度："))
+        search_row.addWidget(self.operatorDepthInput)
+        search_row.addStretch()
+
+        alex_row = QHBoxLayout()
+        alex_row.addWidget(QLabel("龙数上限："))
+        alex_row.addWidget(self.maxAlexInput)
+        alex_row.addWidget(QLabel("龙数下限："))
+        alex_row.addWidget(self.minAlexInput)
+        alex_row.addStretch()
+
+        beam_row = QHBoxLayout()
         self.beamModeCheck = QCheckBox("beam模式")
         self.beamModeCheck.setToolTip("beam束搜索（默认关闭，计算时间长）。勾选后用束搜索直接枚举真实后继状态，可自行填束宽与算子深度。")
-        mana_layout.addWidget(self.beamModeCheck)
+        beam_row.addWidget(self.beamModeCheck)
         self.beamWidthInput = QLineEdit("3000")
         self.beamWidthInput.setFixedWidth(60)
         self.beamWidthInput.setToolTip("beam束搜索束宽，默认3000。")
@@ -1007,13 +1026,13 @@ class MainWindow(QWidget):
         self.beamModeCheck.toggled.connect(self.beamWidthInput.setEnabled)
         self.beamModeCheck.toggled.connect(self.beamDepthInput.setEnabled)
         self.beamModeCheck.toggled.connect(self.maxPathsInput.setEnabled)
-        mana_layout.addWidget(QLabel("beam束宽："))
-        mana_layout.addWidget(self.beamWidthInput)
-        mana_layout.addWidget(QLabel("beam深度："))
-        mana_layout.addWidget(self.beamDepthInput)
-        mana_layout.addWidget(QLabel("路径上限："))
-        mana_layout.addWidget(self.maxPathsInput)
-        mana_layout.addStretch()
+        beam_row.addWidget(QLabel("束宽："))
+        beam_row.addWidget(self.beamWidthInput)
+        beam_row.addWidget(QLabel("束深："))
+        beam_row.addWidget(self.beamDepthInput)
+        beam_row.addWidget(QLabel("路径上限："))
+        beam_row.addWidget(self.maxPathsInput)
+        beam_row.addStretch()
 
         self.manualInputPanel = QWidget()
         self.manualInputPanel.setVisible(False)
@@ -1104,11 +1123,13 @@ class MainWindow(QWidget):
         self.ocrTitleLabel = QLabel("OCR原始文本（手牌/战场）")
         self.ocrText = QTextEdit()
         self.ocrText.setReadOnly(True)
+        self.ocrText.setMinimumWidth(400)
         self.ocrText.setFixedHeight(88)
         self.ocrText.setStyleSheet(QuickPanel.ocr_raw_style)
         self.manaOcrTitleLabel = QLabel("OCR原始文本（水晶/法力）")
         self.manaOcrText = QTextEdit()
         self.manaOcrText.setReadOnly(True)
+        self.manaOcrText.setMinimumWidth(400)
         self.manaOcrText.setFixedHeight(44)
         self.manaOcrText.setStyleSheet(QuickPanel.ocr_raw_style)
 
@@ -1116,7 +1137,9 @@ class MainWindow(QWidget):
         settings_layout = QVBoxLayout()
         settings_layout.addWidget(self.statusLabel)
         settings_layout.addLayout(select_layout)
-        settings_layout.addLayout(mana_layout)
+        settings_layout.addLayout(search_row)
+        settings_layout.addLayout(alex_row)
+        settings_layout.addLayout(beam_row)
         settings_layout.addWidget(self.manualInputButton)
         settings_layout.addWidget(self.manualInputPanel)
         settings_layout.addWidget(self.ocrTitleLabel)
@@ -1125,7 +1148,7 @@ class MainWindow(QWidget):
         settings_layout.addWidget(self.manaOcrText)
         settings_layout.addStretch()
         self.setLayout(settings_layout)
-        self.resize(760, 620)
+        self.resize(520, 820)
         self.move(120, 80)
 
         # 操作弹窗（识别/计算/牛池/殒命/手牌·战场·状态/计算结果），默认只显示弹窗
@@ -1554,13 +1577,8 @@ class MainWindow(QWidget):
         self.statusLabel.setText(msg)
 
     def closeEvent(self, event):
-        self.stop_ocr()
-        if self.calc_worker is not None:
-            self.calc_worker.requestInterruption()
-            self.calc_worker.wait()
+        # 设置窗口只是后台辅助窗口：关闭它不影响主弹窗（计算/识别照常进行）
         self.overlay.close()
-        if getattr(self, "panel", None) is not None:
-            self.panel.close()
         event.accept()
 
 
