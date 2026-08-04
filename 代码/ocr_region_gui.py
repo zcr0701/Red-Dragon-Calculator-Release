@@ -732,7 +732,9 @@ class QuickPanel(QDialog):
         super().__init__()
         self.owner = owner
         self.setWindowTitle("红龙贼计算器")
-        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        flags = self.windowFlags() | Qt.WindowStaysOnTopHint
+        flags &= ~Qt.WindowContextHelpButtonHint  # 去掉标题栏的 “?” 帮助按钮
+        self.setWindowFlags(flags)
         self.setMinimumWidth(560)
 
         # ---- 顶部操作按钮：识别为开始/停止切换按钮，设置按钮弹出后台设置窗口 ----
@@ -750,8 +752,8 @@ class QuickPanel(QDialog):
         for btn in (self.startButton, self.calculateButton, self.settingsButton):
             button_layout.addWidget(btn)
 
-        # ---- 殒命暗影标记 ----
-        self.deadlyShadowCheck = QCheckBox("标记殒命暗影")
+        # ---- 殒命暗影位置 ----
+        self.deadlyShadowCheck = QCheckBox("殒命暗影位置")
         self.deadlyShadowInput = QLineEdit()
         self.deadlyShadowInput.setPlaceholderText("手牌序号，如 3 或 3,7")
         self.deadlyShadowInput.setFixedWidth(160)
@@ -759,10 +761,14 @@ class QuickPanel(QDialog):
         self.deadlyShadowCheck.toggled.connect(self.deadlyShadowInput.setEnabled)
         deadly_layout = QHBoxLayout()
         deadly_layout.addWidget(self.deadlyShadowCheck)
-        deadly_layout.addWidget(QLabel("殒命暗影位置："))
         deadly_layout.addWidget(self.deadlyShadowInput)
         deadly_layout.addWidget(QLabel("按重建手牌列表从 1 开始编号"))
         deadly_layout.addStretch()
+        deadly_section = QWidget()
+        deadly_section_layout = QVBoxLayout()
+        deadly_section_layout.setContentsMargins(4, 2, 4, 2)
+        deadly_section_layout.addLayout(deadly_layout)
+        deadly_section.setLayout(deadly_section_layout)
 
         # ---- 牛头人酋长剩余卡池：最多勾选 3 张 ----
         self.etcBandChecks: List[Tuple[str, QCheckBox]] = []
@@ -915,10 +921,11 @@ class QuickPanel(QDialog):
         stack_layout = QVBoxLayout()
         stack_layout.setContentsMargins(0, 0, 0, 0)
         stack_layout.setSpacing(0)
-        stack_layout.addWidget(etc_section)
         stack_layout.addWidget(hand_section)
         stack_layout.addWidget(board_section)
         stack_layout.addWidget(status_section)
+        stack_layout.addWidget(deadly_section)
+        stack_layout.addWidget(etc_section)
         stack_layout.addWidget(calc_panel)
         stack_layout.setStretchFactor(calc_panel, 1)
         stack_container = QWidget()
@@ -926,7 +933,6 @@ class QuickPanel(QDialog):
 
         layout = QVBoxLayout()
         layout.addLayout(button_layout)
-        layout.addLayout(deadly_layout)
         layout.addWidget(stack_container)
         self.setLayout(layout)
         self.resize(600, 960)
@@ -1513,7 +1519,8 @@ class MainWindow(QWidget):
 
         self.panel.calcText.setPlainText("正在计算所有可行出牌路径...")
         self.panel.progressLabel.setText("")
-        self.panel.calculateButton.setEnabled(False)
+        # 合并后的按钮在计算期间要可点（此时是“中止计算”）
+        self.panel.calculateButton.setEnabled(True)
         self.panel.calculateButton.setText("中止计算")
 
         self.calc_worker = CalculationWorker(
