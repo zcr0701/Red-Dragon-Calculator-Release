@@ -165,7 +165,78 @@ class ScreenClampMixin:
         return super().nativeEvent(eventType, message)
 
 
-SECTION_NAME_RE = re.compile(r"^\s*(当前效果|牌库中|手牌中|战场|其他)\s*[（(]?\s*\d*\s*[）)]?\s*$")
+ABBREV_NAMES = {
+    "狐人老千": "狐",
+    "鲨鱼之灵": "鱼",
+    "斯卡布斯·刀油": "刀",
+    "暗影施法者": "暗",
+    "乐队经理精英牛头人酋长": "牛",
+    "晦鳞巢母": "晦",
+    "舞动全场（ft.迦罗娜）": "舞",
+    "生命的缚誓者阿莱克丝塔萨": "龙",
+    "幻觉药水": "药",
+    "幸运币": "币",
+    "伪造的幸运币": "币",
+    "锯齿骨刺": "骨",
+    "伺机待发": "伺",
+    "暗影步": "步",
+}
+
+
+def _abbrev_name(name: str) -> str:
+    return ABBREV_NAMES.get(name.strip(), "杂")
+
+
+def abbreviate_step(step: str) -> str:
+    """把一步路径缩写，如 暗影施法者(斯卡布斯·刀油) -> 暗(刀)；牛头人（舞动->红龙）-> 牛(舞->龙)。"""
+    text = step
+    deadly = ""
+
+    if "[殒命暗影]" in text:
+        deadly = "[殒]"
+        text = text.replace("[殒命暗影]", "")
+
+    base = None
+    rest = text
+
+    for name in sorted(ABBREV_NAMES, key=len, reverse=True):
+        if text.startswith(name):
+            base = name
+            rest = text[len(name):]
+            break
+
+    if base is None:
+        return "杂" + deadly
+
+    choices = ""
+    left = rest.find("（")
+    right = rest.rfind("）")
+
+    if left != -1 and right > left:
+        inner = rest[left + 1:right]
+        parts = [part.strip() for part in inner.split("->")]
+
+        if len(parts) > 1:
+            choices = "(" + "->".join(_abbrev_name(part) for part in parts) + ")"
+        else:
+            choices = "(" + _abbrev_name(parts[0]) + ")"
+
+        rest = rest[:left] + rest[right + 1:]
+
+    target = ""
+    match = re.search(r"\((.+?)\)", rest)
+
+    if match:
+        target = "(" + _abbrev_name(match.group(1)) + ")"
+
+    return ABBREV_NAMES[base] + target + choices + deadly
+
+
+def abbreviate_path(steps) -> str:
+    return "".join(abbreviate_step(step) for step in steps)
+
+
+SECTION_NAME_RE = re.compile(r"^\s*(当前效果|牌库中|手牌中|战场|随从|其他)\s*[（(]?\s*\d*\s*[）)]?\s*$")
 COST_ONLY_RE = re.compile(r"^\s*(\d+)\s*费?\s*$")
 COMMA_ZONE_RE = re.compile(r"^\s*(\d+)\s*[,，、]\s*(\d+)\s*血?\s*(.+)$")
 STAR_ONLY_RE = re.compile(r"^[*★☆＊]+\s*$")
@@ -1348,7 +1419,10 @@ class QuickPanel(ScreenClampMixin, QDialog):
             box.setReadOnly(True)
             box.setStyleSheet(self.result_style)
             box.setMinimumHeight(30)
-            box.setPlainText(f"第{index}轮：" + " -> ".join(round_steps))
+            box.setHtml(
+                f"<div>第{index}轮：{' -> '.join(round_steps)}</div>"
+                f"<div style='color:#888;font-size:14px;'>缩写：{abbreviate_path(round_steps)}</div>"
+            )
             container.addWidget(box)
             self._fit_edit(box, 220)
 
