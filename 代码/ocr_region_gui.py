@@ -755,7 +755,7 @@ class QuickPanel(QDialog):
         # ---- 殒命暗影位置 ----
         self.deadlyShadowCheck = QCheckBox("殒命暗影位置")
         self.deadlyShadowInput = QLineEdit()
-        self.deadlyShadowInput.setPlaceholderText("手牌序号，如 3 或 3,7")
+        self.deadlyShadowInput.setPlaceholderText("手牌序号")
         self.deadlyShadowInput.setFixedWidth(160)
         self.deadlyShadowInput.setEnabled(False)
         self.deadlyShadowCheck.toggled.connect(self.deadlyShadowInput.setEnabled)
@@ -791,7 +791,7 @@ class QuickPanel(QDialog):
             self.etcBandChecks.append((card_name, box))
 
         # 牛头人卡池做成折叠区块（默认展开）
-        self.etcToggle = QPushButton("▸ 牛头人酋长剩余卡池（最多勾选 3 张）")
+        self.etcToggle = QPushButton("▸ 牛头人剩余卡池")
         self.etcToggle.setCheckable(True)
         self.etcToggle.setChecked(True)
         self.etcToggle.setStyleSheet(self.toggle_style)
