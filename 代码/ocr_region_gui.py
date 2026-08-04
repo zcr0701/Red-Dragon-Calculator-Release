@@ -72,6 +72,7 @@ class ScreenClampMixin:
 
     def nativeEvent(self, eventType, message):
         if sys.platform == "win32" and eventType == b"windows_generic_MSG":
+            self._native_clamp_ok = True
             try:
                 msg = ctypes.wintypes.MSG.from_address(int(message))
 
@@ -88,7 +89,6 @@ class ScreenClampMixin:
                         if new_x != wp.x or new_y != wp.y:
                             wp.x = new_x
                             wp.y = new_y
-                            return True, 0
             except Exception:
                 pass
         return super().nativeEvent(eventType, message)
@@ -781,6 +781,7 @@ class QuickPanel(ScreenClampMixin, QDialog):
         super().__init__()
         self.owner = owner
         self.setWindowTitle("红龙贼计算器")
+        self._native_clamp_ok = False
         flags = self.windowFlags() | Qt.WindowStaysOnTopHint
         flags &= ~Qt.WindowContextHelpButtonHint  # 去掉标题栏的 “?” 帮助按钮
         self.setWindowFlags(flags)
@@ -1014,6 +1015,9 @@ class QuickPanel(ScreenClampMixin, QDialog):
     def moveEvent(self, event):
         """拖动窗口时贴住屏幕边界，不允许拖出屏幕外。"""
         super().moveEvent(event)
+        if getattr(self, "_native_clamp_ok", False):
+            # 原生消息钳制已生效（Windows 真实拖动），这里不再 move()，避免拉扯
+            return
         if getattr(self, "_clamp_move", False):
             return
         self._clamp_move = True
@@ -1034,6 +1038,7 @@ class MainWindow(ScreenClampMixin, QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("红龙贼计算器 · 设置")
+        self._native_clamp_ok = False
         self.setWindowFlags(Qt.WindowStaysOnTopHint)
 
         self.box = None
@@ -1248,6 +1253,8 @@ class MainWindow(ScreenClampMixin, QWidget):
     def moveEvent(self, event):
         """拖动设置窗口时同样贴住屏幕边界。"""
         super().moveEvent(event)
+        if getattr(self, "_native_clamp_ok", False):
+            return
         if getattr(self, "_clamp_move", False):
             return
         self._clamp_move = True
