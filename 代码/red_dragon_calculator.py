@@ -1,9 +1,12 @@
 import argparse
-import copy
 import heapq
 import json
+import time
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
+
+import archive
 
 
 MAX_HAND_SIZE = 10
@@ -38,6 +41,8 @@ class CardInstance:
     temp_cost: Optional[int] = None
     is_deadly_shadow: bool = False
     health: Optional[int] = None
+    # 赤烟·腾武回手锁定：本回合固定 1 费，刀油/伺机/骨刺等减费不能低于 1。
+    locked_one_cost: bool = False
 
     @classmethod
     def from_def(cls, card_def: CardDef) -> "CardInstance":
@@ -60,6 +65,24 @@ class CardInstance:
             return max(0, self.temp_cost)
 
         return self.cost
+
+
+def _fast_clone_card(card: CardInstance) -> CardInstance:
+    """手写卡牌浅克隆：只复制可变字段（tags），避免 copy.deepcopy 的巨额开销。"""
+    return CardInstance(
+        name=card.name,
+        cost=card.cost,
+        original_name=card.original_name,
+        card_type=card.card_type,
+        description=card.description,
+        effect_id=card.effect_id,
+        tags=list(card.tags),
+        no_fixed_cost=card.no_fixed_cost,
+        temp_cost=card.temp_cost,
+        is_deadly_shadow=card.is_deadly_shadow,
+        health=card.health,
+        locked_one_cost=card.locked_one_cost,
+    )
 
 
 @dataclass
@@ -92,7 +115,36 @@ class GameState:
     record_log: bool = True
 
     def clone(self) -> "GameState":
-        return copy.deepcopy(self)
+        # 手写克隆替代 copy.deepcopy：搜索中每秒要克隆上百万个状态，
+        # deepcopy 的 61M 次原子拷贝是主要瓶颈（profile 显示占 ~77% 运行时间）。
+        return GameState(
+            deck=[_fast_clone_card(card) for card in self.deck],
+            deck_is_known=self.deck_is_known,
+            hand=[_fast_clone_card(card) for card in self.hand],
+            board=[_fast_clone_card(card) for card in self.board],
+            secrets=[_fast_clone_card(card) for card in self.secrets],
+            weapon=None if self.weapon is None else _fast_clone_card(self.weapon),
+            mana_crystals=self.mana_crystals,
+            mana=self.mana,
+            initial_mana_crystals=self.initial_mana_crystals,
+            initial_mana=self.initial_mana,
+            cards_played_this_turn=self.cards_played_this_turn,
+            next_spell_discount=self.next_spell_discount,
+            next_combo_discount=self.next_combo_discount,
+            next_card_discount=self.next_card_discount,
+            next_two_cards_discount=self.next_two_cards_discount,
+            next_two_cards_discount_count=self.next_two_cards_discount_count,
+            active_card_discounts=list(self.active_card_discounts),
+            hero_immune_this_turn=self.hero_immune_this_turn,
+            last_spell_original_name=self.last_spell_original_name,
+            burned_cards=self.burned_cards,
+            alex_play_count=self.alex_play_count,
+            alex_damage=self.alex_damage,
+            etc_band_remaining=list(self.etc_band_remaining),
+            path=list(self.path),
+            log=list(self.log),
+            record_log=self.record_log,
+        )
 
     def has_shark(self) -> bool:
         return any(card.name == "鲨鱼之灵" for card in self.board)
@@ -377,6 +429,15 @@ CARD_DATABASE: Dict[str, CardDef] = {
         tags=["battlecry", "pirate"],
         health=2
     ),
+    "赤烟·腾武": CardDef(
+        name="赤烟·腾武",
+        cost=2,
+        card_type="minion",
+        description="战吼：将一个友方随从移回你的手牌，在本回合中，其法力值消耗为(1)点（固定1费，不能被减到0费）。",
+        effect_id="tenwu",
+        tags=["battlecry"],
+        health=2
+    ),
     "行骗": CardDef(
         name="行骗",
         cost=2,
@@ -510,6 +571,7 @@ CORE_CARD_NAMES = {
     "幻觉药水",
     "锯齿骨刺",
     "殒命暗影",
+    "赤烟·腾武",
 }
 
 def ordered_breakdance_returning(minions: List[CardInstance]) -> List[CardInstance]:
@@ -560,6 +622,20 @@ PREFERRED_COMBO_PATTERNS = [
     ("生命的缚誓者阿莱克丝塔萨", "暗影施法者", "生命的缚誓者阿莱克丝塔萨", "生命的缚誓者阿莱克丝塔萨"),
 ]
 
+# 幸运币与伪造的幸运币在计算中等价：同为 0 费法术、打出各 +1 临时法力。
+COIN_CARD_NAMES = frozenset({"幸运币", "伪造的幸运币"})
+
+
+def hand_count_with_coin_equivalence(
+    hand_counts: Counter,
+    name: str,
+) -> int:
+    """手牌需求计数：硬币两种名字合并计算（币币可互换）。"""
+    if name in COIN_CARD_NAMES:
+        return hand_counts.get("幸运币", 0) + hand_counts.get("伪造的幸运币", 0)
+
+    return hand_counts.get(name, 0)
+
 
 def make_card(name: str, cost: Optional[int] = None, use_runtime_cost: bool = False) -> CardInstance:
     if name not in CARD_DATABASE:
@@ -580,11 +656,17 @@ def make_card_from_rebuild_entry(card_entry) -> Optional[CardInstance]:
     if name not in CARD_DATABASE:
         return None
 
-    return make_card(
+    card = make_card(
         name=name,
         cost=getattr(card_entry, "cost", None),
         use_runtime_cost=True
     )
+    health = getattr(card_entry, "health", None)
+
+    if health is not None:
+        card.health = int(health)
+
+    return card
 
 
 def mark_as_deadly_shadow(card: CardInstance) -> CardInstance:
@@ -686,7 +768,7 @@ def cards_drawn_if_played(state: GameState, card: CardInstance) -> int:
 
 
 def make_one_one_copy(card: CardInstance) -> CardInstance:
-    copied = copy.deepcopy(card)
+    copied = _fast_clone_card(card)
     copied.temp_cost = 1
     copied.health = 1
     return copied
@@ -744,6 +826,11 @@ def effective_cost(state: GameState, card: CardInstance) -> Optional[int]:
 
     if "combo" in card.tags and state.next_combo_discount > 0:
         discount += state.next_combo_discount
+
+    if card.locked_one_cost:
+        # 腾武回手锁：本回合无论加费/减费，永远固定 1 费
+        # （刀油、伺机、骨刺、暗影步等全部无法改变）。
+        return 1
 
     return max(0, base_cost - discount)
 
@@ -1028,8 +1115,14 @@ def effect_shadowstep(state: GameState, card: CardInstance, target_friendly_inde
         return
 
     target = state.board_zone.remove_at(target_friendly_index)
-    base_cost = target.current_cost() or 0
-    target.temp_cost = max(0, base_cost - 2)
+
+    if target.locked_one_cost:
+        # 腾武锁定卡：暗影步不能减费，保持固定 1 费
+        target.temp_cost = 1
+    else:
+        base_cost = target.current_cost() or 0
+        target.temp_cost = max(0, base_cost - 2)
+
     add_to_hand(state, target)
 
 
@@ -1164,8 +1257,9 @@ def effect_etc(state: GameState, discover_choice_index: int = 0, **kwargs):
 
 def effect_potion_of_illusion(state: GameState, **kwargs):
     for minion in state.board_zone.cards[:]:
-        copy_card = copy.deepcopy(minion)
+        copy_card = _fast_clone_card(minion)
         copy_card.temp_cost = 1
+        copy_card.health = 1
         add_to_hand(state, copy_card)
 
 
@@ -1227,9 +1321,23 @@ def effect_shadowcaster(state: GameState, target_friendly_index: Optional[int], 
         state.add_log("暗影施法者缺少有效友方随从目标")
         return
 
-    target = copy.deepcopy(state.board_zone.cards[target_friendly_index])
+    target = _fast_clone_card(state.board_zone.cards[target_friendly_index])
     target.temp_cost = 1
+    target.health = 1
     add_to_hand(state, target)
+
+
+def effect_tenwu(state: GameState, card: CardInstance, target_friendly_index: Optional[int], **kwargs):
+    """赤烟·腾武：将一个友方随从移回手牌，本回合固定 1 费（不可减到 0）。"""
+    if target_friendly_index is None or target_friendly_index >= len(state.board_zone):
+        state.add_log("赤烟·腾武缺少有效友方随从目标")
+        return
+
+    target = state.board_zone.remove_at(target_friendly_index)
+    target.temp_cost = 1
+    target.locked_one_cost = True
+    add_to_hand(state, target)
+    state.add_log(f"赤烟·腾武回手：{target.name}（本回合固定1费）")
 
 
 def effect_evasion_trigger(state: GameState):
@@ -1261,6 +1369,7 @@ EFFECT_HANDLERS: Dict[str, Callable] = {
     "alexstrasza": effect_alexstrasza,
     "dubious_purchase": effect_dubious_purchase,
     "shadowcaster": effect_shadowcaster,
+    "tenwu": effect_tenwu,
 }
 
 
@@ -1486,7 +1595,7 @@ def discover_deck_count_only(state: GameState, label: str) -> List[GameState]:
 
 
 def target_friendly_options(state: GameState, card: CardInstance) -> List[Optional[int]]:
-    if card.effect_id in {"shadowstep", "shadowcaster", "serrated_bone_spike"}:
+    if card.effect_id in {"shadowstep", "shadowcaster", "serrated_bone_spike", "tenwu"}:
         return state.board_zone.valid_target_indexes()
 
     return [None]
@@ -1609,8 +1718,13 @@ def apply_search_effect(
 
                 if target_friendly_index is not None and target_friendly_index < len(new_state.board_zone):
                     target = new_state.board_zone.remove_at(target_friendly_index)
-                    base_cost = target.current_cost() or 0
-                    target.temp_cost = max(0, base_cost - 2)
+
+                    if target.locked_one_cost:
+                        target.temp_cost = 1
+                    else:
+                        base_cost = target.current_cost() or 0
+                        target.temp_cost = max(0, base_cost - 2)
+
                     add_card_to_hand_or_burn(new_state, target)
 
                 next_states.append(new_state)
@@ -1620,6 +1734,16 @@ def apply_search_effect(
                 if target_friendly_index is not None and target_friendly_index < len(new_state.board_zone):
                     copied = make_one_one_copy(new_state.board_zone.cards[target_friendly_index])
                     add_card_to_hand_or_burn(new_state, copied)
+
+                next_states.append(new_state)
+            elif effect_id == "tenwu":
+                new_state = current.clone()
+
+                if target_friendly_index is not None and target_friendly_index < len(new_state.board_zone):
+                    target = new_state.board_zone.remove_at(target_friendly_index)
+                    target.temp_cost = 1
+                    target.locked_one_cost = True
+                    add_card_to_hand_or_burn(new_state, target)
 
                 next_states.append(new_state)
             elif effect_id == "breakdance":
@@ -1764,10 +1888,12 @@ def state_signature(state: GameState) -> Tuple:
             card.original_name,
             card.card_type,
             card.effect_id,
-            safe_cost(card.cost),
-            safe_cost(card.temp_cost),
+            # 费用按“当前费用”归一：原生 1 费与 temp_cost=1 是同一玩法状态，
+            # 分开记录会导致 beam 去重/分桶对等价局面走不同分支（实测 9 龙样例
+            # 一个表示搜到 10龙/160，另一个只到 8龙/128）。
             safe_cost(card.current_cost()),
             card.is_deadly_shadow,
+            card.locked_one_cost,
             -1 if card.health is None else card.health,
         )
 
@@ -1801,10 +1927,9 @@ def state_key_for_dedup(state: GameState) -> Tuple:
             card.original_name,
             card.card_type,
             card.effect_id,
-            safe_cost(card.cost),
-            safe_cost(card.temp_cost),
             safe_cost(card.current_cost()),
             card.is_deadly_shadow,
+            card.locked_one_cost,
             -1 if card.health is None else card.health,
         )
 
@@ -1857,6 +1982,51 @@ class SymbolicChain:
     actions: List[SymbolicAction]
 
 
+@dataclass(frozen=True)
+class DiscreteSubchain:
+    """长距离离散子链：按顺序出现的“里程碑”动作，允许中间任意间隔。
+
+    人脑式知识：例如“要打 5 龙或更多，必定是 牛(舞,龙) -> …… -> 舞 -> …… -> 舞[殒]”，
+    这类骨架跨越多步、中间由其他子链填充，不能被连续子链表达，但能用来
+    给候选链/拼接对排序（优先验证命中里程碑骨架的链）。
+    """
+
+    name: str
+    required: Tuple[SymbolicAction, ...]
+    min_alex_count: int = 0
+    reasoning: str = ""
+
+
+def discrete_action_matches(actual: SymbolicAction, required: SymbolicAction) -> bool:
+    if required.name in COIN_CARD_NAMES and actual.name in COIN_CARD_NAMES:
+        return True
+
+    if actual.name != required.name:
+        return False
+
+    if required.target and actual.target != required.target:
+        return False
+
+    if required.choices and set(required.choices) != set(actual.choices):
+        return False
+
+    return True
+
+
+def chain_contains_discrete_subchain(actions: List[SymbolicAction], subchain: DiscreteSubchain) -> bool:
+    """检查动作序列是否按顺序包含离散子链的全部里程碑（中间可隔任意步）。"""
+    iterator = iter(actions)
+
+    for required_action in subchain.required:
+        for actual_action in iterator:
+            if discrete_action_matches(actual_action, required_action):
+                break
+        else:
+            return False
+
+    return True
+
+
 def action_label(action: SymbolicAction) -> str:
     label = action.name
 
@@ -1888,6 +2058,10 @@ def symbolic_chain_key(state: GameState, action_index: int, target_alex_count: i
 def chain_action_matches(path_item: str, action: SymbolicAction) -> bool:
     canonical_item = canonical_path_item(path_item)
     candidate_names = (action.name,) + action.aliases
+
+    if action.name in COIN_CARD_NAMES:
+        # 币币等价：幸运币动作可由伪造的幸运币满足，反之亦然
+        candidate_names = tuple(COIN_CARD_NAMES) + action.aliases
 
     if not any(canonical_item.startswith(candidate_name) for candidate_name in candidate_names):
         return False
@@ -1961,11 +2135,21 @@ def validate_symbolic_chain(
     chain: SymbolicChain,
     max_states: int,
     prune_stats: Optional[Dict[str, int]] = None,
-    should_stop: Optional[Callable[[], bool]] = None
+    should_stop: Optional[Callable[[], bool]] = None,
+    step_memo: Optional[Dict[Tuple, object]] = None
 ) -> List[GameState]:
+    """验证符号链；`step_memo` 可跨链共享（CDCL 式冲突学习 + 子链结果复用）。
+
+    记忆键 = (起始局面键, 当前局面键, 动作, 剩余法力)：
+      - 该键下某动作无后继 => 记 False（冲突子句：此局面下此动作必然打不出来），
+        后续任何链到达同一局面、同一动作时直接剪枝，不再重算；
+      - 有后继 => 记结果列表（粘合引理），后续链直接复用已验证的子链结果。
+    验证本身确定性，因此缓存是可靠的；返回的路径仍全部来自真实模拟。
+    """
     states = [initial_state.clone()]
     seen = set()
     intermediate_limit = max(1, min(max_states, CHAIN_VALIDATION_BEAM))
+    initial_state_key = state_key_for_dedup(initial_state)
 
     for action_index, action in enumerate(chain.actions):
         if should_stop is not None and should_stop():
@@ -1984,26 +2168,59 @@ def validate_symbolic_chain(
 
             seen.add(cache_key)
 
-            if chain_action_already_satisfied(initial_state, state, action):
-                next_states.append(state.clone())
+            step_key = (
+                initial_state_key,
+                state_key_for_dedup(state),
+                action.name,
+                action.target,
+                action.choices,
+                state.mana,
+            )
+
+            if step_memo is not None and step_key in step_memo:
+                memo_value = step_memo[step_key]
+
+                if memo_value is False:
+                    if prune_stats is not None:
+                        prune_stats["冲突学习剪枝"] = prune_stats.get("冲突学习剪枝", 0) + 1
+
+                    continue
 
                 if prune_stats is not None:
-                    prune_stats["符号链条预启动跳步"] = prune_stats.get("符号链条预启动跳步", 0) + 1
+                    prune_stats["子链结果复用"] = prune_stats.get("子链结果复用", 0) + 1
+
+                for cached_state in memo_value:
+                    next_states.append(cached_state.clone())
 
                 if len(next_states) >= intermediate_limit:
                     break
 
                 continue
 
-            for successor in generate_successors(state, prune_stats=prune_stats):
-                if not successor.path:
-                    continue
+            if chain_action_already_satisfied(initial_state, state, action):
+                matched_states: List[GameState] = [state.clone()]
+                prestart_skipped = True
+            else:
+                matched_states = []
+                prestart_skipped = False
 
-                if chain_action_matches(successor.path[-1], action):
-                    next_states.append(successor)
+                for successor in generate_successors(state, prune_stats=prune_stats):
+                    if not successor.path:
+                        continue
 
-                    if len(next_states) >= intermediate_limit:
-                        break
+                    if chain_action_matches(successor.path[-1], action):
+                        matched_states.append(successor)
+
+                        if len(matched_states) >= intermediate_limit:
+                            break
+
+            if prestart_skipped and prune_stats is not None:
+                prune_stats["符号链条预启动跳步"] = prune_stats.get("符号链条预启动跳步", 0) + 1
+
+            if step_memo is not None and len(step_memo) < 60000:
+                step_memo[step_key] = matched_states if matched_states else False
+
+            next_states.extend(matched_states)
 
             if len(next_states) >= intermediate_limit:
                 break
@@ -2031,7 +2248,15 @@ def validate_symbolic_chain(
     ]
 
 
+_SYMBOLIC_CHAINS_CACHE: Dict[int, List[SymbolicChain]] = {}
+
+
 def build_symbolic_chains(target_alex_count: int) -> List[SymbolicChain]:
+    cached = _SYMBOLIC_CHAINS_CACHE.get(target_alex_count)
+
+    if cached is not None:
+        return cached
+
     alex = "生命的缚誓者阿莱克丝塔萨"
     shark = "鲨鱼之灵"
     foxy = "狐人老千"
@@ -2568,6 +2793,70 @@ def build_symbolic_chains(target_alex_count: int) -> List[SymbolicChain]:
         )
 
         add_chain(
+            name="公式币币殒鲨狐刀牛舞龙晦步刀暗刀舞重铺三龙链",
+            reasoning=[
+                "殒命暗影开局变形为第二枚幸运币（币[殒]），两枚币把法力顶到 4，",
+                "鲨鱼0费？——先鱼狐刀启动，牛在鲨鱼下双发现舞动和红龙，晦鳞回 4 费；",
+                "暗影步回刀油、再刀油+暗施复制刀油+刀油叠减费，舞动全场全回收引擎；",
+                "第二轮鱼晦双刀油压低红龙，骨刺击杀晦鳞给暗施减费，暗施复制红龙完成三龙。",
+                "顺序经过用户验证：牛后必须先晦（回费）再步（刀），不能先暗施复制刀油。",
+            ],
+            actions=[
+                SymbolicAction("伪造的幸运币"),
+                SymbolicAction("伪造的幸运币"),
+                SymbolicAction(shark),
+                SymbolicAction(foxy),
+                SymbolicAction(scabbs),
+                SymbolicAction(etc, choices=(dance, alex)),
+                SymbolicAction(mother),
+                SymbolicAction(shadowstep, target=scabbs),
+                SymbolicAction(scabbs),
+                SymbolicAction(shadowcaster, target=scabbs),
+                SymbolicAction(scabbs),
+                SymbolicAction(dance),
+                SymbolicAction(shark),
+                SymbolicAction(mother),
+                SymbolicAction(scabbs),
+                SymbolicAction(scabbs),
+                SymbolicAction(alex),
+                SymbolicAction(bone_spike, target=mother),
+                SymbolicAction(shadowcaster, target=alex),
+                SymbolicAction(alex),
+                SymbolicAction(alex),
+            ],
+        )
+
+        add_chain(
+            name="公式币币殒鲨狐刀牛舞龙晦步刀暗刀舞重铺三龙链-无骨刺",
+            reasoning=[
+                "同币币殒重铺三龙链，但不用骨刺：第二轮鱼晦刀刀压低红龙后，",
+                "暗施在鲨鱼下直接复制红龙（两张 1 费复制体）完成三龙。",
+            ],
+            actions=[
+                SymbolicAction("伪造的幸运币"),
+                SymbolicAction("伪造的幸运币"),
+                SymbolicAction(shark),
+                SymbolicAction(foxy),
+                SymbolicAction(scabbs),
+                SymbolicAction(etc, choices=(dance, alex)),
+                SymbolicAction(mother),
+                SymbolicAction(shadowstep, target=scabbs),
+                SymbolicAction(scabbs),
+                SymbolicAction(shadowcaster, target=scabbs),
+                SymbolicAction(scabbs),
+                SymbolicAction(dance),
+                SymbolicAction(shark),
+                SymbolicAction(mother),
+                SymbolicAction(scabbs),
+                SymbolicAction(scabbs),
+                SymbolicAction(alex),
+                SymbolicAction(shadowcaster, target=alex),
+                SymbolicAction(alex),
+                SymbolicAction(alex),
+            ],
+        )
+
+        add_chain(
             name="公式伺骨杀晦三龙链",
             reasoning=[
                 "新版伺+步/骨公式的骨分支：伺机待发压低舞动，普通舞动后先鱼晦刀刀龙。",
@@ -2879,13 +3168,427 @@ def build_symbolic_chains(target_alex_count: int) -> List[SymbolicChain]:
             ]
         )
 
+    # =====================================================================
+    # 刀油引擎·舞动全回收链（不依赖狐人老千/硬币/牛头人）
+    # ---------------------------------------------------------------------
+    # 底层修正来源（2026-08-03 用户 9 龙/144 伤害样例）：
+    #   符号层此前把舞动全场建模成“只回收红龙一张”，而真规则是回收场上
+    #   【所有】友方随从为 1 费复制体。这条家族用“鲨鱼+多张 1 费刀油”
+    #   叠减费引擎开局（无需狐人老千），晦鳞回费，舞动全回收整个引擎，
+    #   殒命暗影在首次打出舞动后变形为第二张舞动，第三轮连出复制红龙。
+    #   轮次参数化：开局轮 +1 龙，每个中轮回 +3 龙，收尾轮 +N 龙（1<=N<=5）。
+    # =====================================================================
+    if target_alex_count >= 3:
+        alex_action = SymbolicAction(alex)
+        scabbs_action = SymbolicAction(scabbs)
+        shark_action = SymbolicAction(shark)
+        mother_action = SymbolicAction(mother)
+        dance_action = SymbolicAction(dance)
+        shadowcaster_alex_action = SymbolicAction(shadowcaster, target=alex)
+
+        opening_round = [
+            shark_action,
+            scabbs_action,
+            scabbs_action,
+            alex_action,
+            shadowcaster_alex_action,
+            mother_action,
+            scabbs_action,
+            dance_action,
+        ]
+        recycle_round_variants = [
+            [
+                shark_action,
+                mother_action,
+                alex_action,
+                alex_action,
+                shadowcaster_alex_action,
+                alex_action,
+                scabbs_action,
+                dance_action,
+            ],
+            [
+                shark_action,
+                mother_action,
+                alex_action,
+                alex_action,
+                shadowcaster_alex_action,
+                alex_action,
+                dance_action,
+            ],
+        ]
+
+        for round_variant_index, recycle_round in enumerate(recycle_round_variants):
+            for middle_count in range(0, 3):
+                consumed = 1 + 3 * middle_count
+                remaining = target_alex_count - consumed
+
+                if remaining < 1 or remaining > 5:
+                    continue
+
+                add_chain(
+                    name=f"刀油引擎舞动全回收链-{middle_count}中轮-尾{remaining}-v{round_variant_index + 1}",
+                    reasoning=[
+                        f"目标 {target_alex_count} 龙：鲨鱼使刀油连击触发两次，2-3 张刀油叠出 4-6 层减费，",
+                        "红龙/舞动被压到 0-1 费；暗影施法者在鲨鱼下复制红龙得两张 1 费复制体，晦鳞回 4 费。",
+                        "舞动全场把场上所有友方随从回手为 1 费复制体（不只是红龙），引擎（鱼/刀/晦/暗施）可重铺；",
+                        "殒命暗影在首次打出舞动后变形为第二张舞动，实现第二轮全回收、第三轮连出复制龙。",
+                        "本家族不依赖狐人老千/硬币/牛头人，覆盖手牌自带红龙 + 多刀油 + 舞动 + 殒命的三轮结构。",
+                    ],
+                    actions=(
+                        list(opening_round)
+                        + list(recycle_round) * middle_count
+                        + [shark_action, mother_action]
+                        + [alex_action] * remaining
+                    ),
+                )
+
+    # =====================================================================
+    # 刀油引擎·双舞步龙重铺链（由 beam 搜出的 10龙/160、9龙/144 反推入库）
+    # R1 开局轮：鲨鱼 -> 刀 -> 刀 -> 龙 -> 暗施(龙) -> 龙 -> 暗影步(龙) -> 龙 -> 刀 -> 舞   (+3 龙)
+    # R2 中轮回：鲨鱼 -> 龙 -> 龙 -> 晦 -> 龙 -> 暗施(龙) -> [刀] -> 舞                       (+3 龙)
+    # R3 收尾轮：鲨鱼 -> 晦 -> [刀/龙穿插] -> 龙×N                                            (+N 龙)
+    # 目标 = 3 + 3m + N；殒命暗影在首次舞动后变形为第二张舞动（舞[殒]）。
+    # 关键结构：R1 用暗影步回手红龙续打（比纯复制多 1 龙），R3 先鱼后龙保证每条 16 伤。
+    # =====================================================================
+    if target_alex_count >= 4:
+        alex_a = SymbolicAction(alex)
+        shark_a = SymbolicAction(shark)
+        scabbs_a = SymbolicAction(scabbs)
+        mother_a = SymbolicAction(mother)
+        dance_a = SymbolicAction(dance)
+        shadowcaster_a = SymbolicAction(shadowcaster, target=alex)
+        shadowstep_a = SymbolicAction(shadowstep, target=alex)
+
+        opening_step_round = [
+            shark_a, scabbs_a, scabbs_a, alex_a, shadowcaster_a, alex_a,
+            shadowstep_a, alex_a, scabbs_a, dance_a,
+        ]
+        middle_step_rounds = [
+            [
+                shark_a, alex_a, alex_a, mother_a, alex_a, shadowcaster_a,
+                scabbs_a, dance_a,
+            ],
+            [
+                shark_a, alex_a, alex_a, mother_a, alex_a, shadowcaster_a,
+                dance_a,
+            ],
+        ]
+
+        for middle_variant_index, middle_round in enumerate(middle_step_rounds):
+            for middle_count in range(0, 2):
+                remaining = target_alex_count - 3 - 3 * middle_count
+
+                if remaining < 1 or remaining > 5:
+                    continue
+
+                final_variants = [
+                    [shark_a, mother_a] + [alex_a] * remaining,
+                    [shark_a, mother_a, scabbs_a] + [alex_a] * remaining,
+                ]
+
+                if remaining >= 2:
+                    final_variants.append(
+                        [shark_a, mother_a, alex_a, alex_a, scabbs_a, alex_a]
+                        + [alex_a] * (remaining - 2)
+                    )
+
+                for final_index, final_round in enumerate(final_variants):
+                    add_chain(
+                        name=f"刀油引擎双舞步龙重铺链-{middle_count}中轮-尾{remaining}-v{middle_variant_index + 1}f{final_index + 1}",
+                        reasoning=[
+                            f"目标 {target_alex_count} 龙：鲨鱼+双刀油叠减费压低红龙，暗施复制红龙后",
+                            "暗影步回手红龙再打出（R1 多续一条）；舞动全场全回收整个引擎，殒命变形第二张舞动；",
+                            "中轮回鲨龙龙晦龙暗施(龙)再铺，收尾轮先鲨后晦再连出复制龙（先鱼后龙=每条 16 伤）。",
+                            "本家族由 beam 搜出的 10龙/160、9龙/144 线路反推为符号链，双向引擎可直接验证。",
+                        ],
+                        actions=(
+                            list(opening_step_round)
+                            + list(middle_round) * middle_count
+                            + final_round
+                        ),
+                    )
+
+    # =====================================================================
+    # 殒命双币·牛舞龙·晦步刀重铺链（由 beam 搜出的 2龙/32、1龙/16 反推）
+    # 适用：4水晶开局、殒命暗影变形第二枚幸运币（币币[殒]）、牛双发现舞动+红龙、
+    # 晦鳞回费后暗影步回刀、刀油+暗施(刀)+刀油叠减费，舞动全回收整个引擎；
+    # 第二轮重铺后按目标连出复制龙（无骨刺变体）。
+    # =====================================================================
+    if target_alex_count <= 3:
+        deadly_coin_round1 = [
+            SymbolicAction("伪造的幸运币"),
+            SymbolicAction("伪造的幸运币"),
+            SymbolicAction(shark),
+            SymbolicAction(foxy),
+            SymbolicAction(scabbs),
+            SymbolicAction(etc, choices=(dance, alex)),
+            SymbolicAction(mother),
+            SymbolicAction(shadowstep, target=scabbs),
+            SymbolicAction(scabbs),
+            SymbolicAction(shadowcaster, target=scabbs),
+            SymbolicAction(scabbs),
+            SymbolicAction(dance),
+        ]
+        deadly_coin_tails = [
+            (1, "直出", [SymbolicAction(shark), SymbolicAction(mother), SymbolicAction(scabbs), SymbolicAction(scabbs), SymbolicAction(alex)]),
+            (1, "牛药水复制", [SymbolicAction(shark), SymbolicAction(mother), SymbolicAction(etc, choices=(potion,)), SymbolicAction(scabbs), SymbolicAction(scabbs), SymbolicAction(alex), SymbolicAction(potion), SymbolicAction(mother)]),
+            (2, "暗施双龙", [SymbolicAction(shark), SymbolicAction(mother), SymbolicAction(scabbs), SymbolicAction(scabbs), SymbolicAction(alex), SymbolicAction(shadowcaster, target=alex), SymbolicAction(alex)]),
+            (3, "暗施三龙", [SymbolicAction(shark), SymbolicAction(mother), SymbolicAction(scabbs), SymbolicAction(scabbs), SymbolicAction(alex), SymbolicAction(shadowcaster, target=alex), SymbolicAction(alex), SymbolicAction(alex)]),
+        ]
+
+        for gain, tail_label, tail_actions in deadly_coin_tails:
+            add_chain(
+                name=f"殒命双币牛舞龙晦步刀重铺链-{gain}龙-{tail_label}",
+                reasoning=[
+                    f"目标 {target_alex_count} 龙：殒命暗影在首张幸运币后变形为第二枚（币币[殒]），",
+                    "鲨鱼狐人刀油启动，牛双发现舞动+红龙，晦鳞回费后暗影步回刀、",
+                    "刀油+暗施(刀)+刀油叠减费，舞动全回收整个引擎；",
+                    "第二轮先鲨后晦（先鱼后龙=每条16伤），按目标连出/复制红龙（无骨刺变体）。",
+                ],
+                actions=deadly_coin_round1 + tail_actions,
+            )
+
+    # =====================================================================
+    # 六费省鱼·双舞重铺链（由 beam 搜出的 9龙/112 反推）
+    # 6 法力不够“每轮先鱼”：中轮回省掉鲨鱼（3 条龙 8 伤）换取多续 1 龙。
+    # R1 开局轮：鲨刀刀龙暗(龙)晦刀舞 (+1)
+    # R2 中轮回：龙×3 暗施(龙) 龙 刀刀 舞[殒] (+4)
+    # R3 收尾轮：刀 鲨 晦 龙×N (+N)
+    # 目标 = 1 + 4m + N
+    # =====================================================================
+    if target_alex_count >= 5:
+        opening_save = [
+            SymbolicAction(shark),
+            SymbolicAction(scabbs),
+            SymbolicAction(scabbs),
+            SymbolicAction(alex),
+            SymbolicAction(shadowcaster, target=alex),
+            SymbolicAction(mother),
+            SymbolicAction(scabbs),
+            SymbolicAction(dance),
+        ]
+        middle_save = [
+            SymbolicAction(alex),
+            SymbolicAction(alex),
+            SymbolicAction(alex),
+            SymbolicAction(shadowcaster, target=alex),
+            SymbolicAction(alex),
+            SymbolicAction(scabbs),
+            SymbolicAction(scabbs),
+            SymbolicAction(dance),
+        ]
+
+        for middle_count in range(0, 2):
+            remaining = target_alex_count - 1 - 4 * middle_count
+
+            if remaining < 1 or remaining > 5:
+                continue
+
+            add_chain(
+                name=f"六费省鱼双舞重铺链-{middle_count}中轮-尾{remaining}",
+                reasoning=[
+                    f"目标 {target_alex_count} 龙（6 法力省鱼版）：第一轮鲨鱼刀刀压低红龙，",
+                    "暗施复制后晦鳞回费、舞动全回收整个引擎；",
+                    "中轮回省掉鲨鱼（3 条龙 8 伤）以 6 法力续出更多龙，殒命变形第二张舞动；",
+                    "收尾轮刀鲨晦后连出复制龙。9龙/144 需要 8 法力，6 法力下此为最高龙数结构。",
+                ],
+                actions=(
+                    list(opening_save)
+                    + list(middle_save) * middle_count
+                    + [SymbolicAction(scabbs), SymbolicAction(shark), SymbolicAction(mother)]
+                    + [SymbolicAction(alex)] * remaining
+                ),
+            )
+
+    # =====================================================================
+    # 六费鱼先晦中回费·双舞重铺链（由用户指出的 6法力 9龙/144 反推）
+    # 关键：晦鳞巢母放在轮中回费（鱼龙龙晦 / 鱼龙晦），6 法力也能每条龙 16 伤。
+    # R1 开局轮：鲨刀刀龙暗(龙)晦刀舞 (+1)
+    # R2 中轮回：鱼 龙 龙 晦 暗施(龙) 龙 刀 舞[殒] (+3)
+    # R3 收尾轮：鱼 龙 晦 龙×(N-1) (+N)
+    # 目标 = 1 + 3m + N
+    # =====================================================================
+    if target_alex_count >= 5:
+        opening_fish_mid = [
+            SymbolicAction(shark),
+            SymbolicAction(scabbs),
+            SymbolicAction(scabbs),
+            SymbolicAction(alex),
+            SymbolicAction(shadowcaster, target=alex),
+            SymbolicAction(mother),
+            SymbolicAction(scabbs),
+            SymbolicAction(dance),
+        ]
+        middle_fish_mid = [
+            SymbolicAction(shark),
+            SymbolicAction(alex),
+            SymbolicAction(alex),
+            SymbolicAction(mother),
+            SymbolicAction(shadowcaster, target=alex),
+            SymbolicAction(alex),
+            SymbolicAction(scabbs),
+            SymbolicAction(dance),
+        ]
+
+        for middle_count in range(0, 2):
+            remaining = target_alex_count - 1 - 3 * middle_count
+
+            if remaining < 1 or remaining > 5:
+                continue
+
+            final_fish_mid = (
+                [SymbolicAction(shark), SymbolicAction(alex), SymbolicAction(mother)]
+                + [SymbolicAction(alex)] * (remaining - 1)
+            )
+            add_chain(
+                name=f"六费鱼先晦中回费双舞重铺链-{middle_count}中轮-尾{remaining}",
+                reasoning=[
+                    f"目标 {target_alex_count} 龙（6 法力版）：鲨鱼刀刀压低红龙，暗施复制后晦鳞回费、",
+                    "舞动全回收整个引擎；中轮回鱼龙龙晦暗施(龙)龙刀舞[殒]——晦鳞放轮中回费，",
+                    "6 法力也能先鱼后龙每条 16 伤；收尾轮鱼龙晦龙×N。9龙/144 在 6 法力下成立。",
+                ],
+                actions=(
+                    list(opening_fish_mid)
+                    + list(middle_fish_mid) * middle_count
+                    + final_fish_mid
+                ),
+            )
+
     chains.sort(key=lambda chain: (
         0 if chain.name.startswith("公式") else 1 if chain.name.startswith("基础") else 2,
         len(chain.actions),
         chain.name,
     ))
 
+    _SYMBOLIC_CHAINS_CACHE[target_alex_count] = chains
     return chains
+
+
+# =====================================================================
+# 长距离离散子链库：里程碑骨架（允许中间任意间隔），用于引导链验证顺序
+# 与双向拼接候选优选。这些是“人脑先想结构、再填空”的知识：
+#   双舞全回收骨架：……->牛（舞,龙）->……->舞->……->舞[殒]->……
+#   刀油叠费引擎：鲨鱼 + 2 张以上刀油把后续卡压到 0-1 费。
+#   暗施双龙复制：鲨鱼在场时暗影施法者复制红龙得两张 1 费复制体。
+# =====================================================================
+def build_discrete_subchain_library() -> List[DiscreteSubchain]:
+    alex = "生命的缚誓者阿莱克丝塔萨"
+    shark = "鲨鱼之灵"
+    scabbs = "斯卡布斯·刀油"
+    shadowcaster = "暗影施法者"
+    mother = "晦鳞巢母"
+    dance = "舞动全场（ft.迦罗娜）"
+    shadowstep = "暗影步"
+    etc = "乐队经理精英牛头人酋长"
+
+    return [
+        DiscreteSubchain(
+            name="双舞全回收骨架（5+龙）",
+            min_alex_count=5,
+            required=(SymbolicAction(dance), SymbolicAction(dance)),
+            reasoning="5 龙以上通常需要两次舞动全场全回收：第二张舞动由殒命暗影变形而来。",
+        ),
+        DiscreteSubchain(
+            name="牛舞龙发现+双舞（5+龙）",
+            min_alex_count=5,
+            required=(
+                SymbolicAction(etc, choices=(dance, alex)),
+                SymbolicAction(dance),
+                SymbolicAction(dance),
+            ),
+            reasoning="牛在鲨鱼下双发现舞动+红龙，随后两次舞动全回收（第二张为舞动[殒]）。",
+        ),
+        DiscreteSubchain(
+            name="牛舞龙发现（3+龙）",
+            min_alex_count=3,
+            required=(SymbolicAction(etc, choices=(dance, alex)),),
+            reasoning="牛头人发现舞动+红龙是红龙来源与回收来源的常见入口。",
+        ),
+        DiscreteSubchain(
+            name="刀油叠费引擎",
+            min_alex_count=3,
+            required=(SymbolicAction(shark), SymbolicAction(scabbs), SymbolicAction(scabbs)),
+            reasoning="鲨鱼使刀油连击双触发：两张刀油叠 4 层减费，把 9 费红龙压到 1 费。",
+        ),
+        DiscreteSubchain(
+            name="暗施双龙复制",
+            min_alex_count=3,
+            required=(
+                SymbolicAction(shadowcaster, target=alex),
+                SymbolicAction(alex),
+                SymbolicAction(alex),
+            ),
+            reasoning="鲨鱼在场时暗影施法者复制红龙得两张 1 费复制体并连打。",
+        ),
+        DiscreteSubchain(
+            name="殒命双币开手",
+            min_alex_count=3,
+            required=(SymbolicAction("幸运币"), SymbolicAction("幸运币")),
+            reasoning="殒命暗影在首张法术（幸运币）后变形为第二枚幸运币，把开局法力顶满。",
+        ),
+        DiscreteSubchain(
+            name="晦鳞回收轮",
+            min_alex_count=3,
+            required=(
+                SymbolicAction(mother),
+                SymbolicAction(dance),
+                SymbolicAction(shark),
+                SymbolicAction(mother),
+            ),
+            reasoning="晦鳞回费->舞动全回收->鲨鱼重铺->晦鳞再回费，构成回收轮。",
+        ),
+        DiscreteSubchain(
+            name="双暗影步回龙（5+龙）",
+            min_alex_count=5,
+            required=(
+                SymbolicAction(shadowstep, target=alex),
+                SymbolicAction(shadowstep, target=alex),
+            ),
+            reasoning="两条暗影步（其中一条可为暗影步[殒]）分别回手红龙再打出。",
+        ),
+        DiscreteSubchain(
+            name="步龙回手续龙（3+龙）",
+            min_alex_count=3,
+            required=(
+                SymbolicAction(shadowstep, target=alex),
+                SymbolicAction(alex),
+            ),
+            reasoning="暗影步回手场上的红龙再打出：同一条龙打两次，多续一条龙。",
+        ),
+        DiscreteSubchain(
+            name="鱼先于龙骨架（伤害关键）",
+            min_alex_count=3,
+            required=(
+                SymbolicAction(shark),
+                SymbolicAction(alex),
+            ),
+            reasoning="先放鲨鱼再出红龙：战吼双触发=每条龙 16 伤（9龙144/10龙160 的关键）。",
+        ),
+        DiscreteSubchain(
+            name="鱼晦龙收尾轮",
+            min_alex_count=5,
+            required=(
+                SymbolicAction(shark),
+                SymbolicAction(mother),
+                SymbolicAction(alex),
+            ),
+            reasoning="收尾轮先鲨鱼后晦鳞回费再连出复制龙：第三轮连出 3-5 条的结构骨架。",
+        ),
+        DiscreteSubchain(
+            name="双舞+步龙重铺（7+龙）",
+            min_alex_count=7,
+            required=(
+                SymbolicAction(dance),
+                SymbolicAction(shadowstep, target=alex),
+                SymbolicAction(dance),
+            ),
+            reasoning="两次舞动全回收（第二张为舞动[殒]）之间夹暗影步回龙：10龙/160 线路的骨架。",
+        ),
+    ]
+
+
+DISCRETE_SUBCHAIN_LIBRARY = build_discrete_subchain_library()
 
 
 @dataclass(frozen=True)
@@ -3105,24 +3808,1409 @@ def has_prestarted_resources(state: GameState) -> bool:
     )
 
 
+def parse_path_item_to_action(path_item: str) -> Optional[SymbolicAction]:
+    """把具体路径项解析成符号动作，供“正向发现→反推符号链→反向验证”使用。
+
+    路径项格式：
+      - 卡名 / 卡名[殒命暗影]
+      - 卡名(目标名)
+      - 卡名（选择1->选择2）
+    """
+    item = canonical_path_item(path_item).strip()
+
+    if not item:
+        return None
+
+    known_names = set(CARD_DATABASE.keys())
+    known_names.update(ETC_BAND)
+    best_name: Optional[str] = None
+
+    for name in known_names:
+        if item.startswith(name) and (best_name is None or len(name) > len(best_name)):
+            best_name = name
+
+    if best_name is None:
+        return None
+
+    rest = item[len(best_name):]
+    target: Optional[str] = None
+    choices: Tuple[str, ...] = ()
+
+    if rest.startswith("("):
+        close_index = rest.find(")")
+
+        if close_index != -1:
+            target = rest[1:close_index]
+            rest = rest[close_index + 1:]
+
+    if rest.startswith("（") and rest.endswith("）"):
+        inner = rest[1:-1]
+        choices = tuple(part.strip() for part in inner.split("->"))
+
+    return SymbolicAction(name=best_name, target=target, choices=choices)
+
+
+def mine_symbolic_chain_from_path(state: GameState, chain_index: int) -> Optional[SymbolicChain]:
+    """把正向搜索发现的具体路径反推成一条符号链。
+
+    模拟人类思考的“前后关联”：先正向试探出一条可行路线，再把它抽象成
+    符号链模板，最后用反向符号链验证去确认/复用这条路线。
+    """
+    if not state.path or state.alex_play_count <= 0:
+        return None
+
+    actions: List[SymbolicAction] = []
+
+    for path_item in state.path:
+        action = parse_path_item_to_action(path_item)
+
+        if action is None:
+            return None
+
+        actions.append(action)
+
+    return SymbolicChain(
+        name=f"正向束搜索自动挖掘链-{chain_index}",
+        target_alex_count=state.alex_play_count,
+        reasoning=[
+            "由正向束搜索发现的可行路径自动反推成符号链，再经反向符号链验证确认；",
+            "用于覆盖手工符号链模板尚未总结的新线路（先正向试探、再反向证明）。",
+        ],
+        actions=actions,
+    )
+
+
+# =====================================================================
+# 双向符号链证明：前向符号链（从初始局面展开）+ 反向符号链（从目标龙数
+# 反推尾链），在前沿状态处“拼接”。拼接后的完整链条仍走反向验证确认，
+# 保证结果可复现、可直接落盘。
+# =====================================================================
+
+ALEX_TAIL_NAME = "生命的缚誓者阿莱克丝塔萨"
+SHARK_TAIL_NAME = "鲨鱼之灵"
+SHADOWCASTER_TAIL_NAME = "暗影施法者"
+ETC_TAIL_NAME = "乐队经理精英牛头人酋长"
+DANCE_TAIL_NAME = "舞动全场（ft.迦罗娜）"
+POTION_TAIL_NAME = "幻觉药水"
+SHADOWSTEP_TAIL_NAME = "暗影步"
+PREP_TAIL_NAME = "伺机待发"
+BONE_TAIL_NAME = "锯齿骨刺"
+
+
+def forward_symbolic_frontier(
+    initial_state: GameState,
+    max_depth: int = 22,
+    beam_width: int = 1500,
+    max_per_depth: int = 300,
+    max_states: int = 6000,
+    should_stop: Optional[Callable[[], bool]] = None,
+    stop_expanding_at_alex: Optional[int] = None,
+) -> List[GameState]:
+    """前向符号链：从初始局面按束展开真实后继，返回去重后的可达状态前沿。
+
+    这些状态是“拼接”的前半段：只要某个反向尾链的资源要求能被该状态满足，
+    就能拼成一条完整证明。状态路径即真实出牌序列，可复现。
+
+    `stop_expanding_at_alex`：达到该龙数的状态不再往下展开（已可作直接命中或
+    尾链拼接点，继续展开只会重复生成同样可被尾链覆盖的更深状态）。
+    """
+    start = initial_state.clone()
+    start.record_log = False
+
+    def potential(state: GameState) -> int:
+        dragons = sum(1 for card in state.hand if "dragon" in card.tags)
+        dragons += sum(1 for card in state.board if "dragon" in card.tags)
+        return dragons
+
+    seen = set()
+    seen.add(state_key_for_dedup(start))
+    level = [start]
+    collected: List[GameState] = []
+
+    for _ in range(1, max_depth + 1):
+        if should_stop is not None and should_stop():
+            break
+
+        if not level:
+            break
+
+        next_level: List[GameState] = []
+        next_seen = set()
+
+        for state in level:
+            if (
+                stop_expanding_at_alex is not None
+                and state.alex_play_count >= stop_expanding_at_alex
+            ):
+                # 已达到搜索下限：保留为拼接/直接命中点，但不再展开后继
+                continue
+
+            for successor in generate_successors(state):
+                key = state_key_for_dedup(successor)
+
+                if key in seen or key in next_seen:
+                    continue
+
+                next_seen.add(key)
+                next_level.append(successor)
+
+        if not next_level:
+            break
+
+        next_level.sort(
+            key=lambda state: (state.alex_play_count, state.mana, potential(state)),
+            reverse=True,
+        )
+        level = next_level[:beam_width]
+        seen |= next_seen
+        # 每层都保留一部分状态，避免深层（法力低但资源齐）的拼接点被浅层挤掉
+        collected.extend(level[:max_per_depth])
+
+    collected.sort(
+        key=lambda state: (state.alex_play_count, state.mana, potential(state)),
+        reverse=True,
+    )
+    return collected[:max_states]
+
+
+@dataclass
+class AlexTail:
+    """反向目标尾链：从“还要打出 N 条红龙”反推的动作后缀 + 起始资源要求。"""
+
+    name: str
+    actions: List[SymbolicAction]
+    gain: int
+    hand_req: Dict[str, int]
+    board_req: Dict[str, int]
+    band_req: Tuple[str, ...]
+    any_friendly_minion: bool
+    # 引理前提（数学引理式）：needs_deadly 时，可改用 hand_req_deadly——
+    # 即“需要两张同名法术副本时，手牌有一张本体 + 一张殒命暗影即可”。
+    needs_deadly: bool = False
+    hand_req_deadly: Dict[str, int] = field(default_factory=dict)
+
+
+DEADLY_SHADOW_NAME = "殒命暗影"
+DEADLY_COPY_SOURCE_SPELLS = {
+    "舞动全场（ft.迦罗娜）",
+    "幻觉药水",
+    "暗影步",
+    "伺机待发",
+    "锯齿骨刺",
+    "幸运币",
+    "伪造的幸运币",
+}
+
+
+def make_deadly_variant(hand_req: Dict[str, int]) -> Tuple[bool, Dict[str, int]]:
+    """由基础手牌需求推导“殒命暗影补一张法术副本”的替代前提。
+
+    例：链需要 舞动×2；若手牌只有 舞动×1 + 殒命暗影×1，前提也成立——
+    首次打出舞动后殒命变形为第二张舞动。返回 (是否可用殒命, 替代需求)。
+    """
+    best_spell: Optional[str] = None
+    best_count = 0
+
+    for name, count in hand_req.items():
+        if name == DEADLY_SHADOW_NAME:
+            continue
+
+        if name in DEADLY_COPY_SOURCE_SPELLS and count >= 2 and count > best_count:
+            best_spell = name
+            best_count = count
+
+    if best_spell is None:
+        return False, {}
+
+    variant = dict(hand_req)
+    variant[best_spell] -= 1
+
+    if variant[best_spell] <= 0:
+        del variant[best_spell]
+
+    variant[DEADLY_SHADOW_NAME] = variant.get(DEADLY_SHADOW_NAME, 0) + 1
+    return True, variant
+
+
+def make_alex_tail(
+    name: str,
+    actions: List[SymbolicAction],
+    gain: int,
+    hand_req: Dict[str, int],
+    board_req: Dict[str, int],
+    band_req: Tuple[str, ...],
+    any_friendly_minion: bool,
+) -> AlexTail:
+    """构造 AlexTail 并自动推导殒命暗影替代前提。"""
+    needs_deadly, deadly_req = make_deadly_variant(hand_req)
+    return AlexTail(
+        name=name,
+        actions=actions,
+        gain=gain,
+        hand_req=hand_req,
+        board_req=board_req,
+        band_req=band_req,
+        any_friendly_minion=any_friendly_minion,
+        needs_deadly=needs_deadly,
+        hand_req_deadly=deadly_req,
+    )
+
+
+class _TailSim:
+    """尾链的抽象推演器：同时维护“当前已产生/消耗的资源”和“起始必须满足的要求”。"""
+
+    def __init__(self) -> None:
+        self.actions: List[SymbolicAction] = []
+        self.hand: Dict[str, int] = {}
+        self.board: Dict[str, int] = {}
+        self.alex_played: int = 0
+        self.hand_req: Dict[str, int] = {}
+        self.board_req: Dict[str, int] = {}
+        self.band_req = set()
+        self.any_friendly_minion: bool = False
+        self.prep_used: bool = False
+        self.bone_used: bool = False
+
+    def clone(self) -> "_TailSim":
+        new = _TailSim()
+        new.actions = self.actions[:]
+        new.hand = dict(self.hand)
+        new.board = dict(self.board)
+        new.alex_played = self.alex_played
+        new.hand_req = dict(self.hand_req)
+        new.board_req = dict(self.board_req)
+        new.band_req = set(self.band_req)
+        new.any_friendly_minion = self.any_friendly_minion
+        new.prep_used = self.prep_used
+        new.bone_used = self.bone_used
+        return new
+
+    def hand_need(self, name: str) -> None:
+        self.hand_req[name] = max(self.hand_req.get(name, 0), 1 - self.hand.get(name, 0))
+
+    def board_need(self, name: str) -> None:
+        self.board_req[name] = max(self.board_req.get(name, 0), 1 - self.board.get(name, 0))
+
+    def play_minion(self, name: str) -> None:
+        self.hand_need(name)
+        self.hand[name] = self.hand.get(name, 0) - 1
+        self.board[name] = self.board.get(name, 0) + 1
+
+    def play_spell(self, name: str) -> None:
+        self.hand_need(name)
+        self.hand[name] = self.hand.get(name, 0) - 1
+
+    def add_hand(self, name: str, count: int = 1) -> None:
+        self.hand[name] = self.hand.get(name, 0) + count
+
+    def remove_board(self, name: str) -> None:
+        self.board[name] = self.board.get(name, 0) - 1
+
+    def to_tail(self, index: int) -> AlexTail:
+        needs_deadly, deadly_req = make_deadly_variant(
+            {name: count for name, count in self.hand_req.items() if count > 0}
+        )
+
+        return AlexTail(
+            name=f"反向目标尾链-{index}",
+            actions=self.actions,
+            gain=self.alex_played,
+            hand_req={name: count for name, count in self.hand_req.items() if count > 0},
+            board_req={name: count for name, count in self.board_req.items() if count > 0},
+            band_req=tuple(sorted(self.band_req)),
+            any_friendly_minion=self.any_friendly_minion,
+            needs_deadly=needs_deadly,
+            hand_req_deadly=deadly_req,
+        )
+
+
+def _tail_direct(sim: _TailSim) -> int:
+    """直出红龙（手牌里有龙直接打出）。"""
+    sim.actions.append(SymbolicAction(ALEX_TAIL_NAME))
+    sim.play_minion(ALEX_TAIL_NAME)
+    sim.alex_played += 1
+    return 1
+
+
+def _tail_shadowcaster(sim: _TailSim, doubled: bool) -> int:
+    """暗影施法者复制场上的红龙（鲨鱼在场翻倍=两张1费红龙），再打出。"""
+    sim.actions.append(SymbolicAction(SHADOWCASTER_TAIL_NAME, target=ALEX_TAIL_NAME))
+    sim.board_need(ALEX_TAIL_NAME)
+    sim.play_minion(SHADOWCASTER_TAIL_NAME)
+    copies = 2 if doubled else 1
+
+    if doubled:
+        sim.board_need(SHARK_TAIL_NAME)
+
+    sim.add_hand(ALEX_TAIL_NAME, copies)
+
+    for _ in range(copies):
+        sim.actions.append(SymbolicAction(ALEX_TAIL_NAME))
+        sim.play_minion(ALEX_TAIL_NAME)
+        sim.alex_played += 1
+
+    return copies
+
+
+def _tail_shadowstep(sim: _TailSim) -> int:
+    """暗影步回手场上的红龙再打出。"""
+    sim.actions.append(SymbolicAction(SHADOWSTEP_TAIL_NAME, target=ALEX_TAIL_NAME))
+    sim.board_need(ALEX_TAIL_NAME)
+    sim.play_spell(SHADOWSTEP_TAIL_NAME)
+    sim.remove_board(ALEX_TAIL_NAME)
+    sim.add_hand(ALEX_TAIL_NAME)
+    sim.actions.append(SymbolicAction(ALEX_TAIL_NAME))
+    sim.play_minion(ALEX_TAIL_NAME)
+    sim.alex_played += 1
+    return 1
+
+
+def _tail_dance(sim: _TailSim) -> int:
+    """舞动全场：场上所有友方随从回手为 1 费复制体（含全部红龙），再打出其中一条红龙。"""
+    if not sim.board:
+        return -1
+
+    sim.actions.append(SymbolicAction(DANCE_TAIL_NAME))
+    sim.board_need(ALEX_TAIL_NAME)
+    sim.play_spell(DANCE_TAIL_NAME)
+
+    for board_name, board_count in list(sim.board.items()):
+        if board_count > 0:
+            sim.board[board_name] = 0
+            sim.add_hand(board_name, board_count)
+
+    sim.actions.append(SymbolicAction(ALEX_TAIL_NAME))
+    sim.play_minion(ALEX_TAIL_NAME)
+    sim.alex_played += 1
+    return 1
+
+
+def _tail_potion(sim: _TailSim) -> int:
+    """幻觉药水复制场上的红龙再打出。"""
+    sim.actions.append(SymbolicAction(POTION_TAIL_NAME))
+    sim.board_need(ALEX_TAIL_NAME)
+    sim.play_spell(POTION_TAIL_NAME)
+    sim.add_hand(ALEX_TAIL_NAME)
+    sim.actions.append(SymbolicAction(ALEX_TAIL_NAME))
+    sim.play_minion(ALEX_TAIL_NAME)
+    sim.alex_played += 1
+    return 1
+
+
+def _tail_etc(sim: _TailSim, potion_variant: bool) -> int:
+    """牛头人酋长（鲨鱼在场双发现）发现 舞动/药水 + 红龙，再打出红龙。"""
+    choice = POTION_TAIL_NAME if potion_variant else DANCE_TAIL_NAME
+    choices = (choice, ALEX_TAIL_NAME)
+    sim.actions.append(SymbolicAction(ETC_TAIL_NAME, choices=choices))
+    sim.board_need(SHARK_TAIL_NAME)
+    sim.play_minion(ETC_TAIL_NAME)
+    sim.band_req.update(choices)
+    sim.add_hand(choice)
+    sim.add_hand(ALEX_TAIL_NAME)
+    sim.actions.append(SymbolicAction(ALEX_TAIL_NAME))
+    sim.play_minion(ALEX_TAIL_NAME)
+    sim.alex_played += 1
+    return 1
+
+
+def _tail_prep(sim: _TailSim) -> int:
+    if sim.prep_used:
+        return -1
+
+    sim.actions.append(SymbolicAction(PREP_TAIL_NAME))
+    sim.play_spell(PREP_TAIL_NAME)
+    sim.prep_used = True
+    return 0
+
+
+def _tail_bone(sim: _TailSim) -> int:
+    if sim.bone_used:
+        return -1
+
+    sim.actions.append(SymbolicAction(BONE_TAIL_NAME))
+    sim.play_spell(BONE_TAIL_NAME)
+    sim.any_friendly_minion = True
+    sim.bone_used = True
+    return 0
+
+
+_ALEX_TAILS_CACHE: Dict[Tuple, List[AlexTail]] = {}
+
+
+def generate_alex_tails(
+    max_gain: int = 6,
+    max_actions: int = 12,
+    max_tails_per_gain: int = 150,
+    max_tails: int = 1500,
+) -> List[AlexTail]:
+    """反推生成目标尾链：递归组合“生产红龙”的机制，直到凑够目标龙数。"""
+    cache_key = (max_gain, max_actions, max_tails_per_gain, max_tails)
+    cached = _ALEX_TAILS_CACHE.get(cache_key)
+
+    if cached is not None:
+        return cached
+
+    tails: Dict[Tuple, AlexTail] = {}
+    tail_index = [0]
+    visits = [0]
+    gain_counts: Dict[int, int] = {}
+
+    def rec(sim: _TailSim, remaining: int) -> None:
+        visits[0] += 1
+
+        if visits[0] > 80000:
+            return
+
+        if remaining <= 0:
+            tail = sim.to_tail(tail_index[0])
+            tail_index[0] += 1
+            key = (
+                tuple((action.name, action.target, action.choices) for action in sim.actions),
+                tuple(sorted(sim.hand_req.items())),
+                tuple(sorted(sim.board_req.items())),
+                tuple(sorted(sim.band_req)),
+                sim.any_friendly_minion,
+            )
+
+            if key not in tails:
+                if gain_counts.get(tail.gain, 0) >= max_tails_per_gain:
+                    return
+
+                tails[key] = tail
+                gain_counts[tail.gain] = gain_counts.get(tail.gain, 0) + 1
+
+            return
+
+        if len(tails) >= max_tails:
+            return
+
+        if len(sim.actions) >= max_actions:
+            return
+
+        gain_options = [
+            ("direct", lambda s: _tail_direct(s)),
+            ("shadowcaster", lambda s: _tail_shadowcaster(s, False)),
+            ("shadowcaster2", lambda s: _tail_shadowcaster(s, True)),
+            ("shadowstep", lambda s: _tail_shadowstep(s)),
+            ("dance", lambda s: _tail_dance(s)),
+            ("potion", lambda s: _tail_potion(s)),
+            ("etc_dance", lambda s: _tail_etc(s, False)),
+            ("etc_potion", lambda s: _tail_etc(s, True)),
+        ]
+
+        for label, fn in gain_options:
+            next_sim = sim.clone()
+            gain = fn(next_sim)
+
+            if gain <= 0 or gain > remaining:
+                continue
+
+            rec(next_sim, remaining - gain)
+
+        prep_options = [
+            ("prep", lambda s: _tail_prep(s)),
+            ("bone", lambda s: _tail_bone(s)),
+        ]
+
+        for label, fn in prep_options:
+            next_sim = sim.clone()
+            gain = fn(next_sim)
+
+            if gain < 0:
+                continue
+
+            rec(next_sim, remaining)
+
+    for target_gain in range(1, max_gain + 1):
+        rec(_TailSim(), target_gain)
+
+    result = list(tails.values())
+    _ALEX_TAILS_CACHE[cache_key] = result
+    return result
+
+
+def _sim_apply_template_action(sim: _TailSim, action: SymbolicAction) -> bool:
+    """把模板里的任意符号动作应用到一个抽象推演器上，用于计算子链的起始要求。"""
+    name = action.name
+
+    if name == ALEX_TAIL_NAME:
+        sim.play_minion(ALEX_TAIL_NAME)
+        sim.alex_played += 1
+        return True
+
+    if name == SHADOWCASTER_TAIL_NAME and action.target == ALEX_TAIL_NAME:
+        sim.board_need(ALEX_TAIL_NAME)
+        sim.play_minion(SHADOWCASTER_TAIL_NAME)
+        copies = 2 if sim.board.get(SHARK_TAIL_NAME, 0) > 0 else 1
+        sim.add_hand(ALEX_TAIL_NAME, copies)
+        return True
+
+    if name == SHADOWSTEP_TAIL_NAME and action.target == ALEX_TAIL_NAME:
+        sim.board_need(ALEX_TAIL_NAME)
+        sim.play_spell(SHADOWSTEP_TAIL_NAME)
+        sim.remove_board(ALEX_TAIL_NAME)
+        sim.add_hand(ALEX_TAIL_NAME)
+        return True
+
+    if name == DANCE_TAIL_NAME:
+        sim.play_spell(DANCE_TAIL_NAME)
+        # 底层修正：舞动全场把场上【所有】友方随从按进场顺序回手为 1 费复制体，
+        # 而不仅是红龙——这正是“第二轮/第三轮重新铺引擎（鱼/刀/晦/暗施）”的符号来源。
+        # 抽象推演器不区分 1 费复制体与本体，只按名字计数回手。
+        for board_name, board_count in list(sim.board.items()):
+            if board_count > 0:
+                sim.board[board_name] = 0
+                sim.add_hand(board_name, board_count)
+
+        return True
+
+    if name == POTION_TAIL_NAME:
+        sim.play_spell(POTION_TAIL_NAME)
+
+        if sim.board.get(ALEX_TAIL_NAME, 0) > 0:
+            sim.add_hand(ALEX_TAIL_NAME)
+
+        return True
+
+    if name == ETC_TAIL_NAME:
+        choices = tuple(action.choices)
+
+        if choices:
+            sim.board_need(SHARK_TAIL_NAME)
+            sim.play_minion(ETC_TAIL_NAME)
+            sim.band_req.update(choices)
+
+            for choice in choices:
+                sim.add_hand(choice)
+
+            return True
+
+        sim.play_minion(ETC_TAIL_NAME)
+        return True
+
+    if name == PREP_TAIL_NAME:
+        sim.play_spell(PREP_TAIL_NAME)
+        return True
+
+    if name == BONE_TAIL_NAME:
+        sim.play_spell(BONE_TAIL_NAME)
+        sim.any_friendly_minion = True
+        return True
+
+    if name == SHARK_TAIL_NAME:
+        sim.play_minion(SHARK_TAIL_NAME)
+        return True
+
+    card_def = CARD_DATABASE.get(name)
+
+    if card_def is None:
+        return False
+
+    if card_def.card_type == "minion":
+        sim.play_minion(name)
+    else:
+        sim.play_spell(name)
+
+    return True
+
+
+_SUBCLIBS_CACHE: Dict[int, Tuple[List[AlexTail], List[AlexTail]]] = {}
+
+
+def build_template_subchain_library(max_gain: int = 6) -> Tuple[List[AlexTail], List[AlexTail]]:
+    """把手工模板拆成子链（起手段 + 尾段），供双向引擎快速构建链条。
+
+    拆分规则：模板动作在“第一张红龙”处切开——
+      - 前半段 = 起手/资源段（0 龙）；
+      - 后半段 = 红龙产出尾段（含 N 龙）。
+    每段都用抽象推演器算出“起始必须满足的手牌/场面/卡池要求”。
+    示例：鱼狐刀暗(刀)牛 = 起手段；鱼刀刀龙 = 尾段；
+          鱼狐刀牛(舞龙)晦步(刀)刀暗刀 = 起手段。
+    """
+    cached = _SUBCLIBS_CACHE.get(max_gain)
+
+    if cached is not None:
+        return cached
+
+    setup_chains: Dict[Tuple, AlexTail] = {}
+    tail_chains: Dict[Tuple, AlexTail] = {}
+    setup_index = [0]
+    tail_index = [0]
+
+    for target in range(1, max_gain + 1):
+        for chain in build_symbolic_chains(target):
+            first_alex_index = None
+
+            for index, action in enumerate(chain.actions):
+                if action.name == ALEX_TAIL_NAME:
+                    first_alex_index = index
+                    break
+
+            if first_alex_index is None:
+                continue
+
+            setup_actions = chain.actions[:first_alex_index]
+            tail_actions = chain.actions[first_alex_index:]
+
+            if setup_actions:
+                sim = _TailSim()
+
+                if all(_sim_apply_template_action(sim, action) for action in setup_actions):
+                    setup_index[0] += 1
+                    key = tuple(
+                        (action.name, action.target, action.choices)
+                        for action in setup_actions
+                    )
+                    setup_chains.setdefault(
+                        key,
+                        make_alex_tail(
+                            name=f"模板起手段-{setup_index[0]}",
+                            actions=setup_actions,
+                            gain=0,
+                            hand_req={
+                                name: count
+                                for name, count in sim.hand_req.items()
+                                if count > 0
+                            },
+                            board_req={
+                                name: count
+                                for name, count in sim.board_req.items()
+                                if count > 0
+                            },
+                            band_req=tuple(sorted(sim.band_req)),
+                            any_friendly_minion=sim.any_friendly_minion,
+                        ),
+                    )
+
+            sim = _TailSim()
+
+            if all(_sim_apply_template_action(sim, action) for action in tail_actions):
+                tail_index[0] += 1
+                key = (
+                    tuple(
+                        (action.name, action.target, action.choices)
+                        for action in tail_actions
+                    ),
+                    sim.alex_played,
+                )
+                tail_chains.setdefault(
+                    key,
+                    make_alex_tail(
+                        name=f"模板尾段-{tail_index[0]}",
+                        actions=tail_actions,
+                        gain=sim.alex_played,
+                        hand_req={
+                            name: count
+                            for name, count in sim.hand_req.items()
+                            if count > 0
+                        },
+                        board_req={
+                            name: count
+                            for name, count in sim.board_req.items()
+                            if count > 0
+                        },
+                        band_req=tuple(sorted(sim.band_req)),
+                        any_friendly_minion=sim.any_friendly_minion,
+                    ),
+                )
+
+    setup_subchain_list = augment_setup_subchains(list(setup_chains.values()))
+    result = (setup_subchain_list, list(tail_chains.values()))
+    _SUBCLIBS_CACHE[max_gain] = result
+    return result
+
+
+def augment_setup_subchains(
+    setup_subchains: List[AlexTail],
+    max_actions: int = 14,
+) -> List[AlexTail]:
+    """给“鲨鱼之灵（鱼）”开头的起手段子链补双币前置，生成 币币鱼 等开手引理。
+
+    幸运币/伪造的幸运币计算等价，因此手牌需求统一记到“幸运币”上，
+    需求匹配时两种硬币合并计数。
+    """
+    coin_pairs = [
+        ("幸运币", "幸运币"),
+        ("幸运币", "伪造的幸运币"),
+        ("伪造的幸运币", "幸运币"),
+        ("伪造的幸运币", "伪造的幸运币"),
+    ]
+    result = list(setup_subchains)
+    existing_keys = {
+        tuple((action.name, action.target, action.choices) for action in sub.actions)
+        for sub in result
+    }
+    index = len(result) + 1
+
+    for sub in setup_subchains:
+        if not sub.actions:
+            continue
+
+        first_name = sub.actions[0].name
+
+        if first_name in COIN_CARD_NAMES:
+            continue
+
+        if first_name != "鲨鱼之灵":
+            continue
+
+        if len(sub.actions) + 2 > max_actions:
+            continue
+
+        for coin_a, coin_b in coin_pairs:
+            actions = [
+                SymbolicAction(coin_a),
+                SymbolicAction(coin_b),
+            ] + list(sub.actions)
+            key = tuple(
+                (action.name, action.target, action.choices)
+                for action in actions
+            )
+
+            if key in existing_keys:
+                continue
+
+            existing_keys.add(key)
+            hand_req = dict(sub.hand_req)
+            hand_req["幸运币"] = hand_req.get("幸运币", 0) + 2
+            result.append(
+                make_alex_tail(
+                    name=f"模板起手段-币币鱼-{index}",
+                    actions=actions,
+                    gain=sub.gain,
+                    hand_req=hand_req,
+                    board_req=dict(sub.board_req),
+                    band_req=sub.band_req,
+                    any_friendly_minion=sub.any_friendly_minion,
+                )
+            )
+            index += 1
+
+    return result
+
+
+def lemma_constraint_rank(
+    base_state: GameState,
+    lemma: AlexTail,
+) -> Tuple[float, int, int]:
+    """边界约束引导：可满足需求占比越高、需求越少、链越短的引理越优先尝试。"""
+    hand_counts = Counter(card.name for card in base_state.hand)
+    satisfied = sum(
+        min(hand_count_with_coin_equivalence(hand_counts, name), count)
+        for name, count in lemma.hand_req.items()
+    )
+    total = sum(lemma.hand_req.values()) or 1
+    return (-satisfied / total, len(lemma.hand_req), len(lemma.actions))
+
+
+def _hand_req_met(
+    hand_counts: Counter,
+    req: Dict[str, int],
+    skip_name: Optional[str] = None,
+) -> bool:
+    """手牌前提检查：需求计数 + 硬币等价 + 预启动跳过。"""
+    for name, count in req.items():
+        required = count
+
+        if name == skip_name:
+            required = max(0, count - 1)
+
+        if hand_count_with_coin_equivalence(hand_counts, name) < required:
+            return False
+
+    return True
+
+
+def tail_meets_state(
+    state: GameState,
+    tail: AlexTail,
+    hand_counts: Optional[Counter] = None,
+    board_counts: Optional[Counter] = None,
+) -> bool:
+    """检查前向状态是否满足反向尾链的起始资源前提。
+
+    数学引理式前提：基础需求不满足时，若该尾链声明了“殒命暗影替代”
+    （needs_deadly），且手牌有殒命暗影、替代需求满足，则前提成立。
+    """
+    if hand_counts is None:
+        hand_counts = Counter(card.name for card in state.hand)
+
+    if board_counts is None:
+        board_counts = Counter(card.name for card in state.board)
+
+    if not _hand_req_met(hand_counts, tail.hand_req):
+        if not (
+            tail.needs_deadly
+            and _hand_req_met(hand_counts, tail.hand_req_deadly)
+        ):
+            return False
+
+    for name, count in tail.board_req.items():
+        if board_counts.get(name, 0) < count:
+            return False
+
+    if tail.band_req:
+        band = set(state.etc_band_remaining)
+
+        if not band.issuperset(set(tail.band_req)):
+            return False
+
+    if tail.any_friendly_minion and not state.board_zone.cards:
+        return False
+
+    return True
+
+
+_TAIL_COST_PROFILE_CACHE: Dict[str, Tuple[int, bool, bool]] = {}
+
+
+def _tail_cost_profile(name: str) -> Tuple[int, bool, bool]:
+    """卡牌静态费用档案：(基础费用, 是否法术, 是否连击)。"""
+    profile = _TAIL_COST_PROFILE_CACHE.get(name)
+
+    if profile is None:
+        card = make_card(name)
+        profile = (card.current_cost() or 0, is_spell_like(card), "combo" in card.tags)
+        _TAIL_COST_PROFILE_CACHE[name] = profile
+
+    return profile
+
+
+def tail_mana_feasible(state: GameState, tail: AlexTail) -> bool:
+    """快速检查尾链在给定状态下的费用可行性（只算费用，不做完整模拟）。"""
+    mana = state.mana
+    next_spell = state.next_spell_discount
+    next_combo = state.next_combo_discount
+    next_card = state.next_card_discount
+    actives = [
+        (remaining_count, discount_amount)
+        for remaining_count, discount_amount in state.active_card_discounts
+        if remaining_count > 0 and discount_amount > 0
+    ]
+
+    for action in tail.actions:
+        if action.name not in CARD_DATABASE:
+            continue
+
+        if action.name in COIN_CARD_NAMES:
+            # 硬币：0 费 + 打出获得 1 临时法力（仍走下方通用消耗记账）
+            mana += 1
+
+        base_cost, is_spell, is_combo = _tail_cost_profile(action.name)
+        discount = next_card + sum(
+            discount_amount for _remaining, discount_amount in actives
+        )
+
+        if is_spell:
+            discount += next_spell
+
+        if is_combo:
+            discount += next_combo
+
+        cost = max(0, base_cost - discount)
+
+        if mana < cost:
+            return False
+
+        mana -= cost
+        next_card = 0
+        actives = [
+            (remaining_count - 1, discount_amount)
+            for remaining_count, discount_amount in actives
+            if remaining_count - 1 > 0
+        ]
+
+        if is_spell:
+            next_spell = 0
+
+        if is_combo:
+            next_combo = 0
+
+        if action.name == PREP_TAIL_NAME:
+            next_spell += 2
+        elif action.name == BONE_TAIL_NAME:
+            next_card += 2
+
+    return True
+
+
+def lemma_prestart_skipped(
+    base_state: GameState,
+    lemma: AlexTail,
+) -> bool:
+    """引理第一个动作是否已被“预启动”满足（如鲨鱼之灵已在场上，无需再打）。"""
+    return bool(
+        lemma.actions
+        and chain_action_already_satisfied(
+            base_state,
+            base_state,
+            lemma.actions[0],
+        )
+    )
+
+
+def lemma_meets_state(
+    base_state: GameState,
+    lemma: AlexTail,
+) -> bool:
+    """引理适用性检查：手牌/场面/卡池前提 + 殒命暗影替代前提 + 预启动跳过。"""
+    hand_counts = Counter(card.name for card in base_state.hand)
+    board_counts = Counter(card.name for card in base_state.board)
+    skip_name = (
+        lemma.actions[0].name
+        if lemma_prestart_skipped(base_state, lemma)
+        else None
+    )
+
+    if not _hand_req_met(hand_counts, lemma.hand_req, skip_name):
+        if not (
+            lemma.needs_deadly
+            and _hand_req_met(hand_counts, lemma.hand_req_deadly, skip_name)
+        ):
+            return False
+
+    for name, count in lemma.board_req.items():
+        if board_counts.get(name, 0) < count:
+            return False
+
+    if lemma.band_req:
+        band = set(base_state.etc_band_remaining)
+
+        if not band.issuperset(set(lemma.band_req)):
+            return False
+
+    if lemma.any_friendly_minion and not base_state.board_zone.cards:
+        return False
+
+    return True
+
+
+def lemma_mana_feasible(
+    base_state: GameState,
+    lemma: AlexTail,
+) -> bool:
+    """引理费用可行性：第一个动作被预启动跳过时不收它的费用。"""
+    actions = list(lemma.actions)
+
+    if lemma_prestart_skipped(base_state, lemma):
+        actions = actions[1:]
+
+    if not actions:
+        return True
+
+    cost_proxy = AlexTail(
+        name=lemma.name,
+        actions=actions,
+        gain=lemma.gain,
+        hand_req=lemma.hand_req,
+        board_req=lemma.board_req,
+        band_req=lemma.band_req,
+        any_friendly_minion=lemma.any_friendly_minion,
+    )
+    return tail_mana_feasible(base_state, cost_proxy)
+
+
+def bidirectional_symbolic_prove_paths(
+    initial_state: GameState,
+    max_alex_count: int,
+    min_alex_count: int,
+    max_paths: int,
+    max_chain_steps: int = 100,
+    progress_callback: Optional[Callable[[int, int, int], None]] = None,
+    found_callback: Optional[Callable[[List[GameState], int], None]] = None,
+    prune_stats: Optional[Dict[str, int]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+    forward_depth: int = 5,
+    forward_beam_width: int = 1500,
+    validate_candidates_per_target: int = 20,
+    step_memo: Optional[Dict[Tuple, object]] = None
+) -> List[GameState]:
+    """双向符号链证明：个位数深度前向展开 + 大量子链/引理组合拼接 + 反向验证。
+
+    设计边界（与 beam 收束搜索区分）：
+      - forward_depth 默认 5：最多连续 5 步纯算子真实模拟，之后必须用子链/引理
+        拼接（引理可在第 1..5 任意步提前拼接，前提满足才用——数学引理式前提）；
+      - 长距离结构靠子链库（起手段/尾段/长距离离散骨架）组合，不靠加深前向；
+      - 几十步的纯算子展开属于 beam 收束计算，单独开关（默认关闭、束宽 3000）。
+    """
+    search_initial_state = initial_state.clone()
+    search_initial_state.record_log = False
+    min_alex_count = max(1, min(min_alex_count, max_alex_count))
+
+    if prune_stats is not None:
+        prune_stats["双向拼接证明"] = "前向探索中"
+
+    # —— 前向阶段：算子真实展开 与 引理（子链）拼接 交错 ——
+    # forward_depth = “最多连续几步纯算子真实模拟”；每层先尝试前提满足的引理
+    # 拼接（数学引理式前提：资源需求/殒命替代/目标契合），再算子展开一步。
+    # 达到 forward_depth 后不再纯算子展开，后续只能靠引理/尾链拼接。
+    generated_tails = generate_alex_tails(max_gain=min(max_alex_count, 6))
+    setup_subchains, template_tails = build_template_subchain_library(
+        max_gain=min(max_alex_count, 6)
+    )
+    # 边界约束引导：与当前局面契合度高的引理（需求占比高、约束少、链短）优先搭接
+    setup_subchains = sorted(
+        setup_subchains,
+        key=lambda lemma: lemma_constraint_rank(search_initial_state, lemma),
+    )
+    tails = generated_tails + [
+        tail for tail in template_tails if tail.gain > 0
+    ]
+    seen_tail_keys = set()
+    unique_tails: List[AlexTail] = []
+
+    for tail in tails:
+        key = tuple((action.name, action.target, action.choices) for action in tail.actions)
+
+        if key in seen_tail_keys:
+            continue
+
+        seen_tail_keys.add(key)
+        unique_tails.append(tail)
+
+    tails = unique_tails
+    tails_by_gain: Dict[int, List[AlexTail]] = {}
+
+    for tail in tails:
+        tails_by_gain.setdefault(tail.gain, []).append(tail)
+
+    if prune_stats is not None:
+        prune_stats["双向生成尾链数"] = len(generated_tails)
+        prune_stats["模板子链数（起手+尾段）"] = len(setup_subchains) + len(template_tails)
+        prune_stats["双向拼接候选尾链数"] = len(tails)
+        prune_stats["双向拼接证明"] = "算子/引理交错展开中"
+
+    all_proved: List[GameState] = []
+    seen_paths = set()
+    validated_count = 0
+
+    lemma_pool: List[GameState] = []
+    seen_lemma_keys = set()
+    max_lemma_states = 400
+    max_lemma_actions = 14
+    lemma_apply_count = 0
+
+    def apply_forward_lemma(
+        base_state: GameState,
+        lemma: AlexTail,
+    ) -> None:
+        nonlocal lemma_apply_count
+
+        if len(lemma_pool) >= max_lemma_states:
+            return
+
+        if len(lemma.actions) > max_lemma_actions:
+            return
+
+        if len(base_state.path) + len(lemma.actions) > max_chain_steps:
+            return
+
+        # 引理前提（数学引理式）：资源需求 + 殒命替代前提 + 费用可行性
+        if not lemma_meets_state(base_state, lemma):
+            return
+
+        if not lemma_mana_feasible(base_state, lemma):
+            return
+
+        # 目标契合前提：引理增益不能把龙数推过搜索上限
+        if lemma.gain > 0 and base_state.alex_play_count + lemma.gain > max_alex_count:
+            return
+
+        lemma_apply_count += 1
+        lemma_chain = SymbolicChain(
+            name=f"前向引理-{lemma.name}",
+            target_alex_count=lemma.gain,
+            reasoning=[
+                "前向引理（子链库，已证结论）在前提满足时搭接到当前状态；",
+                "引理内容：" + " -> ".join(action_label(action) for action in lemma.actions),
+            ],
+            actions=lemma.actions,
+        )
+        lemma_states = validate_symbolic_chain(
+            initial_state=base_state,
+            chain=lemma_chain,
+            max_states=max(1, max_paths - len(all_proved)),
+            prune_stats=prune_stats,
+            should_stop=should_stop,
+            step_memo=step_memo,
+        )
+
+        for lemma_state in sort_path_states(lemma_states):
+            lemma_key = tuple(lemma_state.path)
+
+            if lemma_key in seen_lemma_keys:
+                continue
+
+            seen_lemma_keys.add(lemma_key)
+            lemma_pool.append(lemma_state)
+
+            if len(lemma_pool) >= max_lemma_states:
+                break
+
+    # 交错展开：第 d 层 = 先引理拼接（前提满足才用），再算子真实展开一步。
+    # 连续算子步数被 forward_depth 限制；引理可在 1..forward_depth 任意步拼接。
+    level: List[GameState] = [search_initial_state]
+    collected: List[GameState] = [search_initial_state]
+    seen_frontier_keys = {state_key_for_dedup(search_initial_state)}
+
+    for _depth in range(1, forward_depth + 1):
+        if should_stop is not None and should_stop():
+            break
+
+        lemma_pool_before = len(lemma_pool)
+
+        # 1) 引理拼接：对当前层每个状态应用满足前提的引理
+        for base_state in level:
+            if len(lemma_pool) >= max_lemma_states:
+                break
+
+            for lemma in setup_subchains:
+                if len(lemma_pool) >= max_lemma_states:
+                    break
+
+                apply_forward_lemma(base_state, lemma)
+
+        # 引理链出的中间状态也允许继续算子展开（引理-引理由下一层引理阶段覆盖）
+        level = level + list(lemma_pool[lemma_pool_before:])
+
+        # 2) 算子真实展开一步（连续算子步数不超过 forward_depth）
+        next_level: List[GameState] = []
+        next_seen = set()
+
+        for state in level:
+            if state.alex_play_count >= max_alex_count:
+                continue
+
+            for successor in generate_successors(state):
+                key = state_key_for_dedup(successor)
+
+                if key in seen_frontier_keys or key in next_seen:
+                    continue
+
+                next_seen.add(key)
+                next_level.append(successor)
+
+        if not next_level:
+            break
+
+        next_level.sort(
+            key=lambda state: (state.alex_play_count, state.mana),
+            reverse=True,
+        )
+        level = next_level[:forward_beam_width]
+        seen_frontier_keys |= next_seen
+        collected.extend(level[: max(1, forward_beam_width // 4)])
+
+    frontier = collected
+
+    if prune_stats is not None:
+        prune_stats["双向前向探索状态数"] = len(frontier)
+        prune_stats["前向引理尝试次数"] = lemma_apply_count
+        prune_stats["前向引理状态数"] = len(lemma_pool)
+        prune_stats["双向拼接证明"] = "拼接验证中"
+
+    # 拼接候选池：前向束展开状态（优先级0）+ 引理搭接状态（优先级1，先试）
+    pool: List[Tuple[GameState, int]] = [
+        (state, 0) for state in frontier
+    ] + [
+        (state, 1) for state in lemma_pool
+    ] + [
+        # 初始局面本身也允许作为拼接起点：只要存在满足其资源的完整尾链，
+        # 双向证明可以直接“从起点拼到尾”，无需前向探索到中间态。
+        (search_initial_state, 1),
+    ]
+
+    # 预计算每个拼接候选状态的手牌/场面/卡池摘要，避免候选匹配时重复构造 Counter
+    pool_hand_counts: List[Counter] = [
+        Counter(card.name for card in state.hand) for state, _priority in pool
+    ]
+    pool_board_counts: List[Counter] = [
+        Counter(card.name for card in state.board) for state, _priority in pool
+    ]
+    pool_band_sets: List[set] = [
+        set(state.etc_band_remaining) for state, _priority in pool
+    ]
+    pool_has_board: List[bool] = [
+        bool(state.board_zone.cards) for state, _priority in pool
+    ]
+
+    if prune_stats is not None:
+        prune_stats["前向引理尝试次数"] = lemma_apply_count
+        prune_stats["前向引理状态数"] = len(lemma_pool)
+
+    def add_state(chain_state: GameState) -> bool:
+        path_key = tuple(chain_state.path)
+
+        if path_key in seen_paths:
+            return False
+
+        seen_paths.add(path_key)
+        all_proved.append(chain_state)
+        return True
+
+    # 1) 前向直接命中：前沿状态本身已经打出 >= 下限的龙
+    for state, _priority in pool:
+        if state.alex_play_count >= min_alex_count:
+            if add_state(state.clone()):
+                if prune_stats is not None:
+                    prune_stats["已证明龙数"] = max(
+                        prune_stats.get("已证明龙数", 0),
+                        state.alex_play_count,
+                    )
+                    prune_stats["证明方式"] = "双向前向直接命中"
+
+            if len(all_proved) >= max_paths:
+                break
+
+    # 2) 前沿拼接：找到满足尾链资源要求的前沿状态，从该状态直接验证尾链
+    for target in range(max_alex_count, min_alex_count - 1, -1):
+        if len(all_proved) >= max_paths:
+            break
+
+        if should_stop is not None and should_stop():
+            break
+
+        candidates: List[Tuple[GameState, AlexTail, int, int]] = []
+        relevant_discrete = [
+            subchain
+            for subchain in DISCRETE_SUBCHAIN_LIBRARY
+            if subchain.min_alex_count <= target
+        ]
+        tail_discrete_hits: Dict[int, int] = {}
+
+        for index, (state, priority) in enumerate(pool):
+            if state.alex_play_count >= target:
+                continue
+
+            needed = target - state.alex_play_count
+
+            if needed <= 0:
+                continue
+
+            for tail in tails_by_gain.get(needed, []):
+                hand_counts = pool_hand_counts[index]
+                board_counts = pool_board_counts[index]
+                band_ok = (
+                    not tail.band_req
+                    or pool_band_sets[index].issuperset(set(tail.band_req))
+                )
+
+                if (
+                    band_ok
+                    and (not tail.any_friendly_minion or pool_has_board[index])
+                    and all(
+                        hand_count_with_coin_equivalence(hand_counts, name) >= count
+                        for name, count in tail.hand_req.items()
+                    )
+                    and all(
+                        board_counts.get(name, 0) >= count
+                        for name, count in tail.board_req.items()
+                    )
+                    and tail_mana_feasible(state, tail)
+                ):
+                    tail_id = id(tail)
+
+                    if tail_id not in tail_discrete_hits:
+                        tail_discrete_hits[tail_id] = sum(
+                            1
+                            for subchain in relevant_discrete
+                            if chain_contains_discrete_subchain(tail.actions, subchain)
+                        )
+
+                    candidates.append((state, tail, priority, tail_discrete_hits[tail_id]))
+
+        candidates.sort(
+            key=lambda pair: (
+                -pair[3],
+                -pair[2],
+                -pair[0].mana,
+                len(pair[1].actions),
+                len(pair[0].path),
+            )
+        )
+
+        if prune_stats is not None:
+            prune_stats["离散子链命中候选尾链"] = prune_stats.get("离散子链命中候选尾链", 0) + sum(
+                1 for _state, _tail, _priority, hits in candidates if hits > 0
+            )
+
+        for state, tail, _priority, _hits in candidates[:validate_candidates_per_target]:
+            if should_stop is not None and should_stop():
+                break
+
+            chain = SymbolicChain(
+                name=f"双向拼接-{tail.name}",
+                target_alex_count=target,
+                reasoning=[
+                    "前向符号链（从初始局面展开的前沿状态）与反向符号链（从目标龙数反推的尾链）",
+                    f"在 {state.alex_play_count} 龙状态处拼接；尾链再从该状态经反向验证确认。",
+                ],
+                actions=tail.actions,
+            )
+            chain_states = validate_symbolic_chain(
+                initial_state=state,
+                chain=chain,
+                max_states=max(1, max_paths - len(all_proved)),
+                prune_stats=prune_stats,
+                should_stop=should_stop,
+                step_memo=step_memo,
+            )
+            validated_count += 1
+
+            for chain_state in sort_path_states(chain_states):
+                if add_state(chain_state):
+                    if prune_stats is not None:
+                        prune_stats["已证明龙数"] = max(
+                            prune_stats.get("已证明龙数", 0),
+                            chain_state.alex_play_count,
+                        )
+                        prune_stats["证明方式"] = "双向符号链拼接证明"
+                        prune_stats[f"当前搜索 {target}龙"] = "存在"
+
+                    if found_callback:
+                        found_callback(
+                            sort_path_states(all_proved)[:max_paths],
+                            target,
+                        )
+
+                if len(all_proved) >= max_paths:
+                    break
+
+            if len(all_proved) >= max_paths:
+                break
+
+    if prune_stats is not None:
+        prune_stats["双向验证链条数"] = validated_count
+        prune_stats["双向拼接证明"] = "完成"
+
+    return sort_path_states(all_proved)[:max_paths]
+
+
 def reverse_symbolic_prove_paths(
     initial_state: GameState,
     max_alex_count: int,
-    max_paths: int,
+    max_paths: int = 1000000,
     max_chain_steps: int = 100,
     min_alex_count: int = 1,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
     found_callback: Optional[Callable[[List[GameState], int], None]] = None,
     prune_stats: Optional[Dict[str, int]] = None,
-    should_stop: Optional[Callable[[], bool]] = None
+    should_stop: Optional[Callable[[], bool]] = None,
+    forward_mining: bool = False,
+    forward_beam_width: int = 1000,
+    use_bidirectional: bool = True,
+    forward_depth: int = 5
 ) -> List[GameState]:
     search_initial_state = initial_state.clone()
     search_initial_state.record_log = False
     min_alex_count = max(1, min(min_alex_count, max_alex_count))
+    # 跨目标共享的 CDCL 式冲突学习 / 子链结果复用记忆：
+    # 同一局面在某一动作上验证过一次（成功或失败），后续所有链、所有目标直接复用。
+    step_memo: Dict[Tuple, object] = {}
     all_proved_states: List[GameState] = []
     seen_paths = set()
     best_alex_count = 0
-    start_alex_count = max_alex_count if min_alex_count <= 1 else min(max_alex_count, min_alex_count)
+    start_alex_count = max_alex_count
 
     for target_alex_count in range(max(1, start_alex_count), min_alex_count - 1, -1):
         if prune_stats is not None:
@@ -3134,10 +5222,27 @@ def reverse_symbolic_prove_paths(
             for chain in build_symbolic_chains(target_alex_count)
             if len(chain.actions) <= max_chain_steps
         ]
+        # 长距离离散子链（里程碑骨架）引导：命中相关骨架的链优先验证——
+        # 人脑先想结构（如“5+龙必含双舞”），再让具体线路先被验证。
+        relevant_discrete = [
+            subchain
+            for subchain in DISCRETE_SUBCHAIN_LIBRARY
+            if subchain.min_alex_count <= target_alex_count
+        ]
+        chains.sort(key=lambda chain: (
+            -sum(
+                1
+                for subchain in relevant_discrete
+                if chain_contains_discrete_subchain(chain.actions, subchain)
+            ),
+            len(chain.actions),
+            chain.name,
+        ))
         proved_states = []
 
         if prune_stats is not None:
             prune_stats["符号候选链条数"] = prune_stats.get("符号候选链条数", 0) + len(chains)
+            prune_stats["离散子链库数"] = len(DISCRETE_SUBCHAIN_LIBRARY)
 
         for chain_index, chain in enumerate(chains, start=1):
             if should_stop is not None and should_stop():
@@ -3148,7 +5253,8 @@ def reverse_symbolic_prove_paths(
                 chain=chain,
                 max_states=max(1, max_paths - len(all_proved_states)),
                 prune_stats=prune_stats,
-                should_stop=should_stop
+                should_stop=should_stop,
+                step_memo=step_memo
             )
 
             proved_states.extend(chain_states)
@@ -3167,7 +5273,7 @@ def reverse_symbolic_prove_paths(
                     if prune_stats is not None:
                         prune_stats["已证明龙数"] = best_alex_count
                         prune_stats[f"当前搜索 {target_alex_count}龙"] = "存在"
-                        prune_stats["证明方式"] = "反向符号链条证明"
+                        prune_stats["证明方式"] = "双向符号链条证明"
 
                     if found_callback:
                         found_callback(sort_path_states(all_proved_states)[:max_paths], target_alex_count)
@@ -3192,7 +5298,7 @@ def reverse_symbolic_prove_paths(
             if prune_stats is not None:
                 prune_stats["已证明龙数"] = best_alex_count
                 prune_stats[f"当前搜索 {target_alex_count}龙"] = "存在"
-                prune_stats["证明方式"] = "反向符号链条证明"
+                prune_stats["证明方式"] = "双向符号链条证明"
         else:
             if prune_stats is not None:
                 prune_stats["全局正向搜索已禁用"] = prune_stats.get("全局正向搜索已禁用", 0) + 1
@@ -3200,6 +5306,176 @@ def reverse_symbolic_prove_paths(
 
         if len(all_proved_states) >= max_paths:
             break
+
+    bidirectional_proved_any = False
+
+    if (
+        use_bidirectional
+        and best_alex_count < min_alex_count
+        and not (should_stop is not None and should_stop())
+    ):
+        if prune_stats is not None:
+            prune_stats["双向拼接证明"] = "运行中"
+
+        bidir_results = bidirectional_symbolic_prove_paths(
+            initial_state=search_initial_state,
+            max_alex_count=max_alex_count,
+            min_alex_count=min_alex_count,
+            max_paths=max_paths,
+            max_chain_steps=max_chain_steps,
+            progress_callback=progress_callback,
+            found_callback=found_callback,
+            prune_stats=prune_stats,
+            should_stop=should_stop,
+            step_memo=step_memo,
+            forward_depth=forward_depth,
+        )
+
+        for bidir_state in sort_path_states(bidir_results):
+            path_key = tuple(bidir_state.path)
+
+            if path_key in seen_paths:
+                continue
+
+            seen_paths.add(path_key)
+            all_proved_states.append(bidir_state)
+            best_alex_count = max(best_alex_count, bidir_state.alex_play_count)
+
+            if bidir_state.alex_play_count >= min_alex_count:
+                bidirectional_proved_any = True
+
+            if prune_stats is not None:
+                prune_stats["已证明龙数"] = best_alex_count
+                prune_stats["证明方式"] = "双向符号链拼接证明"
+                prune_stats[f"当前搜索 {bidir_state.alex_play_count}龙"] = "存在"
+
+            if found_callback:
+                found_callback(
+                    sort_path_states(all_proved_states)[:max_paths],
+                    bidir_state.alex_play_count,
+                )
+
+            if len(all_proved_states) >= max_paths:
+                break
+
+    if (
+        forward_mining
+        and best_alex_count < min_alex_count
+        and not bidirectional_proved_any
+        and not (should_stop is not None and should_stop())
+    ):
+        if prune_stats is not None:
+            prune_stats["正向挖掘"] = "束搜索自动挖掘"
+
+        # 束宽自动升级：先用默认束宽，摸不到搜索下限就加大，避免漏掉深度线路。
+        mining_widths = [forward_beam_width]
+
+        for extra_width in (2500, 5000):
+            if forward_beam_width < extra_width:
+                mining_widths.append(extra_width)
+
+        if prune_stats is not None:
+            prune_stats["正向挖掘尝试束宽"] = list(mining_widths)
+
+        mined_paths: List[GameState] = []
+
+        for mining_width in mining_widths:
+            if should_stop is not None and should_stop():
+                break
+
+            mined_paths = beam_search_paths(
+                initial_state=search_initial_state,
+                max_depth=max_chain_steps,
+                max_paths=max_paths,
+                max_alex_count=max_alex_count,
+                min_alex_count=min_alex_count,
+                beam_width=mining_width,
+                progress_callback=None,
+                found_callback=None,
+                prune_stats=prune_stats,
+                should_stop=should_stop,
+            )
+            mined_max = max(
+                (mined_state.alex_play_count for mined_state in mined_paths),
+                default=0,
+            )
+
+            # 升级标准：只要这一档束宽还没摸到搜索下限（min_alex_count），
+            # 就继续加大束宽往上挖；摸到下限即停，避免无谓的束宽升级浪费时间。
+            if mined_max >= min_alex_count or mined_max >= max_alex_count:
+                break
+
+        mined_chains: List[SymbolicChain] = []
+        seen_chain_keys = set()
+
+        for mined_state in sorted(mined_paths, key=lambda item: -item.alex_play_count):
+            if mined_state.alex_play_count <= best_alex_count:
+                continue
+
+            chain = mine_symbolic_chain_from_path(mined_state, len(mined_chains) + 1)
+
+            if chain is None:
+                continue
+
+            chain_key = tuple(
+                (action.name, action.target, action.choices)
+                for action in chain.actions
+            )
+
+            if chain_key in seen_chain_keys:
+                continue
+
+            seen_chain_keys.add(chain_key)
+            mined_chains.append(chain)
+
+        if prune_stats is not None:
+            prune_stats["正向挖掘链条数"] = len(mined_chains)
+
+        for chain in mined_chains:
+            if should_stop is not None and should_stop():
+                break
+
+            if chain.target_alex_count <= best_alex_count:
+                continue
+
+            chain_states = validate_symbolic_chain(
+                initial_state=search_initial_state,
+                chain=chain,
+                max_states=max(1, max_paths - len(all_proved_states)),
+                prune_stats=prune_stats,
+                should_stop=should_stop,
+                step_memo=step_memo
+            )
+
+            for chain_state in sort_path_states(chain_states):
+                path_key = tuple(chain_state.path)
+
+                if path_key in seen_paths:
+                    continue
+
+                seen_paths.add(path_key)
+                all_proved_states.append(chain_state)
+                best_alex_count = max(best_alex_count, chain_state.alex_play_count)
+
+                if prune_stats is not None:
+                    prune_stats["已证明龙数"] = best_alex_count
+                    prune_stats["证明方式"] = "正向束搜索发现+符号链自动挖掘反证"
+                    prune_stats[f"当前搜索 {chain.target_alex_count}龙"] = "存在"
+
+                if found_callback:
+                    found_callback(
+                        sort_path_states(all_proved_states)[:max_paths],
+                        chain.target_alex_count,
+                    )
+
+                if len(all_proved_states) >= max_paths:
+                    break
+
+            if len(all_proved_states) >= max_paths:
+                break
+
+        if prune_stats is not None:
+            prune_stats["正向挖掘"] = "完成"
 
     if prune_stats is not None:
         prune_stats["已证明龙数"] = best_alex_count
@@ -3211,13 +5487,17 @@ def reverse_symbolic_prove_paths(
 def enumerate_play_paths(
     initial_state: GameState,
     max_depth: int = 100,
-    max_paths: int = 500000,
+    max_paths: int = 1000000,
     max_alex_count: int = 10,
     min_alex_count: int = 1,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     found_callback: Optional[Callable[[List[GameState], int], None]] = None,
     prune_stats: Optional[Dict[str, int]] = None,
-    should_stop: Optional[Callable[[], bool]] = None
+    should_stop: Optional[Callable[[], bool]] = None,
+    forward_mining: bool = False,
+    forward_beam_width: int = 1000,
+    use_bidirectional: bool = True,
+    forward_depth: int = 5
 ) -> List[GameState]:
     return reverse_symbolic_prove_paths(
         initial_state=initial_state,
@@ -3228,17 +5508,21 @@ def enumerate_play_paths(
         progress_callback=progress_callback,
         found_callback=found_callback,
         prune_stats=prune_stats,
-        should_stop=should_stop
+        should_stop=should_stop,
+        forward_mining=forward_mining,
+        forward_beam_width=forward_beam_width,
+        use_bidirectional=use_bidirectional,
+        forward_depth=forward_depth,
     )
 
 
 def beam_search_paths(
     initial_state: GameState,
     max_depth: int = 100,
-    max_paths: int = 500000,
+    max_paths: int = 1000000,
     max_alex_count: int = 10,
     min_alex_count: int = 1,
-    beam_width: int = 4000,
+    beam_width: int = 3000,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
     found_callback: Optional[Callable[[List[GameState], int], None]] = None,
     prune_stats: Optional[Dict[str, int]] = None,
@@ -3253,18 +5537,187 @@ def beam_search_paths(
     start.record_log = False
     min_alex_count = max(1, min(min_alex_count, max_alex_count))
 
-    def potential(state: GameState) -> int:
-        dragons = sum(1 for card in state.hand if "dragon" in card.tags)
-        dragons += sum(1 for card in state.board if "dragon" in card.tags)
-        return dragons
+    def subchain_score(state: GameState) -> int:
+        """子链评分（象棋子力式）：按局面中“已成形/即将成形的子链”计分。
+
+        两条深线的共同点都是这些子链：
+          - 鱼龙（先鱼后龙）：鱼在场/在手 + 龙 → 每条 16 伤；
+          - 龙晦龙（轮中回费）：晦 + 龙 → 多续一条龙；
+          - 龙暗龙（复制）：暗施 + 龙 → 复制出更多龙；
+          - 龙舞龙（回收）：舞 + 龙 → 全回收重铺；
+          - 龙步龙（回手）：步 + 场上龙 → 同龙打两次；
+          - 双舞（殒命+舞）：第二回收轮；
+          - 刀刀引擎（鲨+双刀）：叠费压低红龙。
+        每条子链按“子力值”计分，局面总分 = 已打出的伤害 + 子链分。
+        """
+        hand_dragons = count_hand_dragons(state)
+        board_dragons = count_board_cards(state, "生命的缚誓者阿莱克丝塔萨")
+        dragons = hand_dragons + board_dragons
+        shark_on = state.has_shark()
+        shark_in_hand = count_hand_cards(state, "鲨鱼之灵")
+        mother_any = (
+            count_hand_cards(state, "晦鳞巢母")
+            + count_board_cards(state, "晦鳞巢母")
+        )
+        shadowcaster_any = (
+            count_hand_cards(state, "暗影施法者")
+            + count_board_cards(state, "暗影施法者")
+        )
+        shadowstep_any = count_hand_cards(state, "暗影步")
+        dance_any = count_hand_cards(state, "舞动全场（ft.迦罗娜）")
+        potion_any = count_hand_cards(state, "幻觉药水")
+        deadly_ready = any(card.is_deadly_shadow for card in state.hand)
+        scabbs_in_hand = count_hand_cards(state, "斯卡布斯·刀油")
+        oil_value = sum(
+            discount_amount * remaining_count
+            for remaining_count, discount_amount in state.active_card_discounts
+            if remaining_count > 0 and discount_amount > 0
+        )
+
+        score = oil_value * 2
+
+        # 鱼龙：先鱼后龙
+        if dragons > 0 and (shark_on or shark_in_hand):
+            score += dragons * 16
+
+        # 龙晦龙：轮中回费
+        if dragons > 0 and mother_any:
+            score += 12
+
+        # 龙暗龙：暗施复制
+        if dragons > 0 and shadowcaster_any:
+            score += 12
+
+        # 龙舞龙：舞动全回收
+        if dragons > 0 and (dance_any > 0 or potion_any > 0):
+            score += 12
+
+        # 龙步龙：暗影步回手（需场上龙）
+        if board_dragons > 0 and shadowstep_any:
+            score += 12
+
+        # 双舞：殒命未用 + 舞/药水在手
+        if deadly_ready and (dance_any > 0 or potion_any > 0):
+            score += 15
+
+        # 刀刀引擎：鲨鱼可用 + 两张以上刀油
+        if (shark_on or shark_in_hand) and scabbs_in_hand >= 2:
+            score += 8
+
+        # 牛找龙/舞/药水
+        score += count_hand_cards(state, "乐队经理精英牛头人酋长") * 8
+        return score
+
+    def subchain_coverage(state: GameState) -> int:
+        """子链覆盖度：局面中“已凑齐”的子链种类数（每条计1）。
+
+        两条深线的共同点是同时集齐 鱼龙/龙晦龙/龙暗龙/龙舞龙/双舞 等子链；
+        用覆盖度做冠军判据，能保住“手牌精简但结构完整”的深线
+        （肥线复制多，但覆盖度不一定更高）。
+        """
+        hand_dragons = count_hand_dragons(state)
+        board_dragons = count_board_cards(state, "生命的缚誓者阿莱克丝塔萨")
+        dragons = hand_dragons + board_dragons
+        shark_on = state.has_shark()
+        shark_in_hand = count_hand_cards(state, "鲨鱼之灵")
+        mother_any = (
+            count_hand_cards(state, "晦鳞巢母")
+            + count_board_cards(state, "晦鳞巢母")
+        )
+        shadowcaster_any = (
+            count_hand_cards(state, "暗影施法者")
+            + count_board_cards(state, "暗影施法者")
+        )
+        shadowstep_any = count_hand_cards(state, "暗影步")
+        dance_any = count_hand_cards(state, "舞动全场（ft.迦罗娜）")
+        potion_any = count_hand_cards(state, "幻觉药水")
+        deadly_ready = any(card.is_deadly_shadow for card in state.hand)
+        scabbs_in_hand = count_hand_cards(state, "斯卡布斯·刀油")
+
+        coverage = 0
+
+        if dragons > 0 and (shark_on or shark_in_hand):
+            coverage += 1  # 鱼龙
+
+        if dragons > 0 and mother_any:
+            coverage += 1  # 龙晦龙
+
+        if dragons > 0 and shadowcaster_any:
+            coverage += 1  # 龙暗龙
+
+        if dragons > 0 and (dance_any > 0 or potion_any > 0):
+            coverage += 1  # 龙舞龙
+
+        if board_dragons > 0 and shadowstep_any:
+            coverage += 1  # 龙步龙
+
+        if deadly_ready and (dance_any > 0 or potion_any > 0):
+            coverage += 1  # 双舞
+
+        if (shark_on or shark_in_hand) and scabbs_in_hand >= 2:
+            coverage += 1  # 刀刀引擎
+
+        return coverage
+
+    def discrete_path_score(state: GameState) -> int:
+        """离散子链评分：路径中按顺序出现的里程碑（允许中间任意间隔）。
+
+        高伤深线的判别性离散子链（低伤线缺少）：
+          - 龙…晦…龙（轮中回费）：6法力 144 线有，112 线没有；
+          - 龙…暗…龙…舞（复制+回收）；
+          - 步…龙（暗影步回手）：8水晶 160 线有，144 线没有；
+          - 双舞（舞…舞[殒]）：两次全回收；
+          - 鱼…龙：每条 16 伤。
+        """
+        path = state.path
+        score = 0
+
+        def contains(required):
+            iterator = iter(path)
+
+            for needle in required:
+                for item in iterator:
+                    if needle in item:
+                        break
+                else:
+                    return False
+
+            return True
+
+        if contains(("鲨鱼之灵", "生命的缚誓者")):
+            score += 16  # 鱼…龙：先鱼后龙
+
+        if contains(("生命的缚誓者", "晦鳞巢母", "生命的缚誓者")):
+            score += 20  # 龙…晦…龙：轮中回费（144 线的判别子链）
+
+        if contains(("生命的缚誓者", "暗影施法者", "生命的缚誓者")):
+            score += 16  # 龙…暗…龙：暗施复制
+
+        if contains(("生命的缚誓者", "舞动全场", "生命的缚誓者")):
+            score += 16  # 龙…舞…龙：舞动全回收
+
+        if contains(("暗影步", "生命的缚誓者")):
+            score += 14  # 步…龙：暗影步回手（160 线的判别子链）
+
+        if contains(("舞动全场", "舞动全场")):
+            score += 18  # 双舞：第二回收轮
+
+        if contains(("鲨鱼之灵", "晦鳞巢母", "生命的缚誓者")):
+            score += 14  # 鱼…晦…龙：收尾轮骨架
+
+        return score
 
     best: Dict[int, GameState] = {start.alex_play_count: start.clone()}
     level = [start]
-    seen = set()
-    seen.add((state_key_for_dedup(start), start.alex_play_count))
+    # 去重保留“法力最高”的替身：去重键不含法力，若低法力替身先到会卡死
+    # 高法力深线的续接（6法力 9龙/144 在深度11 因此“未被生成”）。
+    seen: Dict[Tuple, GameState] = {}
+    seen[(state_key_for_dedup(start), start.alex_play_count)] = start
     expansions = 0
     max_reached = start.alex_play_count
     reached_depth = 0
+    max_damage_seen = start.alex_damage
+    best_damage_by_alex: Dict[int, int] = {start.alex_play_count: start.alex_damage}
 
     for depth in range(1, max_depth + 1):
         if should_stop is not None and should_stop():
@@ -3274,37 +5727,105 @@ def beam_search_paths(
             break
 
         reached_depth = depth
-        next_level: List[GameState] = []
-        next_seen = set()
+        next_seen: Dict[Tuple, GameState] = {}
 
         for state in level:
             for successor in generate_successors(state, prune_stats=prune_stats):
                 expansions += 1
+                max_damage_seen = max(max_damage_seen, successor.alex_damage)
+                best_damage_by_alex[successor.alex_play_count] = max(
+                    best_damage_by_alex.get(successor.alex_play_count, 0),
+                    successor.alex_damage,
+                )
                 key = (state_key_for_dedup(successor), successor.alex_play_count)
+                previous = seen.get(key)
 
-                if key in next_seen or key in seen:
+                if previous is not None and successor.mana <= previous.mana:
                     continue
 
-                next_seen.add(key)
-                next_level.append(successor)
+                current_best = next_seen.get(key)
+
+                if current_best is not None and successor.mana <= current_best.mana:
+                    continue
+
+                next_seen[key] = successor
 
                 current = best.get(successor.alex_play_count)
 
-                if current is None or (successor.mana, potential(successor)) > (
+                # 同龙数优先保留“总分（伤害+短子链+离散子链）”更高的路径
+                if current is None or (
+                    successor.alex_damage
+                    + subchain_score(successor)
+                    + discrete_path_score(successor),
+                    successor.mana,
+                ) > (
+                    current.alex_damage
+                    + subchain_score(current)
+                    + discrete_path_score(current),
                     current.mana,
-                    potential(current),
                 ):
                     best[successor.alex_play_count] = successor.clone()
+
+        next_level = list(next_seen.values())
 
         if not next_level:
             break
 
-        seen |= next_seen
-        next_level.sort(
-            key=lambda state: (state.alex_play_count, state.mana, potential(state)),
-            reverse=True,
-        )
-        level = next_level[:beam_width]
+        # 全局去重同样保留法力最高的替身
+        for key, successor in next_seen.items():
+            previous = seen.get(key)
+
+            if previous is None or successor.mana > previous.mana:
+                seen[key] = successor
+
+        # 按“当前龙数分桶”保留各桶前若干状态，避免高龙数分支挤掉
+        # 正在走“舞动全回收”的低龙数高潜力分支（9 龙样例的关键）。
+        buckets: Dict[int, List[GameState]] = {}
+
+        for state in next_level:
+            buckets.setdefault(state.alex_play_count, []).append(state)
+
+        # 子链评分裁剪：按“总分 = 已打出伤害 + 短子链分 + 离散子链分”排序。
+        # 短子链（手中/场上凑齐的 鱼龙/龙晦龙/龙暗龙…）+ 离散子链（路径里的
+        # 里程碑 龙…晦…龙 / 步…龙 / 双舞…），同一套象棋子力式评分同时覆盖
+        # 6法力 9龙/144 与 8水晶 10龙/160。
+        per_bucket = max(1, int(beam_width * 1.25 / max(1, len(buckets))))
+        level = []
+
+        for bucket_key in sorted(buckets, reverse=True):
+            bucket_states = buckets[bucket_key]
+            bucket_states = sorted(
+                bucket_states,
+                key=lambda state: (
+                    state.alex_damage
+                    + subchain_score(state)
+                    + discrete_path_score(state),
+                    state.mana,
+                ),
+                reverse=True,
+            )
+            selected = bucket_states[:per_bucket]
+
+            if bucket_states:
+                champion = max(
+                    bucket_states,
+                    key=lambda state: (
+                        # 冠军判据：短子链覆盖度 + 离散子链数 优先（结构最完整），
+                        # 再按总分（伤害+短子链+离散子链）与法力。
+                        subchain_coverage(state),
+                        state.alex_damage
+                        + subchain_score(state)
+                        + discrete_path_score(state),
+                        state.mana,
+                    ),
+                )
+
+                if champion not in selected:
+                    selected.append(champion)
+
+            level.extend(selected)
+
+        level = level[:beam_width]
 
         if prune_stats is not None:
             prune_stats["束搜索深度"] = depth
@@ -3331,6 +5852,7 @@ def beam_search_paths(
         prune_stats["束搜索展开状态数"] = expansions
         prune_stats["束搜索束宽"] = beam_width
         prune_stats["束搜索最高龙数"] = max(best.keys()) if best else 0
+        prune_stats["束搜索最高伤害"] = max_damage_seen
 
     return sort_path_states([
         item
@@ -3343,6 +5865,7 @@ def sort_path_states(states: List[GameState]) -> List[GameState]:
     return sorted(
         states,
         key=lambda item: (
+            -item.alex_damage,
             -item.alex_play_count,
             -len(item.path),
             -item.mana,
@@ -3505,7 +6028,13 @@ def state_from_rebuild_result(
             elif card.card_type == "weapon":
                 weapon_card = card
 
-    for hand_index in deadly_shadow_hand_indexes or []:
+    merged_shadow_indexes = list(deadly_shadow_hand_indexes or [])
+
+    for result_index in getattr(result, "deadly_shadow_hand_indexes", []) or []:
+        if result_index not in merged_shadow_indexes:
+            merged_shadow_indexes.append(result_index)
+
+    for hand_index in merged_shadow_indexes:
         zero_based_index = hand_index - 1
 
         if zero_based_index < 0 or zero_based_index >= len(hand_cards):
@@ -3549,19 +6078,25 @@ def apply_current_effects_from_rebuild_result(state: GameState, result) -> None:
 
     for effect_entry in effect_entries:
         name = getattr(effect_entry, "name", "")
+        layers = max(1, int(getattr(effect_entry, "count", 1) or 1))
 
         if name == "狐人老千":
-            state.next_combo_discount = max(state.next_combo_discount, 2)
-            state.add_log("初始当前效果：狐人老千，下一张连击牌减2费")
+            amount = 2 * layers
+            state.next_combo_discount = max(state.next_combo_discount, amount)
+            state.add_log(f"初始当前效果：狐人老千×{layers}，下一张连击牌减{amount}费")
         elif name == "伺机待发":
-            state.next_spell_discount = max(state.next_spell_discount, 2)
-            state.add_log("初始当前效果：伺机待发，下一张法术减2费")
+            amount = 2 * layers
+            state.next_spell_discount = max(state.next_spell_discount, amount)
+            state.add_log(f"初始当前效果：伺机待发×{layers}，下一张法术减{amount}费")
         elif name == "斯卡布斯·刀油":
-            state.active_card_discounts.append((2, 2))
-            state.add_log("初始当前效果：斯卡布斯·刀油，接下来两张牌减2费")
+            for _ in range(layers):
+                state.active_card_discounts.append((2, 2))
+
+            state.add_log(f"初始当前效果：斯卡布斯·刀油×{layers}，接下来两张牌各减{2 * layers}费")
         elif name == "锯齿骨刺":
-            state.next_card_discount = max(state.next_card_discount, 2)
-            state.add_log("初始当前效果：锯齿骨刺，下一张牌减2费")
+            amount = 2 * layers
+            state.next_card_discount = max(state.next_card_discount, amount)
+            state.add_log(f"初始当前效果：锯齿骨刺×{layers}，下一张牌减{amount}费")
 
 
 def main() -> int:
@@ -3573,15 +6108,25 @@ def main() -> int:
     parser.add_argument("--play", action="append", default=[], help="按名称依次使用卡牌，可重复传入")
     parser.add_argument("--search", action="store_true", help="执行符号化链条证明")
     parser.add_argument("--beam", action="store_true", help="使用正向束搜索（默认关闭，使用反向符号链证明）")
-    parser.add_argument("--beam-width", type=int, default=4000, help="束搜索束宽，默认4000")
+    parser.add_argument("--beam-width", type=int, default=3000, help="束搜索束宽，默认3000（计算时间长，默认不勾选）")
     parser.add_argument("--max-depth", type=int, default=100, help="符号链条最大步数")
-    parser.add_argument("--max-paths", type=int, default=500000)
+    parser.add_argument("--max-paths", type=int, default=1000000, help="路径上限，默认1000000")
     parser.add_argument("--max-alex-count", type=int, default=10)
     parser.add_argument("--min-alex-count", type=int, default=1)
+    parser.add_argument("--forward-mine", action="store_true", help="启用束搜索自动挖掘（默认关闭；自动挖掘已从默认流程移除，属实验验算）")
+    parser.add_argument("--forward-mine-width", type=int, default=3000, help="自动挖掘束搜索束宽，默认3000")
+    parser.add_argument("--no-bidirectional", action="store_true", help="关闭双向符号链拼接证明（默认开启）")
+    parser.add_argument("--operator-depth", type=int, default=5, help="双向符号链前向算子深度（个位数展开），默认5")
     parser.add_argument("--show-limit", type=int, default=200)
     parser.add_argument("--json", action="store_true", help="输出 JSON")
+    parser.add_argument("--sync-archive", action="store_true", help="把局面存档提交并推送到云端（GitHub 仓库）")
 
     args = parser.parse_args()
+
+    if args.sync_archive:
+        print(archive.sync_archive_to_cloud())
+        return 0
+
     parsed_deck_names = parse_names(args.deck)
     state = create_state(
         deck_names=parsed_deck_names if args.deck.strip() else None,
@@ -3594,6 +6139,23 @@ def main() -> int:
         play_card_by_name(state, card_name)
 
     if args.search:
+        cached = archive.lookup_situation(state)
+        formula_hit = archive.lookup_formula(state)
+        search_started = time.time()
+
+        if formula_hit and args.json:
+            print(json.dumps(formula_hit, ensure_ascii=False, indent=2))
+        elif formula_hit:
+            print(archive.format_formula_hit(formula_hit))
+            print("\n（以上为公式表缓存，正在重新计算；若搜出更高结果会自动更新公式表）")
+
+        if cached:
+            if args.json:
+                print(json.dumps(cached, ensure_ascii=False, indent=2))
+            else:
+                print(archive.format_cached_paths(cached))
+                print("\n（以上为缓存结果；正在重新计算，若搜出更高龙数的新路径会自动更新存档）")
+
         if args.beam:
             states = beam_search_paths(
                 initial_state=state,
@@ -3609,13 +6171,37 @@ def main() -> int:
                 max_depth=args.max_depth,
                 max_paths=args.max_paths,
                 max_alex_count=args.max_alex_count,
-                min_alex_count=args.min_alex_count
+                min_alex_count=args.min_alex_count,
+                forward_mining=args.forward_mine,
+                forward_beam_width=args.forward_mine_width,
+                use_bidirectional=not args.no_bidirectional,
+                forward_depth=args.operator_depth
             )
+
+        elapsed_seconds = time.time() - search_started
+
+        archive.remember_situation(
+            state,
+            states,
+            params={
+                "搜索方式": "beam束搜索" if args.beam else "双向符号链证明",
+                "搜索龙数上限": args.max_alex_count,
+                "搜索龙数下限": args.min_alex_count,
+                "路径上限": args.max_paths,
+                "链条步数上限": args.max_depth,
+                "计算总耗时(秒)": round(elapsed_seconds, 1),
+            },
+        )
+        archive.update_formula(state, states)
 
         if args.json:
             print(json.dumps([state_summary(item) for item in states], ensure_ascii=False, indent=2))
         else:
             print(format_paths(states, limit=args.show_limit))
+            print(f"\n计算总耗时：{elapsed_seconds:.1f} 秒")
+
+        if cached:
+            print("\n（已重新计算完毕，存档已更新）")
 
         return 0
 

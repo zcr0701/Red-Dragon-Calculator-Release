@@ -38,6 +38,7 @@ CARD_COSTS = {
     "斯卡布斯·刀油": 4,
     "鲨鱼之灵": 4,
     "暗影施法者": 5,
+    "赤烟·腾武": 2,
     "幸运币": 0
 }
 
@@ -64,6 +65,7 @@ DECK_MAX_COUNTS = {
     "生命的缚誓者阿莱克丝塔萨": 1,
     "可疑交易": 1,
     "斯卡布斯·刀油": 1,
+    "赤烟·腾武": 1,
     "鲨鱼之灵": 1,
     "暗影施法者": 1,
     "幸运币": 0
@@ -91,6 +93,7 @@ class HandCard:
     name: str
     recognized_name: str
     count: int = 1
+    health: Optional[int] = None
     match_score: float = 1.0
     matched_by: str = "raw"
     description: str = ""
@@ -104,6 +107,7 @@ class HandRebuildResult:
     expected_hand_count: Optional[int] = None
     expected_battlefield_count: Optional[int] = None
     other_count: Optional[int] = None
+    deadly_shadow_hand_indexes: List[int] = field(default_factory=list)
     current_effect_cards: List[HandCard] = field(default_factory=list)
     deck_cards: List[HandCard] = field(default_factory=list)
     cards: List[HandCard] = field(default_factory=list)
@@ -399,7 +403,8 @@ def make_card_entry(
     card_configs: List[CardConfigItem],
     min_common_chars: int,
     result: HandRebuildResult,
-    count: int = 1
+    count: int = 1,
+    health: Optional[int] = None
 ) -> HandCard:
     matched_name, match_score, matched_by, description = match_card_name(
         recognized_name=recognized_name,
@@ -417,6 +422,7 @@ def make_card_entry(
         name=matched_name,
         recognized_name=recognized_name,
         count=max(1, int(count)),
+        health=health,
         match_score=match_score,
         matched_by=matched_by,
         description=description,
@@ -491,13 +497,25 @@ def parse_effect_block(
     result: HandRebuildResult
 ) -> List[HandCard]:
     cards: List[HandCard] = []
+    i = 0
 
-    for line in effect_lines:
+    while i < len(effect_lines):
+        line = effect_lines[i]
+
         if is_marker_line(line):
+            i += 1
             continue
 
         if is_cost_line(line):
+            i += 1
             continue
+
+        # “效果卡名 + 数字”表示该效果叠加了几层（如鲨鱼之灵双倍战吼叠 2 层）
+        layers = 1
+
+        if i + 1 < len(effect_lines) and is_cost_line(effect_lines[i + 1]):
+            layers = max(1, int(effect_lines[i + 1]))
+            i += 1
 
         cards.append(
             make_card_entry(
@@ -505,9 +523,11 @@ def parse_effect_block(
                 recognized_name=line,
                 card_configs=card_configs,
                 min_common_chars=min_common_chars,
-                result=result
+                result=result,
+                count=layers
             )
         )
+        i += 1
 
     return cards
 
@@ -836,7 +856,7 @@ def format_result(result: HandRebuildResult) -> str:
     lines = []
 
     if result.expected_effect_count is not None or result.current_effect_cards:
-        lines.extend(format_card_lines("当前效果", result.current_effect_cards))
+        lines.extend(format_card_lines("当前效果", result.current_effect_cards, show_count=True))
         lines.append("")
 
     if result.expected_deck_count is not None or result.deck_cards:
