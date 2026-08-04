@@ -1,5 +1,6 @@
 import ctypes
 import ctypes.wintypes
+import json
 import re
 import sys
 import time
@@ -13,12 +14,14 @@ from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
     QLineEdit,
+    QScrollArea,
     QSplitter,
     QTextEdit,
     QVBoxLayout,
@@ -168,10 +171,11 @@ STAR_COST_RE = re.compile(r"^[*★☆＊]+\s*(.+)$")
 
 
 def parse_mana_ratio(text: str) -> Optional[Tuple[int, int]]:
-    """从第二个 OCR 框的文本里解析 水晶/法力，格式 A/B（A=水晶，B=法力）。
+    """从第二个 OCR 框的文本里解析 法力/水晶，格式 A/B（A=法力，B=水晶，即炉石的水晶图标 当前法力/水晶上限）。
 
     兼容 OCR 常见变形：全角数字、分隔符被识别成 / ／ ╱ | ｜ . · ： , 或空格、
     数字被拆成两行（“3\\n3”）、以及“水晶3 / 法力3”带关键词写法。
+    返回 (水晶, 法力)，供 OCRWorker 直接使用。
     取文本中最靠前且取值在合理区间（0~20）的一对数字。
     """
     if not text:
@@ -206,7 +210,8 @@ def parse_mana_ratio(text: str) -> Optional[Tuple[int, int]]:
 
     for pattern in patterns:
         for match in re.finditer(pattern, norm):
-            crystals, mana = int(match.group(1)), int(match.group(2))
+            # 左数=法力，右数=水晶（炉石水晶图标 当前法力/水晶上限）
+            mana, crystals = int(match.group(1)), int(match.group(2))
 
             if not (0 <= crystals <= 20 and 0 <= mana <= 20):
                 continue
@@ -597,9 +602,8 @@ class CalculationWorker(QThread):
         logs_dir.mkdir(parents=True, exist_ok=True)
         output_path = logs_dir / f"red_dragon_all_paths_{timestamp}.txt"
         header = (
-            # 只保留参数行，不再输出初始手牌/战场等场面数据（局面已存存档 JSON）
-            self.params_line()
-            + "\n"
+            # 完整路径文档附带场面数据（手牌/战场/奥秘/武器/牛池/殒命）
+            self.format_initial_state_note(state)
             + self.format_prune_stats(prune_stats)
             + stop_note
             + limit_note
@@ -628,6 +632,65 @@ class CalculationWorker(QThread):
             f" | 龙数：{item.alex_play_count} | 伤害：{item.alex_damage}点"
             f" | 剩余法力：{item.mana}"
         )
+
+    def format_situation_note(self, state) -> str:
+        """返回场面/状态数据（手牌/战场/奥秘/武器/牛池/殒命/当前效果），不含参数行。"""
+        full = self.format_initial_state_note(state)
+        lines = full.splitlines()
+        return "\n".join(lines[1:]) if lines else ""
+
+    def _record_beam_improvement(self, state, bidir_states, beam_states):
+        """beam 束搜索结果比双向链更好时，记录到本地并附上场面数据。"""
+        try:
+            bidir_best = max(bidir_states, key=lambda item: item.alex_damage, default=None)
+            beam_best = max(beam_states, key=lambda item: item.alex_damage, default=None)
+
+            if beam_best is None or beam_best.alex_damage <= (bidir_best.alex_damage if bidir_best else 0):
+                return
+
+            def card_text(card):
+                cost = card.current_cost()
+                return f"{card.name}[{'*' if cost is None else cost}费]"
+
+            entry = {
+                "时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "水晶": state.mana_crystals,
+                "法力": state.mana,
+                "手牌": [card_text(card) for card in state.hand],
+                "战场": [card_text(card) for card in state.board],
+                "奥秘": [card_text(card) for card in state.secrets],
+                "武器": card_text(state.weapon) if state.weapon else None,
+                "牛池": list(state.etc_band_remaining),
+                "殒命暗影": [card_text(card) for card in state.hand if card.is_deadly_shadow],
+                "双向链最高": (
+                    {"伤害": bidir_best.alex_damage, "龙数": bidir_best.alex_play_count,
+                     "路径": list(bidir_best.path)}
+                    if bidir_best else None
+                ),
+                "beam最高": (
+                    {"伤害": beam_best.alex_damage, "龙数": beam_best.alex_play_count,
+                     "路径": list(beam_best.path)}
+                ),
+            }
+            logs_dir = Path(__file__).resolve().parent / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            record_path = logs_dir / "beam_improvements.json"
+            records = []
+
+            if record_path.exists():
+                try:
+                    loaded = json.loads(record_path.read_text(encoding="utf-8"))
+                    records = loaded if isinstance(loaded, list) else []
+                except Exception:
+                    records = []
+
+            records.append(entry)
+            record_path.write_text(
+                json.dumps(records, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
     def run(self):
         try:
@@ -744,6 +807,8 @@ class CalculationWorker(QThread):
                         prune_stats=prune_stats,
                         should_stop=self.isInterruptionRequested
                     )
+                # beam 比双向链更好时记录到本地（附场面数据）
+                self._record_beam_improvement(state, bidir_states, states)
             else:
                 if cpp_exe is not None:
                     states, cpp_stats = cpp_symbolic_prove_paths(
@@ -813,6 +878,8 @@ class CalculationWorker(QThread):
 
             self.result_signal.emit(
                 self.params_line()
+                + "\n\n"
+                + self.format_situation_note(state)
                 + "\n\n"
                 + (stop_note + limit_note if (stop_note or limit_note) else "")
                 + format_paths(states, limit=300)
@@ -949,7 +1016,7 @@ class QuickPanel(ScreenClampMixin, QDialog):
         flags = self.windowFlags() | Qt.WindowStaysOnTopHint
         flags &= ~Qt.WindowContextHelpButtonHint  # 去掉标题栏的 “?” 帮助按钮
         self.setWindowFlags(flags)
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(520)
 
         # ---- 顶部操作按钮：识别为开始/停止切换按钮，设置按钮弹出后台设置窗口 ----
         self.startButton = QPushButton("开始识别")
@@ -1144,7 +1211,7 @@ class QuickPanel(ScreenClampMixin, QDialog):
 
         self.fullToggle, self.fullPanel, full_section = self._make_fold_section(
             "完整路径计算结果", False, self.fullText,
-            refit=lambda: self._fit_edit(self.fullText, 900),
+            refit=lambda: self._fit_edit(self.fullText, 420),
         )
         self.bidirToggle, self.bidirPanel, bidir_section = self._make_fold_section(
             "双向链计算最高伤害路径", True, self.bidirRounds,
@@ -1174,6 +1241,8 @@ class QuickPanel(ScreenClampMixin, QDialog):
         stack_layout.addWidget(hand_section)
         stack_layout.addWidget(board_section)
         stack_layout.addWidget(status_section)
+        # 识别/计算/设置按钮放在状态栏下面、牛头人卡池上面
+        stack_layout.addLayout(button_layout)
         stack_layout.addWidget(actions_section)
         stack_layout.addWidget(self.progressLabel)
         stack_layout.addWidget(full_section)
@@ -1183,15 +1252,19 @@ class QuickPanel(ScreenClampMixin, QDialog):
         stack_container = QWidget()
         stack_container.setLayout(stack_layout)
 
+        # 内容放进滚动区：窗口尺寸固定，内容超出时滚动而不是把窗口顶大
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(stack_container)
+        scroll.setFrameShape(QFrame.NoFrame)
+
         layout = QVBoxLayout()
-        layout.addLayout(button_layout)
-        layout.addWidget(stack_container)
+        layout.addWidget(scroll)
         self.setLayout(layout)
         # 窗口高度按屏幕自适应封顶，防止折叠/展开时布局把窗口顶出屏幕
         screen = QApplication.primaryScreen().availableGeometry()
         max_height = max(480, screen.height() - 60)
-        self.resize(600, min(960, max_height))
-        self.setMaximumHeight(screen.height())
+        self.resize(540, min(960, max_height))
 
     def _make_fold_section(self, title, default_open, body_widget, refit=None):
         """生成一个折叠区块：标题按钮 + 内容控件（可选展开时回调 refit）。"""
