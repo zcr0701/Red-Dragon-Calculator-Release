@@ -690,6 +690,9 @@ class CalculationWorker(QThread):
                         min_alex_count=self.min_alex_count,
                         forward_depth=self.operator_depth,
                         exe_path=cpp_exe,
+                        progress_callback=on_progress,
+                        found_callback=on_found,
+                        should_stop=self.isInterruptionRequested,
                     )
                 else:
                     bidir_states = enumerate_play_paths(
@@ -698,8 +701,8 @@ class CalculationWorker(QThread):
                         max_paths=self.max_paths,
                         max_alex_count=self.max_alex_count,
                         min_alex_count=self.min_alex_count,
-                        progress_callback=None,
-                        found_callback=None,
+                        progress_callback=on_progress,
+                        found_callback=on_found,
                         prune_stats={},
                         should_stop=self.isInterruptionRequested,
                         forward_mining=False,
@@ -1116,26 +1119,38 @@ class QuickPanel(ScreenClampMixin, QDialog):
             border-radius:6px;
         }
         """
+        self.result_style = result_style
 
         def make_result_edit():
             edit = QTextEdit()
             edit.setReadOnly(True)
-            edit.setStyleSheet(result_style)
+            edit.setStyleSheet(self.result_style)
             edit.setMinimumHeight(36)
             return edit
 
         self.fullText = make_result_edit()
-        self.bidirText = make_result_edit()
-        self.beamText = make_result_edit()
+
+        # 最高伤害路径：按“舞”分段成多个小框，避免人眼在长路径上重定位出错
+        self.bidirRounds = QWidget()
+        self.bidirRoundsLayout = QVBoxLayout()
+        self.bidirRoundsLayout.setContentsMargins(0, 0, 0, 0)
+        self.bidirRoundsLayout.setSpacing(4)
+        self.bidirRounds.setLayout(self.bidirRoundsLayout)
+        self.beamRounds = QWidget()
+        self.beamRoundsLayout = QVBoxLayout()
+        self.beamRoundsLayout.setContentsMargins(0, 0, 0, 0)
+        self.beamRoundsLayout.setSpacing(4)
+        self.beamRounds.setLayout(self.beamRoundsLayout)
 
         self.fullToggle, self.fullPanel, full_section = self._make_fold_section(
-            "完整路径计算结果", False, self.fullText, 900
+            "完整路径计算结果", False, self.fullText,
+            refit=lambda: self._fit_edit(self.fullText, 900),
         )
         self.bidirToggle, self.bidirPanel, bidir_section = self._make_fold_section(
-            "双向链计算最高伤害路径", True, self.bidirText, 420
+            "双向链计算最高伤害路径", True, self.bidirRounds,
         )
         self.beamToggle, self.beamPanel, beam_section = self._make_fold_section(
-            "beam束状计算最高伤害路径", True, self.beamText, 420
+            "beam束状计算最高伤害路径", True, self.beamRounds,
         )
 
         # ---- 殒命位置与牛头人卡池：同一行，牛头人展开后在其下一行 ----
@@ -1172,10 +1187,14 @@ class QuickPanel(ScreenClampMixin, QDialog):
         layout.addLayout(button_layout)
         layout.addWidget(stack_container)
         self.setLayout(layout)
-        self.resize(600, 960)
+        # 窗口高度按屏幕自适应封顶，防止折叠/展开时布局把窗口顶出屏幕
+        screen = QApplication.primaryScreen().availableGeometry()
+        max_height = max(480, screen.height() - 60)
+        self.resize(600, min(960, max_height))
+        self.setMaximumHeight(screen.height())
 
-    def _make_fold_section(self, title, default_open, edit, cap):
-        """生成一个折叠区块：标题按钮 + 可自动适应高度的文本框。"""
+    def _make_fold_section(self, title, default_open, body_widget, refit=None):
+        """生成一个折叠区块：标题按钮 + 内容控件（可选展开时回调 refit）。"""
         toggle = QPushButton("▸ " + title)
         toggle.setCheckable(True)
         toggle.setChecked(default_open)
@@ -1184,13 +1203,13 @@ class QuickPanel(ScreenClampMixin, QDialog):
         panel = QWidget()
         lay = QVBoxLayout()
         lay.setContentsMargins(4, 2, 4, 2)
-        lay.addWidget(edit)
+        lay.addWidget(body_widget)
         panel.setLayout(lay)
 
         def on_toggle(checked):
             panel.setVisible(checked)
-            if checked:
-                self._fit_edit(edit, cap)
+            if checked and refit is not None:
+                refit()
 
         toggle.toggled.connect(on_toggle)
         # 初始折叠/展开状态同步到面板（setChecked 在 connect 之前调用，不会触发信号）
@@ -1202,6 +1221,58 @@ class QuickPanel(ScreenClampMixin, QDialog):
         slay.addWidget(panel)
         section.setLayout(slay)
         return toggle, panel, section
+
+    def _show_rounds(self, container, best_line):
+        """把一条最高伤害路径按“舞动全场”分段，每个阶段一个独立小框。"""
+        while container.count():
+            item = container.takeAt(0)
+            widget = item.widget()
+
+            if widget is not None:
+                widget.deleteLater()
+
+        match = re.match(
+            r"^1\. (.*?) \| 龙数：(\d+) \| 伤害：(\d+)点 \| 剩余法力：(\d+)$",
+            best_line.strip(),
+        )
+
+        if match is None:
+            box = QTextEdit()
+            box.setReadOnly(True)
+            box.setStyleSheet(self.result_style)
+            box.setMinimumHeight(36)
+            box.setPlainText(best_line)
+            container.addWidget(box)
+            self._fit_edit(box, 420)
+            return
+
+        steps_text, dragons, damage, mana = match.groups()
+        steps = [step.strip() for step in steps_text.split(" -> ")]
+        rounds = []
+        current = []
+
+        for step in steps:
+            current.append(step)
+
+            if step.startswith("舞动全场（ft.迦罗娜）"):
+                rounds.append(current)
+                current = []
+
+        if current:
+            rounds.append(current)
+
+        summary = QLabel(f"最高伤害：{damage}点 | 龙数：{dragons} | 剩余法力：{mana}")
+        summary.setStyleSheet("font-size:13px;color:#333;")
+        container.addWidget(summary)
+
+        for index, round_steps in enumerate(rounds, start=1):
+            box = QTextEdit()
+            box.setReadOnly(True)
+            box.setStyleSheet(self.result_style)
+            box.setMinimumHeight(30)
+            box.setPlainText(f"第{index}轮：" + " -> ".join(round_steps))
+            container.addWidget(box)
+            self._fit_edit(box, 220)
 
     def _fit_edit(self, edit, cap=520):
         """文本框自动适应内容高度（刚好能看完全，超出上限则滚动）。"""
@@ -1468,10 +1539,10 @@ class MainWindow(ScreenClampMixin, QWidget):
         self.panel.show()
         self.setResult("识别结果会显示在这里", "重建后的牌库与手牌会显示在这里", None)
         self.panel.fullText.setPlainText("计算完成后，完整路径结果会显示在这里（可折叠）")
-        self.panel.bidirText.setPlainText("双向链计算完成后，最高伤害路径显示在这里")
-        self.panel.beamText.setPlainText("beam束计算完成后，最高伤害路径显示在这里")
-        self.panel._fit_edit(self.panel.bidirText, 420)
-        self.panel._fit_edit(self.panel.beamText, 420)
+        for container in (self.panel.bidirRoundsLayout, self.panel.beamRoundsLayout):
+            hint = QLabel("（尚未计算，计算完成后按“舞”分段显示）")
+            hint.setStyleSheet("font-size:13px;color:#888;")
+            container.addWidget(hint)
 
     def toggle_settings_window(self):
         """点“设置”才弹出/收起后台设置窗口。"""
@@ -1844,8 +1915,12 @@ class MainWindow(ScreenClampMixin, QWidget):
             return
 
         self.panel.fullText.setPlainText("正在计算所有可行出牌路径...")
-        self.panel.bidirText.setPlainText("")
-        self.panel.beamText.setPlainText("")
+        for container in (self.panel.bidirRoundsLayout, self.panel.beamRoundsLayout):
+            while container.count():
+                item = container.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
         self.panel.progressLabel.setText("")
         # 合并后的按钮在计算期间要可点（此时是“中止计算”）
         self.panel.calculateButton.setEnabled(True)
@@ -1905,11 +1980,9 @@ class MainWindow(ScreenClampMixin, QWidget):
     def on_best_result(self, beam_mode, text):
         """双向链/beam 计算完成后，把最高伤害路径放进对应框并自动适应高度。"""
         if beam_mode:
-            self.panel.beamText.setPlainText(text)
-            self.panel._fit_edit(self.panel.beamText, 420)
+            self.panel._show_rounds(self.panel.beamRoundsLayout, text)
         else:
-            self.panel.bidirText.setPlainText(text)
-            self.panel._fit_edit(self.panel.bidirText, 420)
+            self.panel._show_rounds(self.panel.bidirRoundsLayout, text)
 
     def on_calculation_thread_finished(self):
         self.calc_worker = None
