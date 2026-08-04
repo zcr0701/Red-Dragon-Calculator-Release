@@ -597,7 +597,9 @@ class CalculationWorker(QThread):
         logs_dir.mkdir(parents=True, exist_ok=True)
         output_path = logs_dir / f"red_dragon_all_paths_{timestamp}.txt"
         header = (
-            self.format_initial_state_note(state)
+            # 只保留参数行，不再输出初始手牌/战场等场面数据（局面已存存档 JSON）
+            self.params_line()
+            + "\n"
             + self.format_prune_stats(prune_stats)
             + stop_note
             + limit_note
