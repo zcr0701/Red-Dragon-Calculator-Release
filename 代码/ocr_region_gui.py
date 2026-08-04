@@ -1051,7 +1051,7 @@ class QuickPanel(ScreenClampMixin, QDialog):
         QTextEdit{
             color:#333;
             background:white;
-            font-size:17px;
+            font-size:20px;
             font-family:微软雅黑;
             padding:6px;
             border:1px solid #ddd;
