@@ -762,13 +762,7 @@ class QuickPanel(QDialog):
         deadly_layout = QHBoxLayout()
         deadly_layout.addWidget(self.deadlyShadowCheck)
         deadly_layout.addWidget(self.deadlyShadowInput)
-        deadly_layout.addWidget(QLabel("按重建手牌列表从 1 开始编号"))
         deadly_layout.addStretch()
-        deadly_section = QWidget()
-        deadly_section_layout = QVBoxLayout()
-        deadly_section_layout.setContentsMargins(4, 2, 4, 2)
-        deadly_section_layout.addLayout(deadly_layout)
-        deadly_section.setLayout(deadly_section_layout)
 
         # ---- 牛头人酋长剩余卡池：最多勾选 3 张 ----
         self.etcBandChecks: List[Tuple[str, QCheckBox]] = []
@@ -815,12 +809,6 @@ class QuickPanel(QDialog):
         etc_panel_layout.addWidget(etc_hint)
         self.etcPanel.setLayout(etc_panel_layout)
         self.etcToggle.toggled.connect(self.etcPanel.setVisible)
-        etc_section = QWidget()
-        etc_section_layout = QVBoxLayout()
-        etc_section_layout.setContentsMargins(0, 0, 0, 0)
-        etc_section_layout.addWidget(self.etcToggle)
-        etc_section_layout.addWidget(self.etcPanel)
-        etc_section.setLayout(etc_section_layout)
 
         # ---- 手牌折叠区块（10 格固定，默认展开） ----
         hand_section = QWidget()
@@ -917,6 +905,17 @@ class QuickPanel(QDialog):
         calc_layout.addWidget(self.calcText)
         calc_panel.setLayout(calc_layout)
 
+        # ---- 殒命位置与牛头人卡池：同一行，牛头人展开后在其下一行 ----
+        actions_section = QWidget()
+        actions_layout = QVBoxLayout()
+        actions_layout.setContentsMargins(4, 2, 4, 2)
+        actions_row = QHBoxLayout()
+        actions_row.addLayout(deadly_layout)
+        actions_row.addWidget(self.etcToggle)
+        actions_layout.addLayout(actions_row)
+        actions_layout.addWidget(self.etcPanel)
+        actions_section.setLayout(actions_layout)
+
         # ---- 主布局：折叠区块堆叠，计算结果区自动填满剩余空间 ----
         stack_layout = QVBoxLayout()
         stack_layout.setContentsMargins(0, 0, 0, 0)
@@ -924,8 +923,7 @@ class QuickPanel(QDialog):
         stack_layout.addWidget(hand_section)
         stack_layout.addWidget(board_section)
         stack_layout.addWidget(status_section)
-        stack_layout.addWidget(deadly_section)
-        stack_layout.addWidget(etc_section)
+        stack_layout.addWidget(actions_section)
         stack_layout.addWidget(calc_panel)
         stack_layout.setStretchFactor(calc_panel, 1)
         stack_container = QWidget()
@@ -959,6 +957,24 @@ class QuickPanel(QDialog):
             self.owner.calc_worker.wait()
         self.owner.close()
         event.accept()
+
+    def moveEvent(self, event):
+        """拖动窗口时贴住屏幕边界，不允许拖出屏幕外。"""
+        super().moveEvent(event)
+        if getattr(self, "_clamp_move", False):
+            return
+        self._clamp_move = True
+        try:
+            geo = self.frameGeometry()
+            screen = QApplication.primaryScreen().availableGeometry()
+            max_x = screen.x() + max(0, screen.width() - geo.width())
+            max_y = screen.y() + max(0, screen.height() - geo.height())
+            x = min(max(geo.x(), screen.x()), max_x)
+            y = min(max(geo.y(), screen.y()), max_y)
+            if x != geo.x() or y != geo.y():
+                self.move(x, y)
+        finally:
+            self._clamp_move = False
 
 
 class MainWindow(QWidget):
@@ -1175,6 +1191,24 @@ class MainWindow(QWidget):
             self.show()
             self.raise_()
             self.activateWindow()
+
+    def moveEvent(self, event):
+        """拖动设置窗口时同样贴住屏幕边界。"""
+        super().moveEvent(event)
+        if getattr(self, "_clamp_move", False):
+            return
+        self._clamp_move = True
+        try:
+            geo = self.frameGeometry()
+            screen = QApplication.primaryScreen().availableGeometry()
+            max_x = screen.x() + max(0, screen.width() - geo.width())
+            max_y = screen.y() + max(0, screen.height() - geo.height())
+            x = min(max(geo.x(), screen.x()), max_x)
+            y = min(max(geo.y(), screen.y()), max_y)
+            if x != geo.x() or y != geo.y():
+                self.move(x, y)
+        finally:
+            self._clamp_move = False
 
     def _slot_text(self, index: int, card) -> str:
         if card is None:
