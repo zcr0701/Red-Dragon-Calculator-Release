@@ -10,6 +10,7 @@ from PyQt5.QtGui import QColor, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
+    QDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -294,7 +295,7 @@ class OCRWorker(QThread):
                 box = self.get_box_func()
 
                 if box is None:
-                    time.sleep(0.2)
+                    time.sleep(0.1)
                     continue
 
                 ocr_text = self.ocr_api.recognize_box(box)
@@ -318,7 +319,7 @@ class OCRWorker(QThread):
                 print(msg)
                 self.error_signal.emit(msg)
 
-            time.sleep(0.2)
+            time.sleep(0.1)
 
     def stop(self):
         self.running = False
@@ -674,10 +675,271 @@ class SelectionOverlay(QWidget):
             painter.drawRect(selected_rect)
 
 
+class QuickPanel(QDialog):
+    """主操作弹窗：识别 / 计算 / 牛池勾选 / 殒命标记 / 手牌·战场·状态显示 / OCR原始文本 / 计算结果。
+
+    引擎与设置都在 MainWindow（后台设置窗口），弹窗只负责操作和展示。
+    """
+
+    slot_style = """
+    QLabel{
+        background:white;
+        color:#333;
+        font-size:13px;
+        font-family:微软雅黑;
+        border:1px solid #ddd;
+        border-radius:8px;
+        padding:2px;
+    }
+    """
+    toggle_style = """
+    QPushButton{
+        background:#f0f0f0;
+        color:#333;
+        font-size:15px;
+        font-family:微软雅黑;
+        border:1px solid #ccc;
+        border-radius:6px;
+        padding:8px 10px;
+        text-align:left;
+        min-height:34px;
+    }
+    QPushButton:checked{ background:#e8e8ff; }
+    """
+    ocr_raw_style = """
+    QTextEdit{
+        color:#444;
+        background:#fafafa;
+        font-size:13px;
+        font-family:微软雅黑;
+        padding:4px;
+        border:1px solid #ddd;
+        border-radius:6px;
+    }
+    """
+    calc_text_style = """
+    QTextEdit{
+        color:red;
+        background:white;
+        font-size:22px;
+        font-family:微软雅黑;
+        padding:10px;
+        border:1px solid #ddd;
+        border-radius:8px;
+    }
+    """
+
+    def __init__(self, owner):
+        super().__init__()
+        self.owner = owner
+        self.setWindowTitle("红龙贼计算器")
+        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        self.setMinimumWidth(780)
+
+        # ---- 顶部操作按钮 ----
+        self.selectButton = QPushButton("框选手牌/战场")
+        self.selectManaButton = QPushButton("框选水晶/法力")
+        self.startButton = QPushButton("开始识别")
+        self.stopButton = QPushButton("停止识别")
+        self.calculateButton = QPushButton("开始计算")
+        self.cancelCalculationButton = QPushButton("中止计算")
+        self.startButton.setEnabled(False)
+        self.stopButton.setEnabled(False)
+        self.calculateButton.setEnabled(False)
+        self.cancelCalculationButton.setEnabled(False)
+
+        self.selectButton.clicked.connect(owner.open_selector)
+        self.selectManaButton.clicked.connect(owner.open_mana_selector)
+        self.startButton.clicked.connect(owner.start_ocr)
+        self.stopButton.clicked.connect(owner.stop_ocr)
+        self.calculateButton.clicked.connect(owner.start_calculation)
+        self.cancelCalculationButton.clicked.connect(owner.cancel_calculation)
+
+        button_layout = QHBoxLayout()
+        for btn in (self.selectButton, self.selectManaButton, self.startButton,
+                    self.stopButton, self.calculateButton, self.cancelCalculationButton):
+            button_layout.addWidget(btn)
+
+        # ---- 殒命暗影标记 ----
+        self.deadlyShadowCheck = QCheckBox("标记殒命暗影")
+        self.deadlyShadowInput = QLineEdit()
+        self.deadlyShadowInput.setPlaceholderText("手牌序号，如 3 或 3,7")
+        self.deadlyShadowInput.setFixedWidth(160)
+        self.deadlyShadowInput.setEnabled(False)
+        self.deadlyShadowCheck.toggled.connect(self.deadlyShadowInput.setEnabled)
+        deadly_layout = QHBoxLayout()
+        deadly_layout.addWidget(self.deadlyShadowCheck)
+        deadly_layout.addWidget(QLabel("殒命暗影位置："))
+        deadly_layout.addWidget(self.deadlyShadowInput)
+        deadly_layout.addWidget(QLabel("按重建手牌列表从 1 开始编号"))
+        deadly_layout.addStretch()
+
+        # ---- 牛头人酋长剩余卡池：最多勾选 3 张 ----
+        self.etcBandChecks: List[Tuple[str, QCheckBox]] = []
+        self.etcBandOptions = [
+            ("舞动全场（ft.迦罗娜）", "舞动全场（ft.迦罗娜）"),
+            ("幻觉药水", "幻觉药水"),
+            ("生命的缚誓者阿莱克丝塔萨", "红龙"),
+            ("晦鳞巢母", "晦鳞巢母"),
+            ("赤烟·腾武", "赤烟·腾武"),
+        ]
+
+        def make_etc_toggler(box):
+            def handler(checked):
+                if checked and sum(
+                    1 for _name, other in self.etcBandChecks if other.isChecked()
+                ) > 3:
+                    box.blockSignals(True)
+                    box.setChecked(False)
+                    box.blockSignals(False)
+            return handler
+
+        for card_name, label in self.etcBandOptions:
+            box = QCheckBox(label)
+            box.setChecked(card_name in {"舞动全场（ft.迦罗娜）", "幻觉药水", "生命的缚誓者阿莱克丝塔萨"})
+            box.toggled.connect(make_etc_toggler(box))
+            self.etcBandChecks.append((card_name, box))
+
+        etc_layout = QHBoxLayout()
+        etc_layout.addWidget(QLabel("牛头人酋长剩余卡池："))
+        for _card_name, box in self.etcBandChecks:
+            etc_layout.addWidget(box)
+        etc_layout.addWidget(QLabel("最多勾选 3 张；取消勾选表示这张已被选走"))
+        etc_layout.addStretch()
+
+        # ---- 手牌折叠区块（10 格固定，默认展开） ----
+        hand_section = QWidget()
+        hand_section_layout = QVBoxLayout()
+        hand_section_layout.setContentsMargins(0, 0, 0, 0)
+        self.handToggle = QPushButton("▸ 手牌（10 格固定）")
+        self.handToggle.setCheckable(True)
+        self.handToggle.setChecked(True)
+        self.handToggle.setStyleSheet(self.toggle_style)
+        self.handToggle.setMinimumHeight(38)
+        self.handPanel = QWidget()
+        hand_panel_layout = QVBoxLayout()
+        hand_panel_layout.setContentsMargins(4, 2, 4, 2)
+        hand_grid = QGridLayout()
+        hand_grid.setSpacing(2)
+        self.hand_slots = []
+        for index in range(10):
+            slot = QLabel("空")
+            slot.setAlignment(Qt.AlignCenter)
+            slot.setStyleSheet(self.slot_style)
+            slot.setMinimumHeight(28)
+            self.hand_slots.append(slot)
+            hand_grid.addWidget(slot, index // 5, index % 5)
+        hand_panel_layout.addLayout(hand_grid)
+        self.handPanel.setLayout(hand_panel_layout)
+        self.handToggle.toggled.connect(self.handPanel.setVisible)
+        hand_section_layout.addWidget(self.handToggle)
+        hand_section_layout.addWidget(self.handPanel)
+        hand_section.setLayout(hand_section_layout)
+
+        # ---- 战场折叠区块（7 格固定，默认收起） ----
+        board_section = QWidget()
+        board_section_layout = QVBoxLayout()
+        board_section_layout.setContentsMargins(0, 0, 0, 0)
+        self.boardToggle = QPushButton("▸ 战场（7 格固定）")
+        self.boardToggle.setCheckable(True)
+        self.boardToggle.setChecked(False)
+        self.boardToggle.setStyleSheet(self.toggle_style)
+        self.boardToggle.setMinimumHeight(38)
+        self.boardPanel = QWidget()
+        board_panel_layout = QVBoxLayout()
+        board_panel_layout.setContentsMargins(4, 2, 4, 2)
+        board_grid = QGridLayout()
+        board_grid.setSpacing(2)
+        self.board_slots = []
+        for index in range(7):
+            slot = QLabel("空")
+            slot.setAlignment(Qt.AlignCenter)
+            slot.setStyleSheet(self.slot_style)
+            slot.setMinimumHeight(28)
+            self.board_slots.append(slot)
+            board_grid.addWidget(slot, index // 4, index % 4)
+        board_panel_layout.addLayout(board_grid)
+        self.boardPanel.setLayout(board_panel_layout)
+        self.boardToggle.toggled.connect(self.boardPanel.setVisible)
+        board_section_layout.addWidget(self.boardToggle)
+        board_section_layout.addWidget(self.boardPanel)
+        board_section.setLayout(board_section_layout)
+
+        # ---- 状态折叠区块 ----
+        status_section = QWidget()
+        status_section_layout = QVBoxLayout()
+        status_section_layout.setContentsMargins(0, 0, 0, 0)
+        self.statusToggle = QPushButton("▸ 状态（水晶 / 法力 / 牛池 / 殒命）")
+        self.statusToggle.setCheckable(True)
+        self.statusToggle.setChecked(False)
+        self.statusToggle.setStyleSheet(self.toggle_style)
+        self.statusToggle.setMinimumHeight(38)
+        self.statusPanel = QWidget()
+        status_panel_layout = QHBoxLayout()
+        status_panel_layout.setContentsMargins(4, 2, 4, 2)
+        self.statusSummaryLabel = QLabel("水晶 ? / 法力 ?　|　牛池：-　|　殒命：-")
+        self.statusSummaryLabel.setStyleSheet("font-size:13px;color:#333;")
+        status_panel_layout.addWidget(self.statusSummaryLabel)
+        status_panel_layout.addStretch()
+        self.statusPanel.setLayout(status_panel_layout)
+        self.statusToggle.toggled.connect(self.statusPanel.setVisible)
+        status_section_layout.addWidget(self.statusToggle)
+        status_section_layout.addWidget(self.statusPanel)
+        status_section.setLayout(status_section_layout)
+
+        # ---- OCR 原始文本 ----
+        self.ocrTitleLabel = QLabel("OCR原始文本（手牌/战场）")
+        self.ocrText = QTextEdit()
+        self.ocrText.setReadOnly(True)
+        self.ocrText.setFixedHeight(88)
+        self.ocrText.setStyleSheet(self.ocr_raw_style)
+        self.manaOcrTitleLabel = QLabel("OCR原始文本（水晶/法力）")
+        self.manaOcrText = QTextEdit()
+        self.manaOcrText.setReadOnly(True)
+        self.manaOcrText.setFixedHeight(44)
+        self.manaOcrText.setStyleSheet(self.ocr_raw_style)
+
+        # ---- 计算结果 ----
+        self.calcText = QTextEdit()
+        self.calcText.setReadOnly(True)
+        self.calcText.setStyleSheet(self.calc_text_style)
+        calc_panel = QWidget()
+        calc_layout = QVBoxLayout()
+        calc_title = QLabel("出牌路径计算")
+        calc_title.setStyleSheet("font-size:14px;color:#333;")
+        calc_layout.addWidget(calc_title)
+        calc_layout.addWidget(self.calcText)
+        calc_panel.setLayout(calc_layout)
+
+        # ---- 主布局：折叠区块堆叠，计算结果区自动填满剩余空间 ----
+        stack_layout = QVBoxLayout()
+        stack_layout.setContentsMargins(0, 0, 0, 0)
+        stack_layout.setSpacing(0)
+        stack_layout.addWidget(hand_section)
+        stack_layout.addWidget(board_section)
+        stack_layout.addWidget(status_section)
+        stack_layout.addWidget(self.ocrTitleLabel)
+        stack_layout.addWidget(self.ocrText)
+        stack_layout.addWidget(self.manaOcrTitleLabel)
+        stack_layout.addWidget(self.manaOcrText)
+        stack_layout.addWidget(calc_panel)
+        stack_layout.setStretchFactor(calc_panel, 1)
+        stack_container = QWidget()
+        stack_container.setLayout(stack_layout)
+
+        layout = QVBoxLayout()
+        layout.addLayout(button_layout)
+        layout.addLayout(deadly_layout)
+        layout.addLayout(etc_layout)
+        layout.addWidget(stack_container)
+        self.setLayout(layout)
+        self.resize(780, 900)
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("OCR识别与手牌重建")
+        self.setWindowTitle("红龙贼计算器 · 设置")
         self.setWindowFlags(Qt.WindowStaysOnTopHint)
 
         self.box = None
@@ -689,42 +951,19 @@ class MainWindow(QWidget):
         # 状态区的水晶/法力只跟随 OCR 扫描结果，不读手动输入框
         self.scan_crystals = None
         self.scan_mana = None
+        # 识别自动停止：点一下开始扫描（0.1s 循环），识别到结果自动停止
+        self._auto_stop = False
+        self._run_got_hand = False
+        self._run_got_mana = False
         self.ocr_api = OCRInterface(lang="ch")
 
         self.overlay = SelectionOverlay()
         self.overlay.selected_signal.connect(self.on_area_selected)
 
-        self.statusLabel = QLabel("状态：请先点击“框选区域”")
-        self.statusLabel.setStyleSheet("font-size:16px;font-family:微软雅黑;")
-
-        self.selectButton = QPushButton("框选手牌/战场")
-        self.selectManaButton = QPushButton("框选水晶/法力")
-        self.startButton = QPushButton("开始识别")
-        self.stopButton = QPushButton("停止识别")
+        self.statusLabel = QLabel("状态：设置窗口，操作请使用弹窗")
+        self.statusLabel.setStyleSheet("font-size:14px;font-family:微软雅黑;")
         self.manualInputButton = QPushButton("手动输入")
-        self.calculateButton = QPushButton("开始计算")
-        self.cancelCalculationButton = QPushButton("中止计算")
-        self.startButton.setEnabled(False)
-        self.stopButton.setEnabled(False)
-        self.calculateButton.setEnabled(False)
-        self.cancelCalculationButton.setEnabled(False)
-
-        self.selectButton.clicked.connect(self.open_selector)
-        self.selectManaButton.clicked.connect(self.open_mana_selector)
-        self.startButton.clicked.connect(self.start_ocr)
-        self.stopButton.clicked.connect(self.stop_ocr)
         self.manualInputButton.clicked.connect(self.toggle_manual_input)
-        self.calculateButton.clicked.connect(self.start_calculation)
-        self.cancelCalculationButton.clicked.connect(self.cancel_calculation)
-
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(self.selectButton)
-        button_layout.addWidget(self.selectManaButton)
-        button_layout.addWidget(self.startButton)
-        button_layout.addWidget(self.stopButton)
-        button_layout.addWidget(self.manualInputButton)
-        button_layout.addWidget(self.calculateButton)
-        button_layout.addWidget(self.cancelCalculationButton)
 
         self.crystalInput = QLineEdit("4")
         self.crystalInput.setFixedWidth(60)
@@ -773,55 +1012,6 @@ class MainWindow(QWidget):
         mana_layout.addWidget(QLabel("路径上限："))
         mana_layout.addWidget(self.maxPathsInput)
         mana_layout.addStretch()
-
-        self.deadlyShadowCheck = QCheckBox("标记殒命暗影")
-        self.deadlyShadowInput = QLineEdit()
-        self.deadlyShadowInput.setPlaceholderText("手牌序号，如 3 或 3,7")
-        self.deadlyShadowInput.setFixedWidth(160)
-        self.deadlyShadowInput.setEnabled(False)
-        self.deadlyShadowCheck.toggled.connect(self.deadlyShadowInput.setEnabled)
-
-        deadly_shadow_layout = QHBoxLayout()
-        deadly_shadow_layout.addWidget(self.deadlyShadowCheck)
-        deadly_shadow_layout.addWidget(QLabel("殒命暗影位置："))
-        deadly_shadow_layout.addWidget(self.deadlyShadowInput)
-        deadly_shadow_layout.addWidget(QLabel("按重建手牌列表从 1 开始编号"))
-        deadly_shadow_layout.addStretch()
-
-        # 牛头人酋长剩余卡池：可勾选项超过 5 个（可继续追加），但最多只能勾选 3 张
-        self.etcBandChecks: List[Tuple[str, QCheckBox]] = []
-        self.etcBandOptions = [
-            ("舞动全场（ft.迦罗娜）", "舞动全场（ft.迦罗娜）"),
-            ("幻觉药水", "幻觉药水"),
-            ("生命的缚誓者阿莱克丝塔萨", "红龙"),
-            ("晦鳞巢母", "晦鳞巢母"),
-            ("赤烟·腾武", "赤烟·腾武"),
-        ]
-
-        def make_etc_toggler(box):
-            def handler(checked):
-                if checked and sum(
-                    1 for _name, other in self.etcBandChecks if other.isChecked()
-                ) > 3:
-                    box.blockSignals(True)
-                    box.setChecked(False)
-                    box.blockSignals(False)
-            return handler
-
-        for card_name, label in self.etcBandOptions:
-            box = QCheckBox(label)
-            box.setChecked(card_name in {"舞动全场（ft.迦罗娜）", "幻觉药水", "生命的缚誓者阿莱克丝塔萨"})
-            box.toggled.connect(make_etc_toggler(box))
-            self.etcBandChecks.append((card_name, box))
-
-        etc_layout = QHBoxLayout()
-        etc_layout.addWidget(QLabel("牛头人酋长剩余卡池："))
-
-        for _card_name, box in self.etcBandChecks:
-            etc_layout.addWidget(box)
-
-        etc_layout.addWidget(QLabel("最多勾选 3 张；取消勾选表示这张已经被选走"))
-        etc_layout.addStretch()
 
         self.manualInputPanel = QWidget()
         self.manualInputPanel.setVisible(False)
@@ -897,199 +1087,22 @@ class MainWindow(QWidget):
         manual_layout.addLayout(manual_button_row)
         self.manualInputPanel.setLayout(manual_layout)
 
-        # OCR 原始文本显示区：主区域 + 水晶/法力区域分开显示，便于核对识别结果
-        self.ocrText = QTextEdit()
-        self.ocrText.setReadOnly(True)
-        self.ocrText.setFixedHeight(88)
-        self.ocrTitleLabel = QLabel("OCR原始文本（手牌/战场）")
-        self.manaOcrText = QTextEdit()
-        self.manaOcrText.setReadOnly(True)
-        self.manaOcrText.setFixedHeight(44)
-        self.manaOcrTitleLabel = QLabel("OCR原始文本（水晶/法力）")
+        # 设置窗口布局：参数 + 手动输入，其余操作全部放进弹窗
+        settings_layout = QVBoxLayout()
+        settings_layout.addWidget(self.statusLabel)
+        settings_layout.addLayout(mana_layout)
+        settings_layout.addWidget(self.manualInputButton)
+        settings_layout.addWidget(self.manualInputPanel)
+        settings_layout.addStretch()
+        self.setLayout(settings_layout)
+        self.resize(760, 480)
+        self.move(120, 80)
 
-        self.calcText = QTextEdit()
-        self.calcText.setReadOnly(True)
-
-        text_style = """
-        QTextEdit{
-            color:red;
-            background:white;
-            font-size:22px;
-            font-family:微软雅黑;
-            padding:10px;
-            border:1px solid #ddd;
-            border-radius:8px;
-        }
-        """
-        self.calcText.setStyleSheet(text_style)
-        ocr_raw_style = """
-        QTextEdit{
-            color:#444;
-            background:#fafafa;
-            font-size:13px;
-            font-family:微软雅黑;
-            padding:4px;
-            border:1px solid #ddd;
-            border-radius:6px;
-        }
-        """
-        self.ocrText.setStyleSheet(ocr_raw_style)
-        self.manaOcrText.setStyleSheet(ocr_raw_style)
-
-        slot_style = """
-        QLabel{
-            background:white;
-            color:#333;
-            font-size:13px;
-            font-family:微软雅黑;
-            border:1px solid #ddd;
-            border-radius:8px;
-            padding:2px;
-        }
-        """
-        toggle_style = """
-        QPushButton{
-            background:#f0f0f0;
-            color:#333;
-            font-size:15px;
-            font-family:微软雅黑;
-            border:1px solid #ccc;
-            border-radius:6px;
-            padding:8px 10px;
-            text-align:left;
-            min-height:34px;
-        }
-        QPushButton:checked{ background:#e8e8ff; }
-        """
-
-        # 手牌：独立折叠区块（10 格固定），默认展开
-        hand_section = QWidget()
-        hand_section_layout = QVBoxLayout()
-        hand_section_layout.setContentsMargins(0, 0, 0, 0)
-        self.handToggle = QPushButton("▸ 手牌（10 格固定）")
-        self.handToggle.setCheckable(True)
-        self.handToggle.setChecked(True)
-        self.handToggle.setStyleSheet(toggle_style)
-        self.handToggle.setMinimumHeight(38)
-        self.handPanel = QWidget()
-        hand_panel_layout = QVBoxLayout()
-        hand_panel_layout.setContentsMargins(4, 2, 4, 2)
-        hand_grid = QGridLayout()
-        hand_grid.setSpacing(2)
-        self.hand_slots = []
-
-        for index in range(10):
-            slot = QLabel("空")
-            slot.setAlignment(Qt.AlignCenter)
-            slot.setStyleSheet(slot_style)
-            slot.setMinimumHeight(28)
-            self.hand_slots.append(slot)
-            hand_grid.addWidget(slot, index // 5, index % 5)
-
-        hand_panel_layout.addLayout(hand_grid)
-        self.handPanel.setLayout(hand_panel_layout)
-        self.handToggle.toggled.connect(self.handPanel.setVisible)
-        hand_section_layout.addWidget(self.handToggle)
-        hand_section_layout.addWidget(self.handPanel)
-        hand_section.setLayout(hand_section_layout)
-
-        # 战场：独立折叠区块（7 格固定），默认收起
-        board_section = QWidget()
-        board_section_layout = QVBoxLayout()
-        board_section_layout.setContentsMargins(0, 0, 0, 0)
-        self.boardToggle = QPushButton("▸ 战场（7 格固定）")
-        self.boardToggle.setCheckable(True)
-        self.boardToggle.setChecked(False)
-        self.boardToggle.setStyleSheet(toggle_style)
-        self.boardToggle.setMinimumHeight(38)
-        self.boardPanel = QWidget()
-        board_panel_layout = QVBoxLayout()
-        board_panel_layout.setContentsMargins(4, 2, 4, 2)
-        board_grid = QGridLayout()
-        board_grid.setSpacing(2)
-        self.board_slots = []
-
-        for index in range(7):
-            slot = QLabel("空")
-            slot.setAlignment(Qt.AlignCenter)
-            slot.setStyleSheet(slot_style)
-            slot.setMinimumHeight(28)
-            self.board_slots.append(slot)
-            board_grid.addWidget(slot, index // 4, index % 4)
-
-        board_panel_layout.addLayout(board_grid)
-        self.boardPanel.setLayout(board_panel_layout)
-        self.boardToggle.toggled.connect(self.boardPanel.setVisible)
-        board_section_layout.addWidget(self.boardToggle)
-        board_section_layout.addWidget(self.boardPanel)
-        board_section.setLayout(board_section_layout)
-
-        # 状态：折叠展开区块（水晶/法力/牛池/殒命）
-        status_section = QWidget()
-        status_section_layout = QVBoxLayout()
-        status_section_layout.setContentsMargins(0, 0, 0, 0)
-        self.statusToggle = QPushButton("▸ 状态（水晶 / 法力 / 牛池 / 殒命）")
-        self.statusToggle.setCheckable(True)
-        self.statusToggle.setChecked(False)
-        self.statusToggle.setStyleSheet(toggle_style)
-        self.statusToggle.setMinimumHeight(38)
-        self.statusPanel = QWidget()
-        status_panel_layout = QHBoxLayout()
-        status_panel_layout.setContentsMargins(4, 2, 4, 2)
-        self.statusSummaryLabel = QLabel("水晶 ? / 法力 ?　|　牛池：-　|　殒命：-")
-        self.statusSummaryLabel.setStyleSheet("font-size:13px;color:#333;")
-        status_panel_layout.addWidget(self.statusSummaryLabel)
-        status_panel_layout.addStretch()
-        self.statusPanel.setLayout(status_panel_layout)
-        self.statusToggle.toggled.connect(self.statusPanel.setVisible)
-        status_section_layout.addWidget(self.statusToggle)
-        status_section_layout.addWidget(self.statusPanel)
-        status_section.setLayout(status_section_layout)
-
-        calc_panel = QWidget()
-        calc_layout = QVBoxLayout()
-        calc_title = QLabel("出牌路径计算")
-        calc_title.setStyleSheet("font-size:14px;color:#333;")
-        calc_layout.addWidget(calc_title)
-        calc_layout.addWidget(self.calcText)
-        calc_panel.setLayout(calc_layout)
-
-        # 用普通垂直布局替代 QSplitter：折叠某个区块后，其余区块自动往上堆到一起，
-        # 计算结果区自动填满剩余空间。
-        stack_layout = QVBoxLayout()
-        stack_layout.setContentsMargins(0, 0, 0, 0)
-        stack_layout.setSpacing(0)
-        stack_layout.addWidget(hand_section)
-        stack_layout.addWidget(board_section)
-        stack_layout.addWidget(status_section)
-        ocr_raw_section = QWidget()
-        ocr_raw_layout = QVBoxLayout()
-        ocr_raw_layout.setContentsMargins(4, 2, 4, 2)
-        ocr_raw_layout.addWidget(self.ocrTitleLabel)
-        ocr_raw_layout.addWidget(self.ocrText)
-        ocr_raw_layout.addWidget(self.manaOcrTitleLabel)
-        ocr_raw_layout.addWidget(self.manaOcrText)
-        ocr_raw_section.setLayout(ocr_raw_layout)
-        stack_layout.addWidget(ocr_raw_section)
-        stack_layout.addWidget(calc_panel)
-        stack_layout.setStretchFactor(calc_panel, 1)
-        stack_container = QWidget()
-        stack_container.setLayout(stack_layout)
-
-        layout = QVBoxLayout()
-        layout.addWidget(self.statusLabel)
-        layout.addLayout(button_layout)
-        layout.addLayout(mana_layout)
-        layout.addLayout(deadly_shadow_layout)
-        layout.addLayout(etc_layout)
-        layout.addWidget(self.manualInputPanel)
-        layout.addWidget(stack_container)
-        self.setLayout(layout)
-
-        self.resize(780, 900)
-        self.move(180, 80)
+        # 操作弹窗（识别/计算/牛池/殒命/手牌·战场·状态/OCR原始文本/计算结果）
+        self.panel = QuickPanel(self)
+        self.panel.show()
         self.setResult("识别结果会显示在这里", "重建后的牌库与手牌会显示在这里", None)
-        self.calcText.setPlainText("计算结果会显示在这里")
+        self.panel.calcText.setPlainText("计算结果会显示在这里")
 
     def _slot_text(self, index: int, card) -> str:
         if card is None:
@@ -1108,9 +1121,9 @@ class MainWindow(QWidget):
     # (ocr_text, hand_text, hand_result, crystals, mana, mana_raw_text)
     def setResult(self, ocr_text, hand_text, rebuild_result=None,
                   mana_crystals=None, mana=None, mana_raw_text="", source="ocr"):
-        self.ocrText.setPlainText(ocr_text if ocr_text else "未识别到文字")
-        self.manaOcrText.setPlainText(mana_raw_text if mana_raw_text else "（未框选或未识别）")
-        self.ocrTitleLabel.setText(
+        self.panel.ocrText.setPlainText(ocr_text if ocr_text else "未识别到文字")
+        self.panel.manaOcrText.setPlainText(mana_raw_text if mana_raw_text else "（未框选或未识别）")
+        self.panel.ocrTitleLabel.setText(
             "OCR原始文本（手牌/战场）" if source == "ocr" else "手动输入文本（已按现有规则解析）"
         )
         hand_cards = list(getattr(rebuild_result, "cards", None) or [])
@@ -1119,20 +1132,34 @@ class MainWindow(QWidget):
         if mana_crystals is not None and mana is not None:
             self.scan_crystals = int(mana_crystals)
             self.scan_mana = int(mana)
+            self._run_got_mana = True
 
-        for index, slot in enumerate(self.hand_slots):
+        if hand_cards:
+            self._run_got_hand = True
+
+        for index, slot in enumerate(self.panel.hand_slots):
             card = hand_cards[index] if index < len(hand_cards) else None
             slot.setText(self._slot_text(index + 1, card))
 
-        for index, slot in enumerate(self.board_slots):
+        for index, slot in enumerate(self.panel.board_slots):
             card = board_cards[index] if index < len(board_cards) else None
             slot.setText(self._slot_text(index + 1, card))
 
         if rebuild_result is not None:
             self.latest_rebuild_result = rebuild_result
-            self.calculateButton.setEnabled(True)
+            self.panel.calculateButton.setEnabled(True)
 
         self.update_status_display()
+
+        # 识别自动停止：点一下开始扫描，识别到手牌且（若框了法力框）法力后自动停止
+        if (
+            self._auto_stop
+            and self.worker is not None
+            and self._run_got_hand
+            and self._run_got_mana
+        ):
+            self.stop_ocr()
+            self.statusLabel.setText("状态：已识别到结果，自动停止")
 
     def update_status_display(self):
         if self.scan_crystals is not None and self.scan_mana is not None:
@@ -1142,10 +1169,10 @@ class MainWindow(QWidget):
             crystals = "?"
             mana = "?"
         band = "、".join(
-            card_name for card_name, checkbox in self.etcBandChecks if checkbox.isChecked()
+            card_name for card_name, checkbox in self.panel.etcBandChecks if checkbox.isChecked()
         ) or "空"
-        deadly_text = self.deadlyShadowInput.text().strip() or "未标记"
-        self.statusSummaryLabel.setText(
+        deadly_text = self.panel.deadlyShadowInput.text().strip() or "未标记"
+        self.panel.statusSummaryLabel.setText(
             f"水晶 {crystals} / 法力 {mana}　|　牛池：{band}　|　殒命：{deadly_text}"
         )
 
@@ -1250,7 +1277,7 @@ class MainWindow(QWidget):
         self._refresh_start_enabled()
 
     def _refresh_start_enabled(self):
-        self.startButton.setEnabled(self.box is not None and self.mana_box is not None)
+        self.panel.startButton.setEnabled(self.box is not None and self.mana_box is not None)
 
     def get_box(self):
         return self.box
@@ -1259,10 +1286,10 @@ class MainWindow(QWidget):
         return self.mana_box
 
     def get_deadly_shadow_hand_indexes(self):
-        if not self.deadlyShadowCheck.isChecked():
+        if not self.panel.deadlyShadowCheck.isChecked():
             return []
 
-        text = self.deadlyShadowInput.text().strip()
+        text = self.panel.deadlyShadowInput.text().strip()
 
         if not text:
             raise ValueError("启用殒命暗影标记后，请输入手牌序号。")
@@ -1303,13 +1330,13 @@ class MainWindow(QWidget):
     def get_etc_band_remaining(self):
         return [
             card_name
-            for card_name, checkbox in self.etcBandChecks
+            for card_name, checkbox in self.panel.etcBandChecks
             if checkbox.isChecked()
         ]
 
     def start_ocr(self):
         if self.box is None:
-            QMessageBox.warning(self, "提示", "请先点击“框选区域”选择 OCR 区域。")
+            QMessageBox.warning(self, "提示", "请先框选手牌/战场区域。")
             return
 
         if self.worker is not None:
@@ -1318,12 +1345,16 @@ class MainWindow(QWidget):
         self.worker = OCRWorker(self.get_box, self.get_mana_box, self.ocr_api)
         self.worker.result_signal.connect(self.setResult)
         self.worker.error_signal.connect(self.on_ocr_error)
+        self._auto_stop = True
+        self._run_got_hand = False
+        self._run_got_mana = self.mana_box is None
         self.worker.start()
 
-        self.statusLabel.setText("状态：正在截图、识别并重建手牌")
-        self.selectButton.setEnabled(False)
-        self.startButton.setEnabled(False)
-        self.stopButton.setEnabled(True)
+        self.statusLabel.setText("状态：正在扫描识别（0.1s 循环，识别到结果自动停止）")
+        self.panel.selectButton.setEnabled(False)
+        self.panel.selectManaButton.setEnabled(False)
+        self.panel.startButton.setEnabled(False)
+        self.panel.stopButton.setEnabled(True)
 
     def start_calculation(self):
         if self.latest_rebuild_result is None:
@@ -1417,9 +1448,9 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "提示", str(e))
             return
 
-        self.calcText.setPlainText("正在计算所有可行出牌路径...")
-        self.calculateButton.setEnabled(False)
-        self.cancelCalculationButton.setEnabled(True)
+        self.panel.calcText.setPlainText("正在计算所有可行出牌路径...")
+        self.panel.calculateButton.setEnabled(False)
+        self.panel.cancelCalculationButton.setEnabled(True)
 
         self.calc_worker = CalculationWorker(
             rebuild_result=self.latest_rebuild_result,
@@ -1447,28 +1478,28 @@ class MainWindow(QWidget):
         if self.calc_worker is None:
             return
 
-        self.calcText.append("\n正在中止计算，将展示并导出已经算出的全部结果...")
-        self.cancelCalculationButton.setEnabled(False)
+        self.panel.calcText.append("\n正在中止计算，将展示并导出已经算出的全部结果...")
+        self.panel.cancelCalculationButton.setEnabled(False)
         self.calc_worker.requestInterruption()
 
     def on_calculation_progress(self, text):
         self.statusLabel.setText("状态：" + text)
 
     def on_calculation_partial(self, text):
-        self.calcText.setPlainText(text)
+        self.panel.calcText.setPlainText(text)
 
     def on_calculation_finished(self, text):
-        self.calcText.setPlainText(text)
+        self.panel.calcText.setPlainText(text)
         self.statusLabel.setText("状态：计算完成，完整路径文档已生成")
 
     def on_calculation_error(self, msg):
-        self.calcText.setPlainText(msg)
+        self.panel.calcText.setPlainText(msg)
         self.statusLabel.setText("状态：计算失败")
 
     def on_calculation_thread_finished(self):
         self.calc_worker = None
-        self.calculateButton.setEnabled(self.latest_rebuild_result is not None)
-        self.cancelCalculationButton.setEnabled(False)
+        self.panel.calculateButton.setEnabled(self.latest_rebuild_result is not None)
+        self.panel.cancelCalculationButton.setEnabled(False)
 
     def stop_ocr(self):
         if self.worker is None:
@@ -1477,11 +1508,13 @@ class MainWindow(QWidget):
         self.worker.stop()
         self.worker.wait()
         self.worker = None
+        self._auto_stop = False
 
         self.statusLabel.setText("状态：已停止识别，可重新框选区域")
-        self.selectButton.setEnabled(True)
-        self.startButton.setEnabled(self.box is not None)
-        self.stopButton.setEnabled(False)
+        self.panel.selectButton.setEnabled(True)
+        self.panel.selectManaButton.setEnabled(True)
+        self.panel.startButton.setEnabled(self.box is not None and self.mana_box is not None)
+        self.panel.stopButton.setEnabled(False)
 
     def on_ocr_error(self, msg):
         self.statusLabel.setText(msg)
@@ -1492,6 +1525,8 @@ class MainWindow(QWidget):
             self.calc_worker.requestInterruption()
             self.calc_worker.wait()
         self.overlay.close()
+        if getattr(self, "panel", None) is not None:
+            self.panel.close()
         event.accept()
 
 
@@ -1499,4 +1534,5 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     gui = MainWindow()
     gui.show()
+    gui.panel.show()
     sys.exit(app.exec_())
