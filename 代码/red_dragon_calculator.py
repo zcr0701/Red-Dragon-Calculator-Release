@@ -103,6 +103,7 @@ class GameState:
     cards_played_this_turn: int = 0
     next_spell_discount: int = 0
     next_combo_discount: int = 0
+    next_combo_twice: bool = False
     next_card_discount: int = 0
     next_two_cards_discount: int = 0
     next_two_cards_discount_count: int = 0
@@ -134,6 +135,7 @@ class GameState:
             cards_played_this_turn=self.cards_played_this_turn,
             next_spell_discount=self.next_spell_discount,
             next_combo_discount=self.next_combo_discount,
+            next_combo_twice=self.next_combo_twice,
             next_card_discount=self.next_card_discount,
             next_two_cards_discount=self.next_two_cards_discount,
             next_two_cards_discount_count=self.next_two_cards_discount_count,
@@ -552,6 +554,20 @@ CARD_DATABASE: Dict[str, CardDef] = {
         tags=["battlecry"],
         health=4
     ),
+    "幸运彗星": CardDef(
+        name="幸运彗星",
+        cost=1,
+        card_type="spell",
+        description="发现一张连击随从牌。你使用的下一张连击随从牌的连击会触发两次。",
+        effect_id="lucky_comet"
+    ),
+    "战略转移": CardDef(
+        name="战略转移",
+        cost=3,
+        card_type="spell",
+        description="将所有友方随从移回你的手牌。",
+        effect_id="strategic_transfer"
+    ),
 }
 
 
@@ -572,6 +588,8 @@ CORE_CARD_NAMES = {
     "暗影步",
     "舞动全场（ft.迦罗娜）",
     "幻觉药水",
+    "战略转移",
+    "幸运彗星",
     "锯齿骨刺",
     "殒命暗影",
     "赤烟·腾武",
@@ -1153,8 +1171,10 @@ def effect_foxy_fraud(state: GameState, **kwargs):
 
 def effect_scabbs(state: GameState, **kwargs):
     if combo_active(state):
-        state.active_card_discounts.append((2, 2))
-        state.add_log("本回合下两张牌减2费")
+        stacks = 4 if state.next_combo_twice else 2
+        state.active_card_discounts.append((stacks, 2))
+        state.next_combo_twice = False
+        state.add_log("本回合下两张牌减2费" if stacks == 2 else "本回合下四张牌减2费（连击两次）")
 
 
 def effect_swindle(state: GameState, **kwargs):
@@ -1283,6 +1303,86 @@ def effect_breakdance(state: GameState, **kwargs):
         add_to_hand(state, minion)
 
 
+def effect_lucky_comet(state: GameState, **kwargs):
+    """幸运彗星：发现一张连击随从牌；下一张连击随从牌的连击触发两次。"""
+    state.next_combo_twice = True
+    combo_index = next(
+        (
+            index
+            for index, card in enumerate(state.deck_zone.cards)
+            if card.card_type == "minion" and "combo" in card.tags
+        ),
+        None,
+    )
+
+    if combo_index is not None:
+        card = state.deck_zone.remove_at(combo_index)
+        add_to_hand(state, card)
+        state.add_log(f"幸运彗星发现连击随从：{card.name}")
+    elif state.deck_zone:
+        state.add_log("牌库中没有连击随从")
+    else:
+        # 牌库未知/为空：补一张本牌组核心连击随从（刀油）
+        add_to_hand(state, make_card("斯卡布斯·刀油"))
+        state.add_log("幸运彗星补发连击随从：斯卡布斯·刀油")
+
+
+def effect_strategic_transfer(state: GameState, **kwargs):
+    """战略转移：将所有友方随从移回你的手牌（保持原费用状态）。"""
+    returning = ordered_breakdance_returning(state.board_zone.cards[:])
+    state.board_zone.cards.clear()
+
+    for minion in returning:
+        add_to_hand(state, minion)
+
+
+def lucky_comet_search_branches(state: GameState) -> List[GameState]:
+    """幸运彗星的搜索分支：设置连击两次 + 从牌库发现连击随从（无则补刀油）。"""
+    combo_indexes = [
+        index
+        for index, card in enumerate(state.deck_zone.cards)
+        if card.card_type == "minion" and "combo" in card.tags
+    ]
+
+    if combo_indexes:
+        branches = []
+
+        for index in combo_indexes[:3]:
+            new_state = state.clone()
+            card = new_state.deck_zone.remove_at(index)
+            add_card_to_hand_or_burn(new_state, card)
+            new_state.next_combo_twice = True
+            branches.append(new_state)
+
+        return branches
+
+    new_state = state.clone()
+    add_card_to_hand_or_burn(new_state, make_card("斯卡布斯·刀油"))
+    new_state.next_combo_twice = True
+    return [new_state]
+
+
+def strategic_transfer_search_branches(state: GameState) -> List[GameState]:
+    """战略转移：全场友方随从回手（保持费用状态），手牌满则按进场顺序烧牌。"""
+    new_state = state.clone()
+    returning = new_state.board_zone.cards[:]
+    new_state.board_zone.cards.clear()
+    free_slots = max(0, MAX_HAND_SIZE - len(new_state.hand_zone.cards))
+
+    if len(returning) <= free_slots:
+        for minion in ordered_breakdance_returning(returning):
+            add_card_to_hand_or_burn(new_state, minion)
+    else:
+        kept = ordered_breakdance_returning(returning[:free_slots])
+
+        for minion in kept:
+            add_card_to_hand_or_burn(new_state, minion)
+
+        new_state.burned_cards += len(returning) - free_slots
+
+    return [new_state]
+
+
 def breakdance_search_branches(state: GameState) -> List[GameState]:
     returning = state.board_zone.cards[:]
     free_slots = max(0, MAX_HAND_SIZE - len(state.hand_zone.cards))
@@ -1377,6 +1477,8 @@ EFFECT_HANDLERS: Dict[str, Callable] = {
     "elite_tauren_champion": effect_etc,
     "potion_of_illusion": effect_potion_of_illusion,
     "breakdance": effect_breakdance,
+    "lucky_comet": effect_lucky_comet,
+    "strategic_transfer": effect_strategic_transfer,
     "alexstrasza": effect_alexstrasza,
     "dubious_purchase": effect_dubious_purchase,
     "shadowcaster": effect_shadowcaster,
@@ -1721,9 +1823,19 @@ def apply_search_effect(
                 new_state = current.clone()
 
                 if combo_active(new_state):
-                    new_state.active_card_discounts.append((2, 2))
+                    stacks = 2
+
+                    if new_state.next_combo_twice:
+                        stacks = 4  # 幸运彗星：下一张连击随从的连击触发两次
+
+                    new_state.active_card_discounts.append((stacks, 2))
+                    new_state.next_combo_twice = False
 
                 next_states.append(new_state)
+            elif effect_id == "lucky_comet":
+                next_states.extend(lucky_comet_search_branches(current))
+            elif effect_id == "strategic_transfer":
+                next_states.extend(strategic_transfer_search_branches(current))
             elif effect_id == "shadowstep":
                 new_state = current.clone()
 
@@ -1920,6 +2032,7 @@ def state_signature(state: GameState) -> Tuple:
         state.cards_played_this_turn,
         state.next_spell_discount,
         state.next_combo_discount,
+        state.next_combo_twice,
         state.next_card_discount,
         state.next_two_cards_discount,
         state.next_two_cards_discount_count,

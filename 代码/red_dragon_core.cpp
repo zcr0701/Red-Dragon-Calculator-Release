@@ -85,6 +85,8 @@ static const unordered_map<string, CardDef> DB = {
     {"晦鳞巢母", {3, "minion", "candlebreath_mother", true, false, false, 3}},
     {"舞动全场（ft.迦罗娜）", {3, "spell", "breakdance", false, false, false, -1}},
     {"幻觉药水", {4, "spell", "potion_of_illusion", false, false, false, -1}},
+    {"幸运彗星", {1, "spell", "lucky_comet", false, false, false, -1}},
+    {"战略转移", {3, "spell", "strategic_transfer", false, false, false, -1}},
     {"乐队经理精英牛头人酋长", {4, "minion", "elite_tauren_champion", true, false, false, 4}},
     {"可疑交易", {4, "spell", "dubious_purchase", false, true, false, -1}},
     {"鲨鱼之灵", {4, "minion", "spirit_of_the_shark", false, false, false, 3}},
@@ -139,6 +141,7 @@ struct State {
     int cards_played_this_turn = 0;
     int next_spell = 0;
     int next_combo = 0;
+    bool next_combo_twice = false;
     int next_card = 0;
     int next_two_cards = 0;
     int next_two_cards_count = 0;
@@ -353,7 +356,46 @@ static vector<State> apply_search_effect(const State& base, const Card& card,
                 next_states.push_back(ns);
             } else if (e == "scabbs_cutterbutter") {
                 State ns = current.clone();
-                if (ns.cards_played_this_turn > 0) ns.oil_stacks.push_back({2, 2});
+                if (ns.cards_played_this_turn > 0) {
+                    int stacks = ns.next_combo_twice ? 4 : 2;  // 幸运彗星：连击触发两次
+                    ns.oil_stacks.push_back({stacks, 2});
+                    ns.next_combo_twice = false;
+                }
+                next_states.push_back(ns);
+            } else if (e == "lucky_comet") {
+                // 幸运彗星：发现一张连击随从（牌库分支），设置下一张连击随从连击两次
+                vector<int> combo_indexes;
+                for (int i = 0; i < (int)current.deck.size(); i++) {
+                    if (current.deck[i].card_type == "minion" && current.deck[i].combo)
+                        combo_indexes.push_back(i);
+                }
+                if (!combo_indexes.empty()) {
+                    for (size_t k = 0; k < combo_indexes.size() && k < 3; k++) {
+                        State ns = current.clone();
+                        Card card = ns.deck[combo_indexes[k]];
+                        ns.deck.erase(ns.deck.begin() + combo_indexes[k]);
+                        add_card_to_hand_or_burn(ns, card);
+                        ns.next_combo_twice = true;
+                        next_states.push_back(ns);
+                    }
+                } else {
+                    State ns = current.clone();
+                    add_card_to_hand_or_burn(ns, make_card("斯卡布斯·刀油"));
+                    ns.next_combo_twice = true;
+                    next_states.push_back(ns);
+                }
+            } else if (e == "strategic_transfer") {
+                // 战略转移：所有友方随从移回手牌（保持费用状态），手牌满按进场顺序烧
+                State ns = current.clone();
+                vector<Card> returning = ns.board;
+                ns.board.clear();
+                int free_slots = std::max(0, MAX_HAND - (int)ns.hand.size());
+                if ((int)returning.size() <= free_slots) {
+                    for (Card& m : returning) add_card_to_hand_or_burn(ns, m);
+                } else {
+                    for (int i = 0; i < free_slots; i++) add_card_to_hand_or_burn(ns, returning[i]);
+                    ns.burned_cards += (int)returning.size() - free_slots;
+                }
                 next_states.push_back(ns);
             } else if (e == "shadowstep") {
                 State ns = current.clone();
@@ -646,6 +688,7 @@ static string state_key_for_dedup(const State& s) {
     key += "|" + std::to_string(s.cards_played_this_turn);
     key += "|" + std::to_string(s.next_spell);
     key += "|" + std::to_string(s.next_combo);
+    key += "|" + std::to_string(s.next_combo_twice ? 1 : 0);
     key += "|" + std::to_string(s.next_card);
     key += "|" + std::to_string(s.next_two_cards);
     key += "|" + std::to_string(s.next_two_cards_count);
