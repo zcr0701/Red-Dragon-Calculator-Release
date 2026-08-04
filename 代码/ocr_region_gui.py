@@ -836,7 +836,7 @@ class QuickPanel(ScreenClampMixin, QDialog):
     QLabel{
         background:white;
         color:#333;
-        font-size:14px;
+        font-size:13px;
         font-family:微软雅黑;
         border:1px solid #ddd;
         border-radius:8px;
@@ -847,7 +847,7 @@ class QuickPanel(ScreenClampMixin, QDialog):
     QPushButton{
         background:#f0f0f0;
         color:#333;
-        font-size:16px;
+        font-size:15px;
         font-family:微软雅黑;
         border:1px solid #ccc;
         border-radius:6px;
@@ -1044,14 +1044,14 @@ class QuickPanel(ScreenClampMixin, QDialog):
 
         # ---- 计算进度小字 ----
         self.progressLabel = QLabel("")
-        self.progressLabel.setStyleSheet("font-size:13px;color:#666;padding:2px 4px;")
+        self.progressLabel.setStyleSheet("font-size:12px;color:#666;padding:2px 4px;")
 
         # ---- 三个结果框（自动适应内容高度，保证刚好能看完全） ----
         result_style = """
         QTextEdit{
             color:#333;
             background:white;
-            font-size:17px;
+            font-size:14px;
             font-family:微软雅黑;
             padding:6px;
             border:1px solid #ddd;
@@ -1266,7 +1266,7 @@ class MainWindow(ScreenClampMixin, QWidget):
 
         beam_row = QHBoxLayout()
         self.beamModeCheck = QCheckBox("beam模式")
-        self.beamModeCheck.setToolTip("beam束搜索（默认勾选）。勾选后先双向链瞬间出结果，再跑束搜索枚举真实后继状态，可自行填束宽与算子深度。")
+        self.beamModeCheck.setToolTip("beam束搜索（默认关闭，计算时间长）。勾选后用束搜索直接枚举真实后继状态，可自行填束宽与算子深度。")
         beam_row.addWidget(self.beamModeCheck)
         self.beamWidthInput = QLineEdit("3000")
         self.beamWidthInput.setFixedWidth(60)
@@ -1280,8 +1280,6 @@ class MainWindow(ScreenClampMixin, QWidget):
         self.beamModeCheck.toggled.connect(self.beamWidthInput.setEnabled)
         self.beamModeCheck.toggled.connect(self.beamDepthInput.setEnabled)
         self.beamModeCheck.toggled.connect(self.maxPathsInput.setEnabled)
-        # 默认勾选 beam 模式（放在连接之后，确保束宽/深度/路径上限联动启用）
-        self.beamModeCheck.setChecked(True)
         beam_row.addWidget(QLabel("束宽："))
         beam_row.addWidget(self.beamWidthInput)
         beam_row.addWidget(QLabel("束深："))
