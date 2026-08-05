@@ -1,9 +1,12 @@
 import argparse
 import heapq
 import json
+import subprocess
+import threading
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 import archive
@@ -100,6 +103,7 @@ class GameState:
     cards_played_this_turn: int = 0
     next_spell_discount: int = 0
     next_combo_discount: int = 0
+    next_combo_twice: bool = False
     next_card_discount: int = 0
     next_two_cards_discount: int = 0
     next_two_cards_discount_count: int = 0
@@ -131,6 +135,7 @@ class GameState:
             cards_played_this_turn=self.cards_played_this_turn,
             next_spell_discount=self.next_spell_discount,
             next_combo_discount=self.next_combo_discount,
+            next_combo_twice=self.next_combo_twice,
             next_card_discount=self.next_card_discount,
             next_two_cards_discount=self.next_two_cards_discount,
             next_two_cards_discount_count=self.next_two_cards_discount_count,
@@ -549,6 +554,20 @@ CARD_DATABASE: Dict[str, CardDef] = {
         tags=["battlecry"],
         health=4
     ),
+    "幸运彗星": CardDef(
+        name="幸运彗星",
+        cost=2,
+        card_type="spell",
+        description="发现一张连击随从牌。你使用的下一张连击随从牌的连击会触发两次。",
+        effect_id="lucky_comet"
+    ),
+    "战略转移": CardDef(
+        name="战略转移",
+        cost=1,
+        card_type="spell",
+        description="将所有友方随从移回你的手牌。",
+        effect_id="strategic_transfer"
+    ),
 }
 
 
@@ -569,6 +588,8 @@ CORE_CARD_NAMES = {
     "暗影步",
     "舞动全场（ft.迦罗娜）",
     "幻觉药水",
+    "战略转移",
+    "幸运彗星",
     "锯齿骨刺",
     "殒命暗影",
     "赤烟·腾武",
@@ -654,7 +675,15 @@ def make_card_from_rebuild_entry(card_entry) -> Optional[CardInstance]:
     name = getattr(card_entry, "name", "")
 
     if name not in CARD_DATABASE:
-        return None
+        # 未写入数据的牌视作杂牌：保留在手牌里占位，不可打出，不影响搜索
+        return CardInstance(
+            name="杂牌",
+            cost=None,
+            original_name=name or "未知",
+            card_type="unknown",
+            description="",
+            effect_id="unknown",
+        )
 
     card = make_card(
         name=name,
@@ -1142,8 +1171,10 @@ def effect_foxy_fraud(state: GameState, **kwargs):
 
 def effect_scabbs(state: GameState, **kwargs):
     if combo_active(state):
-        state.active_card_discounts.append((2, 2))
-        state.add_log("本回合下两张牌减2费")
+        stacks = 4 if state.next_combo_twice else 2
+        state.active_card_discounts.append((stacks, 2))
+        state.next_combo_twice = False
+        state.add_log("本回合下两张牌减2费" if stacks == 2 else "本回合下四张牌减2费（连击两次）")
 
 
 def effect_swindle(state: GameState, **kwargs):
@@ -1272,6 +1303,86 @@ def effect_breakdance(state: GameState, **kwargs):
         add_to_hand(state, minion)
 
 
+def effect_lucky_comet(state: GameState, **kwargs):
+    """幸运彗星：发现一张连击随从牌；下一张连击随从牌的连击触发两次。"""
+    state.next_combo_twice = True
+    combo_index = next(
+        (
+            index
+            for index, card in enumerate(state.deck_zone.cards)
+            if card.card_type == "minion" and "combo" in card.tags
+        ),
+        None,
+    )
+
+    if combo_index is not None:
+        card = state.deck_zone.remove_at(combo_index)
+        add_to_hand(state, card)
+        state.add_log(f"幸运彗星发现连击随从：{card.name}")
+    elif state.deck_zone:
+        state.add_log("牌库中没有连击随从")
+    else:
+        # 牌库未知/为空：补一张本牌组核心连击随从（刀油）
+        add_to_hand(state, make_card("斯卡布斯·刀油"))
+        state.add_log("幸运彗星补发连击随从：斯卡布斯·刀油")
+
+
+def effect_strategic_transfer(state: GameState, **kwargs):
+    """战略转移：将所有友方随从移回你的手牌（保持原费用状态）。"""
+    returning = ordered_breakdance_returning(state.board_zone.cards[:])
+    state.board_zone.cards.clear()
+
+    for minion in returning:
+        add_to_hand(state, minion)
+
+
+def lucky_comet_search_branches(state: GameState) -> List[GameState]:
+    """幸运彗星的搜索分支：设置连击两次 + 从牌库发现连击随从（无则补刀油）。"""
+    combo_indexes = [
+        index
+        for index, card in enumerate(state.deck_zone.cards)
+        if card.card_type == "minion" and "combo" in card.tags
+    ]
+
+    if combo_indexes:
+        branches = []
+
+        for index in combo_indexes[:3]:
+            new_state = state.clone()
+            card = new_state.deck_zone.remove_at(index)
+            add_card_to_hand_or_burn(new_state, card)
+            new_state.next_combo_twice = True
+            branches.append(new_state)
+
+        return branches
+
+    new_state = state.clone()
+    add_card_to_hand_or_burn(new_state, make_card("斯卡布斯·刀油"))
+    new_state.next_combo_twice = True
+    return [new_state]
+
+
+def strategic_transfer_search_branches(state: GameState) -> List[GameState]:
+    """战略转移：全场友方随从回手（保持费用状态），手牌满则按进场顺序烧牌。"""
+    new_state = state.clone()
+    returning = new_state.board_zone.cards[:]
+    new_state.board_zone.cards.clear()
+    free_slots = max(0, MAX_HAND_SIZE - len(new_state.hand_zone.cards))
+
+    if len(returning) <= free_slots:
+        for minion in ordered_breakdance_returning(returning):
+            add_card_to_hand_or_burn(new_state, minion)
+    else:
+        kept = ordered_breakdance_returning(returning[:free_slots])
+
+        for minion in kept:
+            add_card_to_hand_or_burn(new_state, minion)
+
+        new_state.burned_cards += len(returning) - free_slots
+
+    return [new_state]
+
+
 def breakdance_search_branches(state: GameState) -> List[GameState]:
     returning = state.board_zone.cards[:]
     free_slots = max(0, MAX_HAND_SIZE - len(state.hand_zone.cards))
@@ -1366,6 +1477,8 @@ EFFECT_HANDLERS: Dict[str, Callable] = {
     "elite_tauren_champion": effect_etc,
     "potion_of_illusion": effect_potion_of_illusion,
     "breakdance": effect_breakdance,
+    "lucky_comet": effect_lucky_comet,
+    "strategic_transfer": effect_strategic_transfer,
     "alexstrasza": effect_alexstrasza,
     "dubious_purchase": effect_dubious_purchase,
     "shadowcaster": effect_shadowcaster,
@@ -1710,9 +1823,19 @@ def apply_search_effect(
                 new_state = current.clone()
 
                 if combo_active(new_state):
-                    new_state.active_card_discounts.append((2, 2))
+                    stacks = 2
+
+                    if new_state.next_combo_twice:
+                        stacks = 4  # 幸运彗星：下一张连击随从的连击触发两次
+
+                    new_state.active_card_discounts.append((stacks, 2))
+                    new_state.next_combo_twice = False
 
                 next_states.append(new_state)
+            elif effect_id == "lucky_comet":
+                next_states.extend(lucky_comet_search_branches(current))
+            elif effect_id == "strategic_transfer":
+                next_states.extend(strategic_transfer_search_branches(current))
             elif effect_id == "shadowstep":
                 new_state = current.clone()
 
@@ -1909,6 +2032,7 @@ def state_signature(state: GameState) -> Tuple:
         state.cards_played_this_turn,
         state.next_spell_discount,
         state.next_combo_discount,
+        state.next_combo_twice,
         state.next_card_discount,
         state.next_two_cards_discount,
         state.next_two_cards_discount_count,
@@ -5875,6 +5999,249 @@ def sort_path_states(states: List[GameState]) -> List[GameState]:
     )
 
 
+class CppBeamPath:
+    """C++ 核心返回的轻量路径对象，字段与 GameState 对齐，供 format_paths/存档/公式表使用。"""
+
+    __slots__ = (
+        "path", "alex_play_count", "alex_damage", "mana",
+        "initial_mana_crystals", "initial_mana",
+    )
+
+    def __init__(self, path, alex_play_count, alex_damage, mana,
+                 initial_mana_crystals, initial_mana):
+        self.path = path
+        self.alex_play_count = alex_play_count
+        self.alex_damage = alex_damage
+        self.mana = mana
+        self.initial_mana_crystals = initial_mana_crystals
+        self.initial_mana = initial_mana
+
+
+def find_cpp_core(exe_path: Optional[str] = None) -> Optional[str]:
+    """定位统一入口 C++ 核心 red_dragon_calculator.exe（其次 red_dragon_core.exe）。"""
+    if exe_path:
+        p = Path(exe_path)
+        if p.is_file():
+            return str(p)
+        return None
+
+    candidates = [
+        Path(__file__).resolve().parent / "red_dragon_calculator.exe",
+        Path(__file__).resolve().parent / "red_dragon_core.exe",
+        Path(__file__).resolve().parent.parent / "work" / "red_dragon_core.exe",
+    ]
+
+    for p in candidates:
+        if p.is_file():
+            return str(p)
+
+    return None
+
+
+def _cpp_search_payload(
+    initial_state: GameState,
+    min_alex_count: int,
+    max_alex_count: int,
+    max_paths: int,
+    max_depth: int,
+    beam_width: int,
+    mode: str,
+    forward_depth: int = 5,
+) -> Dict[str, object]:
+    return {
+        "crystals": initial_state.mana_crystals,
+        "mana": initial_state.mana,
+        "min_alex": min_alex_count,
+        "max_alex": max_alex_count,
+        "width": beam_width,
+        "depth": max_depth,
+        "max_paths": max_paths,
+        "mode": mode,
+        "forward_depth": forward_depth,
+        "deck_is_known": initial_state.deck_is_known,
+        "deck": [{"name": c.name} for c in initial_state.deck],
+        "hand": [
+            {
+                "name": c.name,
+                "temp_cost": c.current_cost() if c.current_cost() is not None else -1,
+                "locked": bool(getattr(c, "locked_one_cost", False)),
+                "deadly": bool(getattr(c, "is_deadly_shadow", False)),
+            }
+            for c in initial_state.hand
+        ],
+        "board": [
+            {
+                "name": c.name,
+                "health": c.health if c.health is not None else -1,
+                "temp_cost": c.current_cost() if c.current_cost() is not None else -1,
+            }
+            for c in initial_state.board
+        ],
+        "secrets": [{"name": c.name} for c in initial_state.secrets],
+        "weapon": {"name": initial_state.weapon.name} if initial_state.weapon else None,
+        "etc_band": list(initial_state.etc_band_remaining),
+    }
+
+
+def _run_cpp_search(
+    exe: str,
+    payload: Dict[str, object],
+    initial_state: GameState,
+    min_alex_count: int,
+    progress_callback: Optional[Callable[[int, int, int], None]] = None,
+    found_callback: Optional[Callable[[int, int], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> Tuple[List[CppBeamPath], Dict[str, object]]:
+    proc = subprocess.Popen(
+        [exe, "--json"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    stdout_chunks: List[str] = []
+
+    def feed_stdin():
+        try:
+            proc.stdin.write(json.dumps(payload, ensure_ascii=False))
+            proc.stdin.flush()
+            proc.stdin.close()
+        except Exception:
+            pass
+
+    threading.Thread(target=feed_stdin, daemon=True).start()
+
+    def drain_stdout():
+        try:
+            for chunk in proc.stdout:
+                stdout_chunks.append(chunk)
+        except Exception:
+            pass
+
+    stdout_thread = threading.Thread(target=drain_stdout, daemon=True)
+    stdout_thread.start()
+
+    def drain_stderr():
+        for raw in proc.stderr:
+            line = raw.strip()
+
+            if line.startswith("PROGRESS "):
+                parts = line.split()
+
+                if len(parts) == 4 and progress_callback is not None:
+                    progress_callback(int(parts[1]), int(parts[2]), int(parts[3]))
+            elif line.startswith("FOUND "):
+                parts = line.split()
+
+                if len(parts) == 3 and found_callback is not None:
+                    count = int(parts[1])
+
+                    if count >= max(1, min_alex_count):
+                        found_callback(count, int(parts[2]))
+
+    reader = threading.Thread(target=drain_stderr, daemon=True)
+    reader.start()
+
+    while proc.poll() is None:
+        if should_stop is not None and should_stop():
+            proc.kill()
+            proc.wait()
+            raise InterruptedError("计算已中止（用户中断）")
+        time.sleep(0.05)
+
+    reader.join(timeout=2.0)
+    stdout_thread.join(timeout=3.0)
+    stdout_text = "".join(stdout_chunks)
+    data = json.loads(stdout_text)
+    results: List[CppBeamPath] = []
+
+    for item in data.get("results", []):
+        results.append(
+            CppBeamPath(
+                path=item["path"],
+                alex_play_count=item["dragons"],
+                alex_damage=item["damage"],
+                mana=item["mana"],
+                initial_mana_crystals=initial_state.initial_mana_crystals,
+                initial_mana=initial_state.initial_mana,
+            )
+        )
+
+    stats_out: Dict[str, object] = {}
+
+    for key, value in (data.get("stats") or {}).items():
+        if isinstance(value, bool):
+            stats_out[key] = "是" if value else "否"
+        elif isinstance(value, (int, float)):
+            stats_out[key] = int(value)
+        else:
+            stats_out[key] = str(value)
+
+    return results, stats_out
+
+
+def cpp_beam_search_paths(
+    initial_state: GameState,
+    max_depth: int = 100,
+    max_paths: int = 1000000,
+    max_alex_count: int = 10,
+    min_alex_count: int = 1,
+    beam_width: int = 3000,
+    exe_path: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int, int], None]] = None,
+    found_callback: Optional[Callable[[int, int], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> List[CppBeamPath]:
+    """调用 C++ 束搜索核心（规则与 beam_search_paths 逐条对齐），返回轻量路径对象。"""
+    exe = find_cpp_core(exe_path)
+
+    if exe is None:
+        raise FileNotFoundError("未找到 C++ 计算核心，请先编译 代码/red_dragon_core.cpp")
+
+    payload = _cpp_search_payload(
+        initial_state, min_alex_count, max_alex_count, max_paths,
+        max_depth, beam_width, mode="beam",
+    )
+    results, _stats = _run_cpp_search(
+        exe, payload, initial_state, min_alex_count,
+        progress_callback=progress_callback,
+        found_callback=found_callback,
+        should_stop=should_stop,
+    )
+    return results
+
+
+def cpp_symbolic_prove_paths(
+    initial_state: GameState,
+    max_depth: int = 100,
+    max_paths: int = 1000000,
+    max_alex_count: int = 10,
+    min_alex_count: int = 1,
+    forward_depth: int = 5,
+    exe_path: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int, int], None]] = None,
+    found_callback: Optional[Callable[[int, int], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> Tuple[List[CppBeamPath], Dict[str, object]]:
+    """调用 C++ 双向符号链证明核心（符号链 + 子链/引理 + 离散骨架）。"""
+    exe = find_cpp_core(exe_path)
+
+    if exe is None:
+        raise FileNotFoundError("未找到 C++ 计算核心，请先编译 代码/red_dragon_core.cpp")
+
+    payload = _cpp_search_payload(
+        initial_state, min_alex_count, max_alex_count, max_paths,
+        max_depth, 3000, mode="symbolic", forward_depth=forward_depth,
+    )
+    return _run_cpp_search(
+        exe, payload, initial_state, min_alex_count,
+        progress_callback=progress_callback,
+        found_callback=found_callback,
+        should_stop=should_stop,
+    )
+
+
 def compress_path_steps(path: List[str], max_chunk_size: int = 10) -> List[str]:
     compressed: List[str] = []
     index = 0
@@ -6021,12 +6388,9 @@ def state_from_rebuild_result(
             if card is None:
                 continue
 
+            # 随从栏只装随从，不再识别武器/奥秘
             if card.card_type == "minion" and len(board_cards) < MAX_BOARD_SIZE:
                 board_cards.append(card)
-            elif card.card_type == "secret" and len(secret_cards) < MAX_SECRET_SIZE:
-                secret_cards.append(card)
-            elif card.card_type == "weapon":
-                weapon_card = card
 
     merged_shadow_indexes = list(deadly_shadow_hand_indexes or [])
 
@@ -6120,6 +6484,8 @@ def main() -> int:
     parser.add_argument("--show-limit", type=int, default=200)
     parser.add_argument("--json", action="store_true", help="输出 JSON")
     parser.add_argument("--sync-archive", action="store_true", help="把局面存档提交并推送到云端（GitHub 仓库）")
+    parser.add_argument("--from-log", action="store_true", help="从最新 Power.log 对局快照构建局面（替代 --hand/--deck/--mana）")
+    parser.add_argument("--log-game-dir", default=None, help="配合 --from-log：炉石安装目录（含 Logs 子目录）")
 
     args = parser.parse_args()
 
@@ -6127,13 +6493,34 @@ def main() -> int:
         print(archive.sync_archive_to_cloud())
         return 0
 
-    parsed_deck_names = parse_names(args.deck)
-    state = create_state(
-        deck_names=parsed_deck_names if args.deck.strip() else None,
-        hand_names=parse_names(args.hand),
-        mana_crystals=args.mana_crystals,
-        mana=args.mana
-    )
+    if args.from_log:
+        from powerlog_reader import LogWatcher, snapshot_to_rebuild_result
+
+        watcher = LogWatcher(game_dir=args.log_game_dir)
+        snap = watcher.snapshot()
+
+        if not snap.get("in_game"):
+            print(json.dumps(snap, ensure_ascii=False, indent=2))
+            print("未检测到进行中的对局，无法从日志构建局面。")
+            return 1
+
+        rebuild = snapshot_to_rebuild_result(snap)
+        mana_crystals = snap.get("crystals")
+        mana = snap.get("mana")
+        state = state_from_rebuild_result(
+            result=rebuild,
+            mana_crystals=mana_crystals if mana_crystals is not None else args.mana_crystals,
+            mana=mana if mana is not None else (args.mana if args.mana is not None else args.mana_crystals),
+            deadly_shadow_hand_indexes=rebuild.deadly_shadow_hand_indexes,
+        )
+    else:
+        parsed_deck_names = parse_names(args.deck)
+        state = create_state(
+            deck_names=parsed_deck_names if args.deck.strip() else None,
+            hand_names=parse_names(args.hand),
+            mana_crystals=args.mana_crystals,
+            mana=args.mana
+        )
 
     for card_name in args.play:
         play_card_by_name(state, card_name)

@@ -1,5 +1,6 @@
 import ctypes
 import ctypes.wintypes
+import json
 import re
 import sys
 import time
@@ -13,12 +14,15 @@ from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
     QLineEdit,
+    QScrollArea,
+    QSizePolicy,
     QSplitter,
     QTextEdit,
     QVBoxLayout,
@@ -26,6 +30,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ocr_interface import OCRInterface
+from powerlog_reader import LogWatcher, snapshot_to_rebuild_result
 from rebuild_hand import (
     CARD_COSTS,
     format_result,
@@ -36,8 +41,12 @@ from rebuild_hand import (
 from red_dragon_calculator import (
     ETC_BAND,
     beam_search_paths,
+    cpp_beam_search_paths,
+    cpp_symbolic_prove_paths,
     enumerate_play_paths,
+    find_cpp_core,
     format_paths,
+    make_card,
     state_from_rebuild_result,
 )
 from archive import (
@@ -157,7 +166,80 @@ class ScreenClampMixin:
         return super().nativeEvent(eventType, message)
 
 
-SECTION_NAME_RE = re.compile(r"^\s*(当前效果|牌库中|手牌中|战场|其他)\s*[（(]?\s*\d*\s*[）)]?\s*$")
+ABBREV_NAMES = {
+    "狐人老千": "狐",
+    "鲨鱼之灵": "鱼",
+    "斯卡布斯·刀油": "刀",
+    "暗影施法者": "暗",
+    "乐队经理精英牛头人酋长": "牛",
+    "晦鳞巢母": "晦",
+    "舞动全场（ft.迦罗娜）": "舞",
+    "生命的缚誓者阿莱克丝塔萨": "龙",
+    "幻觉药水": "药",
+    "战略转移": "转",
+    "幸运彗星": "慧",
+    "幸运币": "币",
+    "伪造的幸运币": "币",
+    "锯齿骨刺": "骨",
+    "伺机待发": "伺",
+    "暗影步": "步",
+}
+
+
+def _abbrev_name(name: str) -> str:
+    return ABBREV_NAMES.get(name.strip(), "杂")
+
+
+def abbreviate_step(step: str) -> str:
+    """把一步路径缩写，如 暗影施法者(斯卡布斯·刀油) -> 暗(刀)；牛头人（舞动->红龙）-> 牛(舞->龙)。"""
+    text = step
+    deadly = ""
+
+    if "[殒命暗影]" in text:
+        deadly = "[殒]"
+        text = text.replace("[殒命暗影]", "")
+
+    base = None
+    rest = text
+
+    for name in sorted(ABBREV_NAMES, key=len, reverse=True):
+        if text.startswith(name):
+            base = name
+            rest = text[len(name):]
+            break
+
+    if base is None:
+        return "杂" + deadly
+
+    choices = ""
+    left = rest.find("（")
+    right = rest.rfind("）")
+
+    if left != -1 and right > left:
+        inner = rest[left + 1:right]
+        parts = [part.strip() for part in inner.split("->")]
+
+        if len(parts) > 1:
+            choices = "(" + "->".join(_abbrev_name(part) for part in parts) + ")"
+        else:
+            choices = "(" + _abbrev_name(parts[0]) + ")"
+
+        rest = rest[:left] + rest[right + 1:]
+
+    target = ""
+    match = re.search(r"\((.+?)\)", rest)
+
+    if match:
+        target = "(" + _abbrev_name(match.group(1)) + ")"
+
+    return ABBREV_NAMES[base] + target + choices + deadly
+
+
+def abbreviate_path(steps) -> str:
+    return "".join(abbreviate_step(step) for step in steps)
+
+
+SECTION_NAME_RE = re.compile(r"^\s*(当前效果|牌库中|手牌中|战场|随从|其他)\s*[（(]?\s*\d*\s*[）)]?\s*$")
 COST_ONLY_RE = re.compile(r"^\s*(\d+)\s*费?\s*$")
 COMMA_ZONE_RE = re.compile(r"^\s*(\d+)\s*[,，、]\s*(\d+)\s*血?\s*(.+)$")
 STAR_ONLY_RE = re.compile(r"^[*★☆＊]+\s*$")
@@ -165,10 +247,11 @@ STAR_COST_RE = re.compile(r"^[*★☆＊]+\s*(.+)$")
 
 
 def parse_mana_ratio(text: str) -> Optional[Tuple[int, int]]:
-    """从第二个 OCR 框的文本里解析 水晶/法力，格式 A/B（A=水晶，B=法力）。
+    """从第二个 OCR 框的文本里解析 法力/水晶，格式 A/B（A=法力，B=水晶，即炉石的水晶图标 当前法力/水晶上限）。
 
     兼容 OCR 常见变形：全角数字、分隔符被识别成 / ／ ╱ | ｜ . · ： , 或空格、
     数字被拆成两行（“3\\n3”）、以及“水晶3 / 法力3”带关键词写法。
+    返回 (水晶, 法力)，供 OCRWorker 直接使用。
     取文本中最靠前且取值在合理区间（0~20）的一对数字。
     """
     if not text:
@@ -203,7 +286,8 @@ def parse_mana_ratio(text: str) -> Optional[Tuple[int, int]]:
 
     for pattern in patterns:
         for match in re.finditer(pattern, norm):
-            crystals, mana = int(match.group(1)), int(match.group(2))
+            # 左数=法力，右数=水晶（炉石水晶图标 当前法力/水晶上限）
+            mana, crystals = int(match.group(1)), int(match.group(2))
 
             if not (0 <= crystals <= 20 and 0 <= mana <= 20):
                 continue
@@ -437,6 +521,79 @@ class OCRWorker(QThread):
         self.running = False
 
 
+class LogReaderWorker(QThread):
+    """持续监听 Power.log（hslog 解析），对局状态变化时推送结果。"""
+
+    result_signal = pyqtSignal(str, str, object, object, object, str)
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, game_dir=None):
+        super().__init__()
+        self.watcher = LogWatcher(game_dir=game_dir)
+        self.running = True
+        self.last_key = None
+
+    def run(self):
+        while self.running:
+            try:
+                snap = self.watcher.snapshot()
+                key = (
+                    snap.get("log_path"),
+                    snap.get("in_game"),
+                    json.dumps(snap.get("hand", []), ensure_ascii=False),
+                    json.dumps(snap.get("board", []), ensure_ascii=False),
+                    snap.get("crystals"),
+                    snap.get("mana"),
+                )
+
+                if key != self.last_key:
+                    self.last_key = key
+                    rebuild = (
+                        snapshot_to_rebuild_result(snap)
+                        if snap.get("in_game")
+                        else None
+                    )
+                    hand_text = (
+                        format_result(rebuild)
+                        if rebuild is not None
+                        else "等待对局开始…"
+                    )
+
+                    if snap.get("in_game"):
+                        status = "对局进行中"
+                    elif snap.get("game_over"):
+                        status = "对局已结束"
+                    else:
+                        status = "等待对局开始"
+
+                    log_text = "\n".join(
+                        [
+                            f"对局状态：{status}",
+                            f"本机：{snap.get('player_name')} / 对手：{snap.get('opponent_name')}",
+                            f"水晶：{snap.get('crystals')} / 法力：{snap.get('mana')}",
+                            f"日志：{snap.get('log_path')}",
+                        ]
+                    )
+                    self.result_signal.emit(
+                        log_text,
+                        hand_text,
+                        rebuild,
+                        snap.get("crystals"),
+                        snap.get("mana"),
+                        "",
+                    )
+
+                time.sleep(1.0)
+            except Exception as e:
+                msg = f"日志读取错误: {e}"
+                print(msg)
+                self.error_signal.emit(msg)
+                time.sleep(1.0)
+
+    def stop(self):
+        self.running = False
+
+
 class CalculationWorker(QThread):
     progress_signal = pyqtSignal(str)
     partial_result_signal = pyqtSignal(str)
@@ -594,6 +751,7 @@ class CalculationWorker(QThread):
         logs_dir.mkdir(parents=True, exist_ok=True)
         output_path = logs_dir / f"red_dragon_all_paths_{timestamp}.txt"
         header = (
+            # 完整路径文档附带场面数据（手牌/战场/奥秘/武器/牛池/殒命）
             self.format_initial_state_note(state)
             + self.format_prune_stats(prune_stats)
             + stop_note
@@ -623,6 +781,65 @@ class CalculationWorker(QThread):
             f" | 龙数：{item.alex_play_count} | 伤害：{item.alex_damage}点"
             f" | 剩余法力：{item.mana}"
         )
+
+    def format_situation_note(self, state) -> str:
+        """返回场面/状态数据（手牌/战场/奥秘/武器/牛池/殒命/当前效果），不含参数行。"""
+        full = self.format_initial_state_note(state)
+        lines = full.splitlines()
+        return "\n".join(lines[1:]) if lines else ""
+
+    def _record_beam_improvement(self, state, bidir_states, beam_states):
+        """beam 束搜索结果比双向链更好时，记录到本地并附上场面数据。"""
+        try:
+            bidir_best = max(bidir_states, key=lambda item: item.alex_damage, default=None)
+            beam_best = max(beam_states, key=lambda item: item.alex_damage, default=None)
+
+            if beam_best is None or beam_best.alex_damage <= (bidir_best.alex_damage if bidir_best else 0):
+                return
+
+            def card_text(card):
+                cost = card.current_cost()
+                return f"{card.name}[{'*' if cost is None else cost}费]"
+
+            entry = {
+                "时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "水晶": state.mana_crystals,
+                "法力": state.mana,
+                "手牌": [card_text(card) for card in state.hand],
+                "战场": [card_text(card) for card in state.board],
+                "奥秘": [card_text(card) for card in state.secrets],
+                "武器": card_text(state.weapon) if state.weapon else None,
+                "牛池": list(state.etc_band_remaining),
+                "殒命暗影": [card_text(card) for card in state.hand if card.is_deadly_shadow],
+                "双向链最高": (
+                    {"伤害": bidir_best.alex_damage, "龙数": bidir_best.alex_play_count,
+                     "路径": list(bidir_best.path)}
+                    if bidir_best else None
+                ),
+                "beam最高": (
+                    {"伤害": beam_best.alex_damage, "龙数": beam_best.alex_play_count,
+                     "路径": list(beam_best.path)}
+                ),
+            }
+            logs_dir = Path(__file__).resolve().parent / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            record_path = logs_dir / "beam_improvements.json"
+            records = []
+
+            if record_path.exists():
+                try:
+                    loaded = json.loads(record_path.read_text(encoding="utf-8"))
+                    records = loaded if isinstance(loaded, list) else []
+                except Exception:
+                    records = []
+
+            records.append(entry)
+            record_path.write_text(
+                json.dumps(records, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
     def run(self):
         try:
@@ -657,6 +874,14 @@ class CalculationWorker(QThread):
                 )
 
             def on_found(found_states, target_alex_count):
+                if isinstance(found_states, int):
+                    # C++ 核心实时回调：(龙数, 当前最高伤害)
+                    self.partial_result_signal.emit(
+                        self.params_line()
+                        + f"\n\n已即时发现 {found_states} 龙路径（当前最高伤害 {target_alex_count} 点），仍在计算；可点击“中止计算”立即导出当前全部结果。\n\n"
+                    )
+                    return
+
                 self.partial_result_signal.emit(
                     self.params_line()
                     + f"\n\n已即时发现 {len(found_states)} 条 {target_alex_count} 龙路径，仍在继续计算；可点击“中止计算”立即导出当前全部结果。\n\n"
@@ -665,21 +890,36 @@ class CalculationWorker(QThread):
 
             prune_stats = {}
             search_started = time.time()
+            cpp_exe = find_cpp_core()
             if self.beam_mode:
                 # beam 模式先跑双向链瞬间出结果，再跑 beam 束搜索
-                bidir_states = enumerate_play_paths(
-                    initial_state=state,
-                    max_depth=self.max_depth,
-                    max_paths=self.max_paths,
-                    max_alex_count=self.max_alex_count,
-                    min_alex_count=self.min_alex_count,
-                    progress_callback=None,
-                    found_callback=None,
-                    prune_stats={},
-                    should_stop=self.isInterruptionRequested,
-                    forward_mining=False,
-                    forward_depth=self.operator_depth,
-                )
+                if cpp_exe is not None:
+                    bidir_states, _bidir_stats = cpp_symbolic_prove_paths(
+                        initial_state=state,
+                        max_depth=self.max_depth,
+                        max_paths=self.max_paths,
+                        max_alex_count=self.max_alex_count,
+                        min_alex_count=self.min_alex_count,
+                        forward_depth=self.operator_depth,
+                        exe_path=cpp_exe,
+                        progress_callback=on_progress,
+                        found_callback=on_found,
+                        should_stop=self.isInterruptionRequested,
+                    )
+                else:
+                    bidir_states = enumerate_play_paths(
+                        initial_state=state,
+                        max_depth=self.max_depth,
+                        max_paths=self.max_paths,
+                        max_alex_count=self.max_alex_count,
+                        min_alex_count=self.min_alex_count,
+                        progress_callback=on_progress,
+                        found_callback=on_found,
+                        prune_stats={},
+                        should_stop=self.isInterruptionRequested,
+                        forward_mining=False,
+                        forward_depth=self.operator_depth,
+                    )
                 self.best_result_signal.emit(False, self._format_best(bidir_states))
                 self.partial_result_signal.emit(
                     self.params_line()
@@ -687,32 +927,67 @@ class CalculationWorker(QThread):
                     + format_paths(bidir_states, limit=300)
                 )
 
-                states = beam_search_paths(
-                    initial_state=state,
-                    max_depth=self.beam_depth,
-                    max_paths=self.max_paths,
-                    max_alex_count=self.max_alex_count,
-                    min_alex_count=self.min_alex_count,
-                    beam_width=self.beam_width,
-                    progress_callback=on_progress,
-                    found_callback=on_found,
-                    prune_stats=prune_stats,
-                    should_stop=self.isInterruptionRequested
-                )
+                if cpp_exe is not None:
+                    states = cpp_beam_search_paths(
+                        initial_state=state,
+                        max_depth=self.beam_depth,
+                        max_paths=self.max_paths,
+                        max_alex_count=self.max_alex_count,
+                        min_alex_count=self.min_alex_count,
+                        beam_width=self.beam_width,
+                        exe_path=cpp_exe,
+                        progress_callback=on_progress,
+                        found_callback=on_found,
+                        should_stop=self.isInterruptionRequested,
+                    )
+                    prune_stats["束搜索束宽"] = self.beam_width
+                    prune_stats["束搜索深度"] = self.beam_depth
+                    prune_stats["计算核心"] = "C++"
+                else:
+                    states = beam_search_paths(
+                        initial_state=state,
+                        max_depth=self.beam_depth,
+                        max_paths=self.max_paths,
+                        max_alex_count=self.max_alex_count,
+                        min_alex_count=self.min_alex_count,
+                        beam_width=self.beam_width,
+                        progress_callback=on_progress,
+                        found_callback=on_found,
+                        prune_stats=prune_stats,
+                        should_stop=self.isInterruptionRequested
+                    )
+                # beam 比双向链更好时记录到本地（附场面数据）
+                self._record_beam_improvement(state, bidir_states, states)
             else:
-                states = enumerate_play_paths(
-                    initial_state=state,
-                    max_depth=self.max_depth,
-                    max_paths=self.max_paths,
-                    max_alex_count=self.max_alex_count,
-                    min_alex_count=self.min_alex_count,
-                    progress_callback=on_progress,
-                    found_callback=on_found,
-                    prune_stats=prune_stats,
-                    should_stop=self.isInterruptionRequested,
-                    forward_mining=False,
-                    forward_depth=self.operator_depth,
-                )
+                if cpp_exe is not None:
+                    states, cpp_stats = cpp_symbolic_prove_paths(
+                        initial_state=state,
+                        max_depth=self.max_depth,
+                        max_paths=self.max_paths,
+                        max_alex_count=self.max_alex_count,
+                        min_alex_count=self.min_alex_count,
+                        forward_depth=self.operator_depth,
+                        exe_path=cpp_exe,
+                        progress_callback=on_progress,
+                        found_callback=on_found,
+                        should_stop=self.isInterruptionRequested,
+                    )
+                    prune_stats.update(cpp_stats)
+                    prune_stats["计算核心"] = "C++"
+                else:
+                    states = enumerate_play_paths(
+                        initial_state=state,
+                        max_depth=self.max_depth,
+                        max_paths=self.max_paths,
+                        max_alex_count=self.max_alex_count,
+                        min_alex_count=self.min_alex_count,
+                        progress_callback=on_progress,
+                        found_callback=on_found,
+                        prune_stats=prune_stats,
+                        should_stop=self.isInterruptionRequested,
+                        forward_mining=False,
+                        forward_depth=self.operator_depth,
+                    )
 
             elapsed_seconds = time.time() - search_started
 
@@ -752,6 +1027,8 @@ class CalculationWorker(QThread):
 
             self.result_signal.emit(
                 self.params_line()
+                + "\n\n"
+                + self.format_situation_note(state)
                 + "\n\n"
                 + (stop_note + limit_note if (stop_note or limit_note) else "")
                 + format_paths(states, limit=300)
@@ -885,10 +1162,10 @@ class QuickPanel(ScreenClampMixin, QDialog):
         self.owner = owner
         self.setWindowTitle("红龙贼计算器")
         self._native_clamp_ok = False
-        flags = self.windowFlags() | Qt.WindowStaysOnTopHint
+        flags = self.windowFlags() | Qt.WindowStaysOnTopHint | Qt.WindowMinimizeButtonHint
         flags &= ~Qt.WindowContextHelpButtonHint  # 去掉标题栏的 “?” 帮助按钮
         self.setWindowFlags(flags)
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(520)
 
         # ---- 顶部操作按钮：识别为开始/停止切换按钮，设置按钮弹出后台设置窗口 ----
         self.startButton = QPushButton("开始识别")
@@ -904,6 +1181,20 @@ class QuickPanel(ScreenClampMixin, QDialog):
         button_layout = QHBoxLayout()
         for btn in (self.startButton, self.calculateButton, self.settingsButton):
             button_layout.addWidget(btn)
+
+        # ---- 数据源：日志读取（默认，推荐）/ OCR识别（兜底）----
+        self.sourceLogRadio = QRadioButton("日志读取")
+        self.sourceOcrRadio = QRadioButton("OCR识别")
+        self.sourceLogRadio.setChecked(True)
+        self.sourceLogRadio.setToolTip("直接监听炉石 Power.log（hslog 解析），无需框选截图区域")
+        self.sourceOcrRadio.setToolTip("保留旧方案：截图 + PaddleOCR 识别")
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("数据源："))
+        source_row.addWidget(self.sourceLogRadio)
+        source_row.addWidget(self.sourceOcrRadio)
+        source_row.addStretch()
+        self.sourceLogRadio.toggled.connect(owner._refresh_start_enabled)
+        self.sourceOcrRadio.toggled.connect(owner._refresh_start_enabled)
 
         # ---- 殒命暗影位置 ----
         self.deadlyShadowCheck = QCheckBox("殒命暗影位置")
@@ -922,7 +1213,7 @@ class QuickPanel(ScreenClampMixin, QDialog):
             ("舞动全场（ft.迦罗娜）", "舞动全场（ft.迦罗娜）"),
             ("幻觉药水", "幻觉药水"),
             ("生命的缚誓者阿莱克丝塔萨", "红龙"),
-            ("晦鳞巢母", "晦鳞巢母"),
+            ("战略转移", "战略转移"),
             ("赤烟·腾武", "赤烟·腾武"),
         ]
 
@@ -995,7 +1286,7 @@ class QuickPanel(ScreenClampMixin, QDialog):
         board_section = QWidget()
         board_section_layout = QVBoxLayout()
         board_section_layout.setContentsMargins(0, 0, 0, 0)
-        self.boardToggle = QPushButton("▸ 战场（7 格固定）")
+        self.boardToggle = QPushButton("▸ 随从（7 格固定）")
         self.boardToggle.setCheckable(True)
         self.boardToggle.setChecked(False)
         self.boardToggle.setStyleSheet(self.toggle_style)
@@ -1058,26 +1349,38 @@ class QuickPanel(ScreenClampMixin, QDialog):
             border-radius:6px;
         }
         """
+        self.result_style = result_style
 
         def make_result_edit():
             edit = QTextEdit()
             edit.setReadOnly(True)
-            edit.setStyleSheet(result_style)
+            edit.setStyleSheet(self.result_style)
             edit.setMinimumHeight(36)
             return edit
 
         self.fullText = make_result_edit()
-        self.bidirText = make_result_edit()
-        self.beamText = make_result_edit()
+
+        # 最高伤害路径：按“舞”分段成多个小框，避免人眼在长路径上重定位出错
+        self.bidirRounds = QWidget()
+        self.bidirRoundsLayout = QVBoxLayout()
+        self.bidirRoundsLayout.setContentsMargins(0, 0, 0, 0)
+        self.bidirRoundsLayout.setSpacing(4)
+        self.bidirRounds.setLayout(self.bidirRoundsLayout)
+        self.beamRounds = QWidget()
+        self.beamRoundsLayout = QVBoxLayout()
+        self.beamRoundsLayout.setContentsMargins(0, 0, 0, 0)
+        self.beamRoundsLayout.setSpacing(4)
+        self.beamRounds.setLayout(self.beamRoundsLayout)
 
         self.fullToggle, self.fullPanel, full_section = self._make_fold_section(
-            "完整路径计算结果", False, self.fullText, 900
+            "完整路径计算结果", False, self.fullText,
+            refit=lambda: self._fit_edit(self.fullText, 420),
         )
         self.bidirToggle, self.bidirPanel, bidir_section = self._make_fold_section(
-            "双向链计算最高伤害路径", True, self.bidirText, 420
+            "双向链计算最高伤害路径", True, self.bidirRounds,
         )
         self.beamToggle, self.beamPanel, beam_section = self._make_fold_section(
-            "beam束状计算最高伤害路径", True, self.beamText, 420
+            "beam束状计算最高伤害路径", True, self.beamRounds,
         )
 
         # ---- 殒命位置与牛头人卡池：同一行，牛头人展开后在其下一行 ----
@@ -1101,6 +1404,9 @@ class QuickPanel(ScreenClampMixin, QDialog):
         stack_layout.addWidget(hand_section)
         stack_layout.addWidget(board_section)
         stack_layout.addWidget(status_section)
+        # 识别/计算/设置按钮放在状态栏下面、牛头人卡池上面
+        stack_layout.addLayout(button_layout)
+        stack_layout.addLayout(source_row)
         stack_layout.addWidget(actions_section)
         stack_layout.addWidget(self.progressLabel)
         stack_layout.addWidget(full_section)
@@ -1108,16 +1414,27 @@ class QuickPanel(ScreenClampMixin, QDialog):
         stack_layout.addWidget(beam_section)
         stack_layout.addStretch(1)
         stack_container = QWidget()
+        # 宽度跟随视口（窗口横向拉伸时路径框一起变宽/变窄并自动换行）
+        stack_container.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         stack_container.setLayout(stack_layout)
 
-        layout = QVBoxLayout()
-        layout.addLayout(button_layout)
-        layout.addWidget(stack_container)
-        self.setLayout(layout)
-        self.resize(600, 960)
+        # 内容放进滚动区：窗口尺寸固定，内容超出时滚动而不是把窗口顶大
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(stack_container)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
 
-    def _make_fold_section(self, title, default_open, edit, cap):
-        """生成一个折叠区块：标题按钮 + 可自动适应高度的文本框。"""
+        layout = QVBoxLayout()
+        layout.addWidget(scroll)
+        self.setLayout(layout)
+        # 窗口高度按屏幕自适应封顶，防止折叠/展开时布局把窗口顶出屏幕
+        screen = QApplication.primaryScreen().availableGeometry()
+        max_height = max(480, screen.height() - 60)
+        self.resize(540, min(960, max_height))
+
+    def _make_fold_section(self, title, default_open, body_widget, refit=None):
+        """生成一个折叠区块：标题按钮 + 内容控件（可选展开时回调 refit）。"""
         toggle = QPushButton("▸ " + title)
         toggle.setCheckable(True)
         toggle.setChecked(default_open)
@@ -1126,13 +1443,13 @@ class QuickPanel(ScreenClampMixin, QDialog):
         panel = QWidget()
         lay = QVBoxLayout()
         lay.setContentsMargins(4, 2, 4, 2)
-        lay.addWidget(edit)
+        lay.addWidget(body_widget)
         panel.setLayout(lay)
 
         def on_toggle(checked):
             panel.setVisible(checked)
-            if checked:
-                self._fit_edit(edit, cap)
+            if checked and refit is not None:
+                refit()
 
         toggle.toggled.connect(on_toggle)
         # 初始折叠/展开状态同步到面板（setChecked 在 connect 之前调用，不会触发信号）
@@ -1144,6 +1461,61 @@ class QuickPanel(ScreenClampMixin, QDialog):
         slay.addWidget(panel)
         section.setLayout(slay)
         return toggle, panel, section
+
+    def _show_rounds(self, container, best_line):
+        """把一条最高伤害路径按“舞动全场”分段，每个阶段一个独立小框。"""
+        while container.count():
+            item = container.takeAt(0)
+            widget = item.widget()
+
+            if widget is not None:
+                widget.deleteLater()
+
+        match = re.match(
+            r"^1\. (.*?) \| 龙数：(\d+) \| 伤害：(\d+)点 \| 剩余法力：(\d+)$",
+            best_line.strip(),
+        )
+
+        if match is None:
+            box = QTextEdit()
+            box.setReadOnly(True)
+            box.setStyleSheet(self.result_style)
+            box.setMinimumHeight(36)
+            box.setPlainText(best_line)
+            container.addWidget(box)
+            self._fit_edit(box, 420)
+            return
+
+        steps_text, dragons, damage, mana = match.groups()
+        steps = [step.strip() for step in steps_text.split(" -> ")]
+        rounds = []
+        current = []
+
+        for step in steps:
+            current.append(step)
+
+            if step.startswith("舞动全场（ft.迦罗娜）"):
+                rounds.append(current)
+                current = []
+
+        if current:
+            rounds.append(current)
+
+        summary = QLabel(f"最高伤害：{damage}点 | 龙数：{dragons} | 剩余法力：{mana}")
+        summary.setStyleSheet("font-size:13px;color:#333;")
+        container.addWidget(summary)
+
+        for index, round_steps in enumerate(rounds, start=1):
+            box = QTextEdit()
+            box.setReadOnly(True)
+            box.setStyleSheet(self.result_style)
+            box.setMinimumHeight(30)
+            box.setHtml(
+                f"<div>第{index}轮：{' -> '.join(round_steps)}</div>"
+                f"<div style='color:#333;font-size:20px;'>缩写：{abbreviate_path(round_steps)}</div>"
+            )
+            container.addWidget(box)
+            self._fit_edit(box, 220)
 
     def _fit_edit(self, edit, cap=520):
         """文本框自动适应内容高度（刚好能看完全，超出上限则滚动）。"""
@@ -1268,12 +1640,12 @@ class MainWindow(ScreenClampMixin, QWidget):
         self.beamModeCheck = QCheckBox("beam模式")
         self.beamModeCheck.setToolTip("beam束搜索（默认关闭，计算时间长）。勾选后用束搜索直接枚举真实后继状态，可自行填束宽与算子深度。")
         beam_row.addWidget(self.beamModeCheck)
-        self.beamWidthInput = QLineEdit("3000")
+        self.beamWidthInput = QLineEdit("5000")
         self.beamWidthInput.setFixedWidth(60)
-        self.beamWidthInput.setToolTip("beam束搜索束宽，默认3000。")
-        self.beamDepthInput = QLineEdit("25")
+        self.beamWidthInput.setToolTip("beam束搜索束宽，默认5000。")
+        self.beamDepthInput = QLineEdit("30")
         self.beamDepthInput.setFixedWidth(50)
-        self.beamDepthInput.setToolTip("beam束搜索算子深度（展开步数上限），默认25。")
+        self.beamDepthInput.setToolTip("beam束搜索算子深度（展开步数上限），默认30。")
         self.beamWidthInput.setEnabled(False)
         self.beamDepthInput.setEnabled(False)
         self.maxPathsInput.setEnabled(False)
@@ -1326,7 +1698,7 @@ class MainWindow(ScreenClampMixin, QWidget):
         manual_board_panel = QWidget()
         manual_board_layout = QVBoxLayout()
         manual_board_layout.setContentsMargins(0, 0, 0, 0)
-        manual_board_layout.addWidget(QLabel("战场（随从栏）"))
+        manual_board_layout.addWidget(QLabel("随从栏"))
         self.manualBoardEdit = QTextEdit()
         self.manualBoardEdit.setPlaceholderText("例：\n4 鲨鱼之灵 3\n2 狐 2\n4 刀油 3")
         self.manualBoardEdit.setFixedHeight(150)
@@ -1407,13 +1779,14 @@ class MainWindow(ScreenClampMixin, QWidget):
 
         # 操作弹窗（识别/计算/牛池/殒命/手牌·战场·状态/计算结果），默认只显示弹窗
         self.panel = QuickPanel(self)
+        self._refresh_start_enabled()
         self.panel.show()
         self.setResult("识别结果会显示在这里", "重建后的牌库与手牌会显示在这里", None)
         self.panel.fullText.setPlainText("计算完成后，完整路径结果会显示在这里（可折叠）")
-        self.panel.bidirText.setPlainText("双向链计算完成后，最高伤害路径显示在这里")
-        self.panel.beamText.setPlainText("beam束计算完成后，最高伤害路径显示在这里")
-        self.panel._fit_edit(self.panel.bidirText, 420)
-        self.panel._fit_edit(self.panel.beamText, 420)
+        for container in (self.panel.bidirRoundsLayout, self.panel.beamRoundsLayout):
+            hint = QLabel("（尚未计算，计算完成后按“舞”分段显示）")
+            hint.setStyleSheet("font-size:13px;color:#888;")
+            container.addWidget(hint)
 
     def toggle_settings_window(self):
         """点“设置”才弹出/收起后台设置窗口。"""
@@ -1463,11 +1836,27 @@ class MainWindow(ScreenClampMixin, QWidget):
                   mana_crystals=None, mana=None, mana_raw_text="", source="ocr"):
         self.ocrText.setPlainText(ocr_text if ocr_text else "未识别到文字")
         self.manaOcrText.setPlainText(mana_raw_text if mana_raw_text else "（未框选或未识别）")
-        self.ocrTitleLabel.setText(
-            "OCR原始文本（手牌/战场）" if source == "ocr" else "手动输入文本（已按现有规则解析）"
-        )
+
+        if source == "log":
+            self.ocrTitleLabel.setText("日志原始文本（对局快照）")
+        elif source == "ocr":
+            self.ocrTitleLabel.setText("OCR原始文本（手牌/战场）")
+        else:
+            self.ocrTitleLabel.setText("手动输入文本（已按现有规则解析）")
         hand_cards = list(getattr(rebuild_result, "cards", None) or [])
-        board_cards = list(getattr(rebuild_result, "battlefield_cards", None) or [])
+        # 随从栏只装随从，武器/奥秘不再识别
+        board_cards = []
+
+        for card in (getattr(rebuild_result, "battlefield_cards", None) or []):
+            name = getattr(card, "name", "") or ""
+
+            try:
+                if make_card(name).card_type == "minion":
+                    board_cards.append(card)
+            except Exception:
+                continue
+
+        board_cards = board_cards[:7]
 
         if mana_crystals is not None and mana is not None:
             self.scan_crystals = int(mana_crystals)
@@ -1497,6 +1886,7 @@ class MainWindow(ScreenClampMixin, QWidget):
             and self.worker is not None
             and self._run_got_hand
             and self._run_got_mana
+            and self.panel.sourceOcrRadio.isChecked()
         ):
             self.stop_ocr()
             self.statusLabel.setText("状态：已识别到结果，自动停止")
@@ -1617,7 +2007,10 @@ class MainWindow(ScreenClampMixin, QWidget):
         self._refresh_start_enabled()
 
     def _refresh_start_enabled(self):
-        self.panel.startButton.setEnabled(self.box is not None and self.mana_box is not None)
+        log_mode = self.panel.sourceLogRadio.isChecked()
+        self.panel.startButton.setEnabled(
+            log_mode or (self.box is not None and self.mana_box is not None)
+        )
 
     def get_box(self):
         return self.box
@@ -1675,6 +2068,10 @@ class MainWindow(ScreenClampMixin, QWidget):
         ]
 
     def start_ocr(self):
+        if self.panel.sourceLogRadio.isChecked():
+            self.start_log_reader()
+            return
+
         if self.box is None:
             QMessageBox.warning(self, "提示", "请先在设置窗口框选手牌/战场区域。")
             return
@@ -1691,6 +2088,23 @@ class MainWindow(ScreenClampMixin, QWidget):
         self.worker.start()
 
         self.statusLabel.setText("状态：正在扫描识别（0.1s 循环，识别到结果自动停止）")
+        self.panel.startButton.setText("停止识别")
+
+    def start_log_reader(self):
+        if self.worker is not None:
+            return
+
+        self.worker = LogReaderWorker()
+        self.worker.result_signal.connect(
+            lambda *args: self.setResult(*args, source="log")
+        )
+        self.worker.error_signal.connect(self.on_ocr_error)
+        self._auto_stop = False
+        self._run_got_hand = False
+        self._run_got_mana = False
+        self.worker.start()
+
+        self.statusLabel.setText("状态：正在监听 Power.log（对局开始后自动读取）")
         self.panel.startButton.setText("停止识别")
 
     def start_calculation(self):
@@ -1786,8 +2200,12 @@ class MainWindow(ScreenClampMixin, QWidget):
             return
 
         self.panel.fullText.setPlainText("正在计算所有可行出牌路径...")
-        self.panel.bidirText.setPlainText("")
-        self.panel.beamText.setPlainText("")
+        for container in (self.panel.bidirRoundsLayout, self.panel.beamRoundsLayout):
+            while container.count():
+                item = container.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
         self.panel.progressLabel.setText("")
         # 合并后的按钮在计算期间要可点（此时是“中止计算”）
         self.panel.calculateButton.setEnabled(True)
@@ -1847,11 +2265,9 @@ class MainWindow(ScreenClampMixin, QWidget):
     def on_best_result(self, beam_mode, text):
         """双向链/beam 计算完成后，把最高伤害路径放进对应框并自动适应高度。"""
         if beam_mode:
-            self.panel.beamText.setPlainText(text)
-            self.panel._fit_edit(self.panel.beamText, 420)
+            self.panel._show_rounds(self.panel.beamRoundsLayout, text)
         else:
-            self.panel.bidirText.setPlainText(text)
-            self.panel._fit_edit(self.panel.bidirText, 420)
+            self.panel._show_rounds(self.panel.bidirRoundsLayout, text)
 
     def on_calculation_thread_finished(self):
         self.calc_worker = None
@@ -1869,7 +2285,7 @@ class MainWindow(ScreenClampMixin, QWidget):
 
         self.statusLabel.setText("状态：已停止识别，可重新框选区域")
         self.panel.startButton.setText("开始识别")
-        self.panel.startButton.setEnabled(self.box is not None and self.mana_box is not None)
+        self._refresh_start_enabled()
 
     def on_ocr_error(self, msg):
         self.statusLabel.setText(msg)

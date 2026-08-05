@@ -43,6 +43,8 @@ CORE_CARD_GROUPS = {
     "舞": "舞动全场（ft.迦罗娜）",
     "龙": "生命的缚誓者阿莱克丝塔萨",
     "药": "幻觉药水",
+    "转": "战略转移",
+    "慧": "幸运彗星",
 }
 _CORE_NAME_TO_KEY = {
     name: key for key, name in CORE_CARD_GROUPS.items() if name
