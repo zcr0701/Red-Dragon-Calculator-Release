@@ -6484,6 +6484,8 @@ def main() -> int:
     parser.add_argument("--show-limit", type=int, default=200)
     parser.add_argument("--json", action="store_true", help="输出 JSON")
     parser.add_argument("--sync-archive", action="store_true", help="把局面存档提交并推送到云端（GitHub 仓库）")
+    parser.add_argument("--from-log", action="store_true", help="从最新 Power.log 对局快照构建局面（替代 --hand/--deck/--mana）")
+    parser.add_argument("--log-game-dir", default=None, help="配合 --from-log：炉石安装目录（含 Logs 子目录）")
 
     args = parser.parse_args()
 
@@ -6491,13 +6493,34 @@ def main() -> int:
         print(archive.sync_archive_to_cloud())
         return 0
 
-    parsed_deck_names = parse_names(args.deck)
-    state = create_state(
-        deck_names=parsed_deck_names if args.deck.strip() else None,
-        hand_names=parse_names(args.hand),
-        mana_crystals=args.mana_crystals,
-        mana=args.mana
-    )
+    if args.from_log:
+        from powerlog_reader import LogWatcher, snapshot_to_rebuild_result
+
+        watcher = LogWatcher(game_dir=args.log_game_dir)
+        snap = watcher.snapshot()
+
+        if not snap.get("in_game"):
+            print(json.dumps(snap, ensure_ascii=False, indent=2))
+            print("未检测到进行中的对局，无法从日志构建局面。")
+            return 1
+
+        rebuild = snapshot_to_rebuild_result(snap)
+        mana_crystals = snap.get("crystals")
+        mana = snap.get("mana")
+        state = state_from_rebuild_result(
+            result=rebuild,
+            mana_crystals=mana_crystals if mana_crystals is not None else args.mana_crystals,
+            mana=mana if mana is not None else (args.mana if args.mana is not None else args.mana_crystals),
+            deadly_shadow_hand_indexes=rebuild.deadly_shadow_hand_indexes,
+        )
+    else:
+        parsed_deck_names = parse_names(args.deck)
+        state = create_state(
+            deck_names=parsed_deck_names if args.deck.strip() else None,
+            hand_names=parse_names(args.hand),
+            mana_crystals=args.mana_crystals,
+            mana=args.mana
+        )
 
     for card_name in args.play:
         play_card_by_name(state, card_name)

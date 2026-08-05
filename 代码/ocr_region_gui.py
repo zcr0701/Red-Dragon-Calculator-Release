@@ -30,6 +30,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ocr_interface import OCRInterface
+from powerlog_reader import LogWatcher, snapshot_to_rebuild_result
 from rebuild_hand import (
     CARD_COSTS,
     format_result,
@@ -515,6 +516,79 @@ class OCRWorker(QThread):
                 self.error_signal.emit(msg)
 
             time.sleep(0.1)
+
+    def stop(self):
+        self.running = False
+
+
+class LogReaderWorker(QThread):
+    """持续监听 Power.log（hslog 解析），对局状态变化时推送结果。"""
+
+    result_signal = pyqtSignal(str, str, object, object, object, str)
+    error_signal = pyqtSignal(str)
+
+    def __init__(self, game_dir=None):
+        super().__init__()
+        self.watcher = LogWatcher(game_dir=game_dir)
+        self.running = True
+        self.last_key = None
+
+    def run(self):
+        while self.running:
+            try:
+                snap = self.watcher.snapshot()
+                key = (
+                    snap.get("log_path"),
+                    snap.get("in_game"),
+                    json.dumps(snap.get("hand", []), ensure_ascii=False),
+                    json.dumps(snap.get("board", []), ensure_ascii=False),
+                    snap.get("crystals"),
+                    snap.get("mana"),
+                )
+
+                if key != self.last_key:
+                    self.last_key = key
+                    rebuild = (
+                        snapshot_to_rebuild_result(snap)
+                        if snap.get("in_game")
+                        else None
+                    )
+                    hand_text = (
+                        format_result(rebuild)
+                        if rebuild is not None
+                        else "等待对局开始…"
+                    )
+
+                    if snap.get("in_game"):
+                        status = "对局进行中"
+                    elif snap.get("game_over"):
+                        status = "对局已结束"
+                    else:
+                        status = "等待对局开始"
+
+                    log_text = "\n".join(
+                        [
+                            f"对局状态：{status}",
+                            f"本机：{snap.get('player_name')} / 对手：{snap.get('opponent_name')}",
+                            f"水晶：{snap.get('crystals')} / 法力：{snap.get('mana')}",
+                            f"日志：{snap.get('log_path')}",
+                        ]
+                    )
+                    self.result_signal.emit(
+                        log_text,
+                        hand_text,
+                        rebuild,
+                        snap.get("crystals"),
+                        snap.get("mana"),
+                        "",
+                    )
+
+                time.sleep(1.0)
+            except Exception as e:
+                msg = f"日志读取错误: {e}"
+                print(msg)
+                self.error_signal.emit(msg)
+                time.sleep(1.0)
 
     def stop(self):
         self.running = False
@@ -1108,6 +1182,20 @@ class QuickPanel(ScreenClampMixin, QDialog):
         for btn in (self.startButton, self.calculateButton, self.settingsButton):
             button_layout.addWidget(btn)
 
+        # ---- 数据源：日志读取（默认，推荐）/ OCR识别（兜底）----
+        self.sourceLogRadio = QRadioButton("日志读取")
+        self.sourceOcrRadio = QRadioButton("OCR识别")
+        self.sourceLogRadio.setChecked(True)
+        self.sourceLogRadio.setToolTip("直接监听炉石 Power.log（hslog 解析），无需框选截图区域")
+        self.sourceOcrRadio.setToolTip("保留旧方案：截图 + PaddleOCR 识别")
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("数据源："))
+        source_row.addWidget(self.sourceLogRadio)
+        source_row.addWidget(self.sourceOcrRadio)
+        source_row.addStretch()
+        self.sourceLogRadio.toggled.connect(owner._refresh_start_enabled)
+        self.sourceOcrRadio.toggled.connect(owner._refresh_start_enabled)
+
         # ---- 殒命暗影位置 ----
         self.deadlyShadowCheck = QCheckBox("殒命暗影位置")
         self.deadlyShadowInput = QLineEdit()
@@ -1318,6 +1406,7 @@ class QuickPanel(ScreenClampMixin, QDialog):
         stack_layout.addWidget(status_section)
         # 识别/计算/设置按钮放在状态栏下面、牛头人卡池上面
         stack_layout.addLayout(button_layout)
+        stack_layout.addLayout(source_row)
         stack_layout.addWidget(actions_section)
         stack_layout.addWidget(self.progressLabel)
         stack_layout.addWidget(full_section)
@@ -1690,6 +1779,7 @@ class MainWindow(ScreenClampMixin, QWidget):
 
         # 操作弹窗（识别/计算/牛池/殒命/手牌·战场·状态/计算结果），默认只显示弹窗
         self.panel = QuickPanel(self)
+        self._refresh_start_enabled()
         self.panel.show()
         self.setResult("识别结果会显示在这里", "重建后的牌库与手牌会显示在这里", None)
         self.panel.fullText.setPlainText("计算完成后，完整路径结果会显示在这里（可折叠）")
@@ -1746,9 +1836,13 @@ class MainWindow(ScreenClampMixin, QWidget):
                   mana_crystals=None, mana=None, mana_raw_text="", source="ocr"):
         self.ocrText.setPlainText(ocr_text if ocr_text else "未识别到文字")
         self.manaOcrText.setPlainText(mana_raw_text if mana_raw_text else "（未框选或未识别）")
-        self.ocrTitleLabel.setText(
-            "OCR原始文本（手牌/战场）" if source == "ocr" else "手动输入文本（已按现有规则解析）"
-        )
+
+        if source == "log":
+            self.ocrTitleLabel.setText("日志原始文本（对局快照）")
+        elif source == "ocr":
+            self.ocrTitleLabel.setText("OCR原始文本（手牌/战场）")
+        else:
+            self.ocrTitleLabel.setText("手动输入文本（已按现有规则解析）")
         hand_cards = list(getattr(rebuild_result, "cards", None) or [])
         # 随从栏只装随从，武器/奥秘不再识别
         board_cards = []
@@ -1792,6 +1886,7 @@ class MainWindow(ScreenClampMixin, QWidget):
             and self.worker is not None
             and self._run_got_hand
             and self._run_got_mana
+            and self.panel.sourceOcrRadio.isChecked()
         ):
             self.stop_ocr()
             self.statusLabel.setText("状态：已识别到结果，自动停止")
@@ -1912,7 +2007,10 @@ class MainWindow(ScreenClampMixin, QWidget):
         self._refresh_start_enabled()
 
     def _refresh_start_enabled(self):
-        self.panel.startButton.setEnabled(self.box is not None and self.mana_box is not None)
+        log_mode = self.panel.sourceLogRadio.isChecked()
+        self.panel.startButton.setEnabled(
+            log_mode or (self.box is not None and self.mana_box is not None)
+        )
 
     def get_box(self):
         return self.box
@@ -1970,6 +2068,10 @@ class MainWindow(ScreenClampMixin, QWidget):
         ]
 
     def start_ocr(self):
+        if self.panel.sourceLogRadio.isChecked():
+            self.start_log_reader()
+            return
+
         if self.box is None:
             QMessageBox.warning(self, "提示", "请先在设置窗口框选手牌/战场区域。")
             return
@@ -1986,6 +2088,23 @@ class MainWindow(ScreenClampMixin, QWidget):
         self.worker.start()
 
         self.statusLabel.setText("状态：正在扫描识别（0.1s 循环，识别到结果自动停止）")
+        self.panel.startButton.setText("停止识别")
+
+    def start_log_reader(self):
+        if self.worker is not None:
+            return
+
+        self.worker = LogReaderWorker()
+        self.worker.result_signal.connect(
+            lambda *args: self.setResult(*args, source="log")
+        )
+        self.worker.error_signal.connect(self.on_ocr_error)
+        self._auto_stop = False
+        self._run_got_hand = False
+        self._run_got_mana = False
+        self.worker.start()
+
+        self.statusLabel.setText("状态：正在监听 Power.log（对局开始后自动读取）")
         self.panel.startButton.setText("停止识别")
 
     def start_calculation(self):
@@ -2166,7 +2285,7 @@ class MainWindow(ScreenClampMixin, QWidget):
 
         self.statusLabel.setText("状态：已停止识别，可重新框选区域")
         self.panel.startButton.setText("开始识别")
-        self.panel.startButton.setEnabled(self.box is not None and self.mana_box is not None)
+        self._refresh_start_enabled()
 
     def on_ocr_error(self, msg):
         self.statusLabel.setText(msg)

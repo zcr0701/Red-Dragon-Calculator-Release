@@ -15,6 +15,10 @@
 │   ├── rebuild_hand.py             # OCR 文本 → 手牌/牌库/战场/当前效果 重建逻辑（含手动输入解析）
 │   ├── ocr_region_gui.py           # OCR 图形界面（PyQt5）：截图区域 + 手动输入面板 + 计算入口
 │   ├── ocr_interface.py            # OCR 底层封装（PaddleOCR + mss 截图）
+│   ├── powerlog_reader.py          # Power.log 实时读取器（hslog 解析）→ rebuild_hand 兼容结果
+│   ├── card_id_map.json            # CardID → 中文卡牌信息（HearthstoneJSON 生成，约 4.8MB）
+│   ├── card_data_zhCN.json         # HearthstoneJSON zhCN 全量卡库（update_card_map.py 的数据源）
+│   └── update_card_map.py          # 重建 / 更新 card_id_map.json
 │   └── card_config.json            # 卡牌名称修正配置（25 张，含邪恶短刀）
 ├── 说明/
 │   ├── README.md                   # 本文件：项目说明
@@ -84,6 +88,54 @@ python 代码/ocr_region_gui.py
 界面支持框选截图区域、选择牛头人酋长剩余卡池（舞动全场 / 幻觉药水 / 生命缚誓者阿莱克丝塔萨）、查看初始状态摘要；顶部「手动输入」按钮可展开手牌栏 / 战场（随从栏）/ 当前效果三个输入区，复用正则规则解析后直接开始计算；「beam模式」复选框默认不勾选。计算结果会写入 `代码/logs/red_dragon_all_paths_时间戳.txt`。
 
 自动挖掘已从默认流程移除（GUI 复选框删除）：默认只跑双向符号链+子链。需要实验验算时可命令行 `--forward-mine` 启用（束宽默认 3000）。
+
+### 实时读取：Power.log（默认数据源，2026-08-05 加入）
+
+数据源切换：弹窗顶部新增「数据源」单选——**日志读取（默认，推荐）** 直接监听炉石客户端的
+Power.log（hslog 解析），无需框选截图区域、无需 PaddleOCR；「OCR识别」保留旧方案作兜底。
+
+前置条件（本机已满足）：
+
+- `%LOCALAPPDATA%\Blizzard\Hearthstone\log.config` 已开启 `[Power] FilePrinting=True Verbose=true`；
+- 炉石安装目录（`F:\Hearthstone`）`Logs` 下每个会话目录里有 `Power.log`；
+- 依赖库：`pip install hslog`（在运行 GUI 的 paddleocr_env 环境里已装好）。
+
+命令行用法：
+
+```powershell
+# 打印最新对局快照（JSON）
+python 代码/powerlog_reader.py --once
+
+# 持续跟随最新对局（对局状态变化时打印）
+python 代码/powerlog_reader.py --watch
+
+# 输出 rebuild_hand 文本格式 / 指定日志文件
+python 代码/powerlog_reader.py --once --text
+python 代码/powerlog_reader.py --log-file "F:\Hearthstone\Logs\...\Power.log" --once
+
+# 直接用最新对局局面跑搜索（无需 --hand/--deck/--mana）
+python 代码/red_dragon_calculator.py --from-log --search
+
+# 更新 CardID → 中文名映射（首次需联网下载卡库）
+python 代码/update_card_map.py --download
+```
+
+读取内容与机制：
+
+- **手牌 / 场面 / 水晶 / 法力**：字段级精确（CardID、当前费用含刀油/伺机/腾武减费、随从血量），
+  法力 = `RESOURCES - RESOURCES_USED + TEMP_RESOURCES`；
+- **当前效果**：按“打出事件 + 消耗规则”计数（伺机待发/狐人老千/刀油/骨刺），中途启动时用附加效果实体兜底补种；
+- **殒命暗影**：按 `GHOSTLY` tag（785）标记手牌位置；
+- **本机玩家判定**：优先用 `%LOCALAPPDATA%\Blizzard\Hearthstone\Cache\Offline\offlineData_*` 的账号
+  hi/lo 匹配 `CREATE_GAME` 的 `GameAccountId`，兜底用“牌库已知卡牌启发”；
+- 玩家名绑定沿用 hslog 的换牌选择包逻辑（本机显示为 `UNKNOWN HUMAN PLAYER` 占位）。
+
+已知边界：
+
+- **牌库只含“已揭示”的卡**：Power.log 不会在开局直接给出整副牌（和 HDT 一样靠导入卡组解决），
+  所以 `deck` 里是当前已揭晓的牌库卡；抽牌相关计算如需完整牌库，可后续加卡组文件输入；
+- 对局结束（`STATE=COMPLETE`）后快照标记 `game_over`，GUI 不再推送；
+- 日志解析单行失败（如新版本新增 tag）会自动跳过并计数 `line_errors`，不影响整体。
 
 ## 当前已确认的状态（截至 Codex 对话 2026-08-03）
 
