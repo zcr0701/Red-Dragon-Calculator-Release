@@ -91,60 +91,11 @@ python 代码/ocr_region_gui.py
 
 自动挖掘已从默认流程移除（GUI 复选框删除）：默认只跑双向符号链+子链。需要实验验算时可命令行 `--forward-mine` 启用（束宽默认 3000）。
 
-### 实时读取：HDT 插件（默认数据源，2026-08-05 加入）
+### 实时读取：Power.log（默认数据源，2026-08-05 加入）
 
-数据源切换：弹窗顶部「数据源」单选——**HDT插件（默认，推荐）** 直接读取 HDT 插件导出的对局
-状态，无需框选截图区域、无需 PaddleOCR；「日志读取」为 Power.log（hslog）备用方案，
-「OCR识别」保留旧方案作兜底。
-
-前置条件（本机已满足）：
-
-- HDT 已安装（`%LOCALAPPDATA%\HearthstoneDeckTracker\app-*\`），插件
-  `RedDragonStateExport.dll` 已放到 `%APPDATA%\HearthstoneDeckTracker\Plugins\`
-  并已在 `plugins.xml` 中启用（HDT 启动时自动同步到 app 目录并加载）；
-- 插件每 0.5s 把对局状态写入 `%APPDATA%\HearthstoneDeckTracker\red_dragon_state.json`
-  （可用环境变量 `RED_DRAGON_STATE_PATH` 覆盖路径，两侧需一致）；
-- 对局中需 HDT 保持运行；首次使用请先启动 HDT 一次确认「选项 → 追踪器 → 插件」里
-  红龙计算器状态导出 已启用。
-
-重新编译插件（本机已装本地 .NET SDK 到 `C:\Users\22501\.dotnet`）：
-
-```powershell
-代码\hdt_plugin\build.ps1
-```
-
-命令行用法：
-
-```powershell
-# 打印最新对局快照（JSON）
-python 代码/hdt_reader.py --once
-
-# 持续跟随对局状态
-python 代码/hdt_reader.py --watch
-
-# 输出 rebuild_hand 文本格式 / 指定状态文件
-python 代码/hdt_reader.py --once --text
-python 代码/hdt_reader.py --state-file <路径> --once
-
-# 直接用 HDT 对局状态跑搜索（无需 --hand/--deck/--mana）
-python 代码/red_dragon_calculator.py --from-hdt --search
-```
-
-读取内容与机制：
-
-- **手牌 / 场面 / 水晶 / 法力**：字段级精确（CardID、当前费用含刀油/伺机/腾武减费、
-  随从攻血与关键词），法力 = `RESOURCES - RESOURCES_USED + TEMP_RESOURCES`；
-- **完整牌库**：HDT 用已导入卡组 + 揭晓实体计算剩余牌库（`remaining_deck`），
-  未揭示的牌也能给出中文名，优于 Power.log 的"仅已揭示卡"；
-- **当前效果**：优先按场上附加效果（enchantment）实体实时检测（伺机待发/狐人老千/刀油/
-  骨刺/鲨鱼之灵），无实体时回退到出牌事件计数；
-- **殒命暗影**：按 `GHOSTLY` tag 标记手牌位置；
-- **对手信息**（额外字段 `opponent`）：手牌数/牌库数/已打出的牌/奥秘数/场上随从；
-- 本机玩家由 HDT 直接给出，无需离线缓存账号匹配。
-
-### 备用数据源：Power.log（hslog 解析，2026-08-05 加入）
-
-「日志读取」直接监听炉石客户端的 Power.log（hslog 解析），不依赖 HDT。
+数据源切换：弹窗顶部「数据源」单选——**日志读取（默认，推荐）** 直接监听炉石客户端的
+Power.log（hslog 解析），无需框选截图区域、无需 PaddleOCR；「HDT插件」为备用方案
+（需 HDT 运行，可读完整牌库与对手信息）；「OCR识别」保留旧方案作兜底。
 
 前置条件（本机已满足）：
 
@@ -188,6 +139,45 @@ python 代码/update_card_map.py --download
   所以 `deck` 里是当前已揭晓的牌库卡；抽牌相关计算如需完整牌库，可后续加卡组文件输入；
 - 对局结束（`STATE=COMPLETE`）后快照标记 `game_over`，GUI 不再推送；
 - 日志解析单行失败（如新版本新增 tag）会自动跳过并计数 `line_errors`，不影响整体。
+
+### 备用数据源：HDT 插件（2026-08-05 加入）
+
+「HDT插件」读取 HDT 插件 RedDragonStateExport 导出的对局状态，需 HDT 保持运行；
+当前为备用方案（本机已停用插件，需要时在 HDT「选项 → 追踪器 → 插件」里启用即可）。
+
+前置条件：
+
+- HDT 已安装（`%LOCALAPPDATA%\HearthstoneDeckTracker\app-*\`），插件
+  `RedDragonStateExport.dll` 放到 `%APPDATA%\HearthstoneDeckTracker\Plugins\`
+  （HDT 启动时自动同步到 app 目录并加载）；
+- 插件每 0.5s 把对局状态写入 `%APPDATA%\HearthstoneDeckTracker\red_dragon_state.json`
+  （可用环境变量 `RED_DRAGON_STATE_PATH` 覆盖路径，两侧需一致）。
+
+重新编译插件（本机已装本地 .NET SDK 到 `C:\Users\22501\.dotnet`）：
+
+```powershell
+代码\hdt_plugin\build.ps1
+```
+
+命令行用法：
+
+```powershell
+python 代码/hdt_reader.py --once
+python 代码/hdt_reader.py --watch
+python 代码/red_dragon_calculator.py --from-hdt --search
+```
+
+读取内容与机制：
+
+- **手牌 / 场面 / 水晶 / 法力**：字段级精确（CardID、当前费用含刀油/伺机/腾武减费、
+  随从攻血与关键词），法力 = `RESOURCES - RESOURCES_USED + TEMP_RESOURCES`；
+- **完整牌库**：HDT 用已导入卡组 + 揭晓实体计算剩余牌库（`remaining_deck`），
+  未揭示的牌也能给出中文名，优于 Power.log 的"仅已揭示卡"；
+- **当前效果**：优先按场上附加效果（enchantment）实体实时检测（伺机待发/狐人老千/刀油/
+  骨刺/鲨鱼之灵），无实体时回退到出牌事件计数；
+- **殒命暗影**：按 `GHOSTLY` tag 标记手牌位置；
+- **对手信息**（额外字段 `opponent`）：手牌数/牌库数/已打出的牌/奥秘数/场上随从；
+- 本机玩家由 HDT 直接给出，无需离线缓存账号匹配。
 
 ## 当前已确认的状态（截至 Codex 对话 2026-08-03）
 

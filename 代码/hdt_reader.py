@@ -1,4 +1,4 @@
-"""HDT 插件状态读取器。
+"""HDT 插件状态读取器（备用数据源）。
 
 读取 HDT 插件 RedDragonStateExport 导出的 red_dragon_state.json
 （默认 %APPDATA%\\HearthstoneDeckTracker\\red_dragon_state.json，

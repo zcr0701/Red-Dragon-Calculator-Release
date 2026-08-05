@@ -1183,18 +1183,18 @@ class QuickPanel(ScreenClampMixin, QDialog):
         for btn in (self.startButton, self.calculateButton, self.settingsButton):
             button_layout.addWidget(btn)
 
-        # ---- 数据源：HDT插件（默认，推荐）/ 日志读取 / OCR识别（兜底）----
-        self.sourceHdtRadio = QRadioButton("HDT插件")
+        # ---- 数据源：日志读取（默认，推荐）/ HDT插件（备用）/ OCR识别（兜底）----
         self.sourceLogRadio = QRadioButton("日志读取")
+        self.sourceHdtRadio = QRadioButton("HDT插件")
         self.sourceOcrRadio = QRadioButton("OCR识别")
-        self.sourceHdtRadio.setChecked(True)
-        self.sourceHdtRadio.setToolTip("读取 HDT 插件导出的对局状态（手牌/场面/完整牌库/对手信息），需先启动 HDT 并启用「红龙计算器状态导出」插件")
-        self.sourceLogRadio.setToolTip("直接监听炉石 Power.log（hslog 解析），无需框选截图区域")
+        self.sourceLogRadio.setChecked(True)
+        self.sourceLogRadio.setToolTip("直接监听炉石 Power.log（hslog 解析），无需框选截图区域（默认数据源）")
+        self.sourceHdtRadio.setToolTip("备用：读取 HDT 插件导出的对局状态（完整牌库/对手信息），需启动 HDT 并启用「红龙计算器状态导出」插件")
         self.sourceOcrRadio.setToolTip("保留旧方案：截图 + PaddleOCR 识别")
         source_row = QHBoxLayout()
         source_row.addWidget(QLabel("数据源："))
-        source_row.addWidget(self.sourceHdtRadio)
         source_row.addWidget(self.sourceLogRadio)
+        source_row.addWidget(self.sourceHdtRadio)
         source_row.addWidget(self.sourceOcrRadio)
         source_row.addStretch()
         self.sourceHdtRadio.toggled.connect(owner._refresh_start_enabled)
