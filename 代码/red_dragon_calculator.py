@@ -6486,6 +6486,8 @@ def main() -> int:
     parser.add_argument("--sync-archive", action="store_true", help="把局面存档提交并推送到云端（GitHub 仓库）")
     parser.add_argument("--from-log", action="store_true", help="从最新 Power.log 对局快照构建局面（替代 --hand/--deck/--mana）")
     parser.add_argument("--log-game-dir", default=None, help="配合 --from-log：炉石安装目录（含 Logs 子目录）")
+    parser.add_argument("--from-hdt", action="store_true", help="从 HDT 插件导出的对局状态构建局面（替代 --hand/--deck/--mana）")
+    parser.add_argument("--hdt-state-file", default=None, help="配合 --from-hdt：HDT 状态 JSON 路径（默认 %APPDATA%\\HearthstoneDeckTracker\\red_dragon_state.json）")
 
     args = parser.parse_args()
 
@@ -6493,15 +6495,28 @@ def main() -> int:
         print(archive.sync_archive_to_cloud())
         return 0
 
-    if args.from_log:
-        from powerlog_reader import LogWatcher, snapshot_to_rebuild_result
+    if args.from_log or args.from_hdt:
+        from powerlog_reader import snapshot_to_rebuild_result
 
-        watcher = LogWatcher(game_dir=args.log_game_dir)
-        snap = watcher.snapshot()
+        if args.from_hdt:
+            from hdt_reader import HdtStateReader
+
+            reader = HdtStateReader(state_file=args.hdt_state_file)
+        else:
+            from powerlog_reader import LogWatcher
+
+            reader = LogWatcher(game_dir=args.log_game_dir)
+
+        snap = reader.snapshot()
 
         if not snap.get("in_game"):
             print(json.dumps(snap, ensure_ascii=False, indent=2))
-            print("未检测到进行中的对局，无法从日志构建局面。")
+
+            if args.from_hdt:
+                print("未检测到进行中的对局，无法从 HDT 状态构建局面。")
+            else:
+                print("未检测到进行中的对局，无法从日志构建局面。")
+
             return 1
 
         rebuild = snapshot_to_rebuild_result(snap)

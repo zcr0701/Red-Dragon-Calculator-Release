@@ -17,3 +17,7 @@ work/
 
 # 本地压缩备份（不入库）
 *.rar
+
+# HDT 插件编译产物（build.ps1 可重新生成）
+代码/hdt_plugin/bin/
+代码/hdt_plugin/obj/
