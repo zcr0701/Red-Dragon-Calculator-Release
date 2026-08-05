@@ -2,7 +2,7 @@
 chcp 65001 >nul
 setlocal
 set SRC=%~dp0red_dragon_core.cpp
-set OUT=%~dp0red_dragon_calculator.exe
+set OUT=%~dp0red_dragon_engine.exe
 
 if exist "D:\mingw64\bin\g++.exe" (
   echo [build] use MinGW g++: D:\mingw64\bin\g++.exe

@@ -1,10 +1,17 @@
-// 红龙贼计算器 C++ 计算核心（束搜索），与 Python red_dragon_calculator.py 的
-// beam_search_paths / generate_successors 规则逐条对齐。
+// 红龙贼计算器 C++ 计算核心（束搜索 + 双向符号链证明）。
 // 编译（MSVC）：cl /utf-8 /O2 /EHsc /std:c++17 red_dragon_core.cpp
 // 用法：
 //   red_dragon_core.exe --json < problem.json        # 从 stdin 读 JSON 局面，输出 JSON
 //   red_dragon_core.exe --hand "鲨鱼之灵,斯卡布斯·刀油" --board "" --crystals 8 --mana 8 \
 //       --min 1 --max 10 --width 3000 --depth 25 --json
+// 输入局面（--json，stdin）：
+//   {"crystals":8,"mana":8,"hand":[{"name":"鲨鱼之灵","temp_cost":2,"locked":false,"deadly":false}],
+//    "board":[...],"secrets":[...],"weapon":{...},"deck":[...],"etc_band":[...],
+//    "current_effects":[{"name":"狐人老千","count":2}],   // 伺机待发/狐人老千/斯卡布斯·刀油/锯齿骨刺
+//    "min_alex":1,"max_alex":10,"width":5000,"depth":30,"max_paths":1000000,
+//    "mode":"beam"|"symbolic","forward_depth":5,"deck_is_known":false}
+// 输出（stdout）：JSON 结果 {"results":[{"dragons","damage","mana","path"}],"stats":...}
+// 实时进度：stderr 输出 PROGRESS/FOUND 行。
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -150,6 +157,7 @@ struct State {
     int alex_play_count = 0;
     int alex_damage = 0;
     vector<string> etc_band;
+    bool etc_band_provided = false;   // JSON 显式传了 etc_band（空数组=牛池已空）
     vector<string> path;
 
     State clone() const { return *this; }
@@ -2580,6 +2588,7 @@ static State state_from_json(const JVal& root) {
     }
     const JVal* band = root.find("etc_band");
     if (band && band->type == JVal::ARR) {
+        st.etc_band_provided = true;
         for (const auto& item : band->arr) {
             if (item.type == JVal::STR) st.etc_band.push_back(item.str);
         }
@@ -2590,65 +2599,30 @@ static State state_from_json(const JVal& root) {
             st.deck.push_back(make_card(item.get_str("name")));
         }
     }
-    return st;
-}
-
-#ifdef _WIN32
-static int run_python(const std::wstring& cmdline) {
-    /* 统一入口：把 Python 脚本调用交给系统 python 解释器（宽字符命令行，避免中文路径乱码）。 */
-    std::wstring full = L"python " + cmdline;
-    wchar_t* mutable_cmd = &full[0];
-    STARTUPINFOW si;
-    PROCESS_INFORMATION pi;
-    ZeroMemory(&si, sizeof(si));
-    ZeroMemory(&pi, sizeof(pi));
-    si.cb = sizeof(si);
-
-    if (!CreateProcessW(NULL, mutable_cmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
-        fprintf(stderr, "python 启动失败（错误码 %lu）\n", GetLastError());
-        return 1;
-    }
-
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD code = 1;
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    return (int)code;
-}
-#endif
-
-int main(int argc, char** argv) {
-#ifdef _WIN32
-    /* 统一入口：命令行含 --python 时，把后续参数原样交给 Python 解释器执行。
-       例如：red_dragon_calculator.exe --python 代码/red_dragon_calculator.py --sync-archive */
-    int wargc = 0;
-    LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
-    int python_start = -1;
-
-    if (wargv != NULL) {
-        for (int i = 1; i < wargc; i++) {
-            if (wcscmp(wargv[i], L"--python") == 0) {
-                python_start = i + 1;
-                break;
+    // 当前效果：从日志/手动输入带入，等价于本回合已经打出过相关牌，
+    // 与 hand[].temp_cost 配合时请传基础费用，避免双重折扣。
+    const JVal* effects = root.find("current_effects");
+    if (effects && effects->type == JVal::ARR) {
+        for (const auto& item : effects->arr) {
+            const string name = item.get_str("name");
+            int layers = (int)item.get_int("count", 1);
+            if (layers <= 0) layers = 1;
+            st.cards_played_this_turn = std::max(st.cards_played_this_turn, 1);
+            if (name == "狐人老千") {
+                st.next_combo = std::max(st.next_combo, 2 * layers);
+            } else if (name == "伺机待发") {
+                st.next_spell = std::max(st.next_spell, 2 * layers);
+            } else if (name == "锯齿骨刺") {
+                st.next_card = std::max(st.next_card, 2 * layers);
+            } else if (name == "斯卡布斯·刀油") {
+                for (int i = 0; i < layers; i++) st.oil_stacks.push_back({2, 2});
             }
         }
     }
+    return st;
+}
 
-    if (python_start > 0) {
-        std::wstring cmd;
-
-        for (int i = python_start; i < wargc; i++) {
-            if (i > python_start) cmd += L' ';
-            cmd += L'"' + std::wstring(wargv[i]) + L'"';
-        }
-
-        if (wargv != NULL) LocalFree(wargv);
-        return run_python(cmd);
-    }
-
-    if (wargv != NULL) LocalFree(wargv);
-#endif
+int main(int argc, char** argv) {
     bool use_json = false;
     string hand_text, board_text, band_text;
     int crystals = 8, mana = 8, min_alex = 1, max_alex = 10, width = 5000, depth = 30, max_paths = 1000000;
@@ -2735,7 +2709,7 @@ int main(int argc, char** argv) {
 
     use_symbolic = (mode == "symbolic" || mode == "双向符号链证明");
 
-    if (st.etc_band.empty()) {
+    if (!st.etc_band_provided && st.etc_band.empty()) {
         st.etc_band = {"舞动全场（ft.迦罗娜）", "幻觉药水", "生命的缚誓者阿莱克丝塔萨"};
     }
 

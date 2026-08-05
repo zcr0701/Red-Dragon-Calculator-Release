@@ -2,15 +2,15 @@
 
 读取炉石客户端写出的 Power.log（需在
 %LOCALAPPDATA%\\Blizzard\\Hearthstone\\log.config 中开启 [Power] 详细日志），
-用 HearthSim/python-hslog 增量解析对局状态，输出与
-rebuild_hand.HandRebuildResult 兼容的结果，可直接替换 OCR 数据源。
+用 HearthSim/python-hslog 增量解析对局状态，输出快照 dict：
+hand/board/deck/secrets/weapon/current_effects/crystals/mana/in_game 等，
+供 GUI 展示并把场面传入 C++ 计算核心。
 
 依赖：pip install hslog（自动带 hearthstone、aniso8601）
 
 用法：
     python 代码/powerlog_reader.py --once            # 打印最新对局快照（JSON）
     python 代码/powerlog_reader.py --watch           # 持续跟随最新对局
-    python 代码/powerlog_reader.py --once --text     # 输出 rebuild_hand 文本格式
     python 代码/powerlog_reader.py --log-file <路径> --once
 """
 
@@ -344,31 +344,35 @@ class PowerLogParser:
         card_type = ent.get("card_type")
         is_combo = ent.get("combo") == 1 or name in COMBO_CARD_NAMES
 
+        # 伺机待发：下一个法术一次性消耗（叠 N 层只作用于第一个法术）
         if (
             name != "伺机待发"
             and card_type == "SPELL"
             and self.pending_effects.get("伺机待发", 0) > 0
         ):
-            self.pending_effects["伺机待发"] -= 1
+            self.pending_effects["伺机待发"] = 0
 
+        # 狐人老千：下一张连击牌一次性消耗（叠 N 层只作用于第一张连击牌）
         if (
             name != "狐人老千"
             and is_combo
             and self.pending_effects.get("狐人老千", 0) > 0
         ):
-            self.pending_effects["狐人老千"] -= 1
+            self.pending_effects["狐人老千"] = 0
 
+        # 斯卡布斯·刀油：本回合接下来两张牌各减 2，逐张消耗
         if (
             name != "斯卡布斯·刀油"
             and self.pending_effects.get("斯卡布斯·刀油", 0) > 0
         ):
             self.pending_effects["斯卡布斯·刀油"] -= 1
 
+        # 锯齿骨刺：下一张牌一次性消耗（叠 N 层只作用于下一张牌）
         if (
             name != "锯齿骨刺"
             and self.pending_effects.get("锯齿骨刺", 0) > 0
         ):
-            self.pending_effects["锯齿骨刺"] -= 1
+            self.pending_effects["锯齿骨刺"] = 0
 
     # ---- packet 分发 ----
 
@@ -670,63 +674,6 @@ class LogWatcher:
         return snap
 
 
-def snapshot_to_rebuild_result(snap: dict):
-    """把日志快照转成 rebuild_hand.HandRebuildResult，兼容现有计算链路。"""
-    from rebuild_hand import HandCard, HandRebuildResult
-
-    result = HandRebuildResult()
-
-    for item in snap.get("hand", []):
-        result.cards.append(
-            HandCard(
-                cost=item.get("cost"),
-                name=item["name"],
-                recognized_name=item["name"],
-                count=1,
-                health=None,
-            )
-        )
-
-    for item in snap.get("board", []):
-        result.battlefield_cards.append(
-            HandCard(
-                cost=item.get("cost"),
-                name=item["name"],
-                recognized_name=item["name"],
-                count=1,
-                health=item.get("health"),
-            )
-        )
-
-    for item in snap.get("deck", []):
-        result.deck_cards.append(
-            HandCard(
-                cost=item.get("cost"),
-                name=item["name"],
-                recognized_name=item["name"],
-                count=1,
-            )
-        )
-
-    for effect in snap.get("current_effects", []):
-        result.current_effect_cards.append(
-            HandCard(
-                cost=None,
-                name=effect["name"],
-                recognized_name=effect["name"],
-                count=max(1, int(effect.get("count", 1))),
-            )
-        )
-
-    result.deadly_shadow_hand_indexes = list(
-        snap.get("deadly_shadow_hand_indexes", [])
-    )
-    result.expected_hand_count = len(result.cards)
-    result.expected_battlefield_count = len(result.battlefield_cards)
-    result.expected_deck_count = len(result.deck_cards)
-    return result
-
-
 def _snapshot_key(snap: dict) -> tuple:
     return (
         snap.get("log_path"),
@@ -744,7 +691,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Power.log 实时读取器（hslog）")
     parser.add_argument("--once", action="store_true", help="只打印一次快照")
     parser.add_argument("--watch", action="store_true", help="持续跟随最新对局")
-    parser.add_argument("--text", action="store_true", help="输出 rebuild_hand 文本格式")
     parser.add_argument("--game-dir", default=None, help="炉石安装目录（含 Logs 子目录）")
     parser.add_argument("--log-file", default=None, help="指定 Power.log 文件（测试用）")
     parser.add_argument("--player-id", type=int, default=None, help="强制本机 PlayerID")
@@ -752,8 +698,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.log_file:
-        from rebuild_hand import format_result
-
         watcher = LogWatcher(game_dir=args.game_dir, player_id=args.player_id)
         path = Path(args.log_file)
         watcher.session_dir = path.parent
@@ -765,10 +709,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         snap["log_path"] = str(path)
         snap["session_dir"] = str(path.parent)
 
-        if args.text:
-            print(format_result(snapshot_to_rebuild_result(snap)))
-        else:
-            print(json.dumps(snap, ensure_ascii=False, indent=2))
+        print(json.dumps(snap, ensure_ascii=False, indent=2))
 
         return 0
 
@@ -783,28 +724,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
             if key != last_key:
                 last_key = key
-
-                if args.text:
-                    from rebuild_hand import format_result
-
-                    print(format_result(snapshot_to_rebuild_result(snap)))
-                    print("---")
-                else:
-                    print(json.dumps(snap, ensure_ascii=False, indent=2))
-
+                print(json.dumps(snap, ensure_ascii=False, indent=2))
                 sys.stdout.flush()
 
             time.sleep(max(0.1, args.interval))
 
     snap = watcher.snapshot()
-
-    if args.text:
-        from rebuild_hand import format_result
-
-        print(format_result(snapshot_to_rebuild_result(snap)))
-    else:
-        print(json.dumps(snap, ensure_ascii=False, indent=2))
-
+    print(json.dumps(snap, ensure_ascii=False, indent=2))
     return 0
 
 
