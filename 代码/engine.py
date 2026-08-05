@@ -1,8 +1,9 @@
-"""C++ 计算核心的 Python 薄封装。
+"""C++ 计算核心（MCTS + 束搜索模拟）的 Python 薄封装。
 
 把 powerlog_reader 的对局快照（或手工局面）转成 C++ 认识的 JSON 局面，
 通过子进程调用 red_dragon_engine.exe --json，并把 stdout 的 JSON 结果
 解析回 Python dict。实时进度 PROGRESS / FOUND 走 stderr，可回调到 GUI。
+子链库（subchain_library.json）由 C++ 每次计算后动态更新并持久化。
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from typing import Callable, Dict, List, Optional
 BASE_DIR = Path(__file__).resolve().parent
 
 DEFAULT_ETC_BAND = ["舞动全场（ft.迦罗娜）", "幻觉药水", "生命的缚誓者阿莱克丝塔萨"]
+DEFAULT_LIBRARY_PATH = BASE_DIR / "subchain_library.json"
 
 # 牛头人酋长卡池勾选选项：(卡名, 界面显示名)
 ETC_OPTIONS = [
@@ -135,14 +137,20 @@ def build_payload(
     *,
     min_alex: int = 1,
     max_alex: int = 10,
-    width: int = 5000,
     depth: int = 30,
     max_paths: int = 1000000,
-    mode: str = "symbolic",
-    forward_depth: int = 5,
+    iterations: int = 400,
+    beam_width: int = 8,
+    sim_depth: int = 8,
+    explore_c: float = 1.41421356,
+    games: int = 8,
+    threads: int = 4,
+    time_budget_sec: float = 30.0,
+    mode: str = "mcts_beam",
     etc_band: Optional[List[str]] = None,
+    library_path: Optional[str] = None,
 ) -> Dict[str, object]:
-    """把日志快照转成 C++ JSON 局面。
+    """把日志快照转成 C++ JSON 局面（MCTS + 束搜索模拟）。
 
     手牌/随从的费用直接取日志里当前显示费用（已含各种减费效果），
     通过 temp_cost 传给 C++；ghostly 手牌标记为 deadly（殒命暗影）。
@@ -202,11 +210,17 @@ def build_payload(
         "mana": int(snapshot["mana"]) if snapshot.get("mana") is not None else 10,
         "min_alex": min_alex,
         "max_alex": max_alex,
-        "width": width,
         "depth": depth,
         "max_paths": max_paths,
         "mode": mode,
-        "forward_depth": forward_depth,
+        "iterations": iterations,
+        "beam_width": beam_width,
+        "sim_depth": sim_depth,
+        "explore_c": explore_c,
+        "games": games,
+        "threads": threads,
+        "time_budget_sec": time_budget_sec,
+        "library_path": str(library_path or DEFAULT_LIBRARY_PATH),
         "deck_is_known": bool(snapshot.get("deck")),
         "deck": [{"name": item["name"]} for item in snapshot.get("deck") or []],
         "hand": hand,
@@ -318,14 +332,20 @@ def run_engine(
 def compute(
     snapshot: Dict[str, object],
     *,
-    mode: str = "symbolic",
+    mode: str = "mcts_beam",
     min_alex: int = 1,
     max_alex: int = 10,
-    width: int = 5000,
     depth: int = 30,
     max_paths: int = 1000000,
-    forward_depth: int = 5,
+    iterations: int = 400,
+    beam_width: int = 8,
+    sim_depth: int = 8,
+    explore_c: float = 1.41421356,
+    games: int = 8,
+    threads: int = 4,
+    time_budget_sec: float = 30.0,
     etc_band: Optional[List[str]] = None,
+    library_path: Optional[str] = None,
     exe_path: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
     found_callback: Optional[Callable[[int, int], None]] = None,
@@ -336,12 +356,18 @@ def compute(
         snapshot,
         min_alex=min_alex,
         max_alex=max_alex,
-        width=width,
         depth=depth,
         max_paths=max_paths,
+        iterations=iterations,
+        beam_width=beam_width,
+        sim_depth=sim_depth,
+        explore_c=explore_c,
+        games=games,
+        threads=threads,
+        time_budget_sec=time_budget_sec,
         mode=mode,
-        forward_depth=forward_depth,
         etc_band=etc_band,
+        library_path=library_path,
     )
     return run_engine(
         payload,
