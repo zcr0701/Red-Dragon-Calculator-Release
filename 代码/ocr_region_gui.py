@@ -30,6 +30,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ocr_interface import OCRInterface
+from hdt_reader import HdtStateReader
 from powerlog_reader import LogWatcher, snapshot_to_rebuild_result
 from rebuild_hand import (
     CARD_COSTS,
@@ -522,14 +523,14 @@ class OCRWorker(QThread):
 
 
 class LogReaderWorker(QThread):
-    """持续监听 Power.log（hslog 解析），对局状态变化时推送结果。"""
+    """持续读取对局状态（Power.log 或 HDT 插件），状态变化时推送结果。"""
 
     result_signal = pyqtSignal(str, str, object, object, object, str)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, game_dir=None):
+    def __init__(self, game_dir=None, reader=None):
         super().__init__()
-        self.watcher = LogWatcher(game_dir=game_dir)
+        self.watcher = reader if reader is not None else LogWatcher(game_dir=game_dir)
         self.running = True
         self.last_key = None
 
@@ -538,7 +539,7 @@ class LogReaderWorker(QThread):
             try:
                 snap = self.watcher.snapshot()
                 key = (
-                    snap.get("log_path"),
+                    snap.get("log_path") or snap.get("state_path"),
                     snap.get("in_game"),
                     json.dumps(snap.get("hand", []), ensure_ascii=False),
                     json.dumps(snap.get("board", []), ensure_ascii=False),
@@ -571,7 +572,7 @@ class LogReaderWorker(QThread):
                             f"对局状态：{status}",
                             f"本机：{snap.get('player_name')} / 对手：{snap.get('opponent_name')}",
                             f"水晶：{snap.get('crystals')} / 法力：{snap.get('mana')}",
-                            f"日志：{snap.get('log_path')}",
+                            f"来源：{snap.get('log_path') or snap.get('state_path')}",
                         ]
                     )
                     self.result_signal.emit(
@@ -1182,17 +1183,21 @@ class QuickPanel(ScreenClampMixin, QDialog):
         for btn in (self.startButton, self.calculateButton, self.settingsButton):
             button_layout.addWidget(btn)
 
-        # ---- 数据源：日志读取（默认，推荐）/ OCR识别（兜底）----
+        # ---- 数据源：HDT插件（默认，推荐）/ 日志读取 / OCR识别（兜底）----
+        self.sourceHdtRadio = QRadioButton("HDT插件")
         self.sourceLogRadio = QRadioButton("日志读取")
         self.sourceOcrRadio = QRadioButton("OCR识别")
-        self.sourceLogRadio.setChecked(True)
+        self.sourceHdtRadio.setChecked(True)
+        self.sourceHdtRadio.setToolTip("读取 HDT 插件导出的对局状态（手牌/场面/完整牌库/对手信息），需先启动 HDT 并启用「红龙计算器状态导出」插件")
         self.sourceLogRadio.setToolTip("直接监听炉石 Power.log（hslog 解析），无需框选截图区域")
         self.sourceOcrRadio.setToolTip("保留旧方案：截图 + PaddleOCR 识别")
         source_row = QHBoxLayout()
         source_row.addWidget(QLabel("数据源："))
+        source_row.addWidget(self.sourceHdtRadio)
         source_row.addWidget(self.sourceLogRadio)
         source_row.addWidget(self.sourceOcrRadio)
         source_row.addStretch()
+        self.sourceHdtRadio.toggled.connect(owner._refresh_start_enabled)
         self.sourceLogRadio.toggled.connect(owner._refresh_start_enabled)
         self.sourceOcrRadio.toggled.connect(owner._refresh_start_enabled)
 
@@ -1839,6 +1844,8 @@ class MainWindow(ScreenClampMixin, QWidget):
 
         if source == "log":
             self.ocrTitleLabel.setText("日志原始文本（对局快照）")
+        elif source == "hdt":
+            self.ocrTitleLabel.setText("HDT状态（对局快照）")
         elif source == "ocr":
             self.ocrTitleLabel.setText("OCR原始文本（手牌/战场）")
         else:
@@ -2007,9 +2014,12 @@ class MainWindow(ScreenClampMixin, QWidget):
         self._refresh_start_enabled()
 
     def _refresh_start_enabled(self):
-        log_mode = self.panel.sourceLogRadio.isChecked()
+        auto_mode = (
+            self.panel.sourceHdtRadio.isChecked()
+            or self.panel.sourceLogRadio.isChecked()
+        )
         self.panel.startButton.setEnabled(
-            log_mode or (self.box is not None and self.mana_box is not None)
+            auto_mode or (self.box is not None and self.mana_box is not None)
         )
 
     def get_box(self):
@@ -2068,6 +2078,10 @@ class MainWindow(ScreenClampMixin, QWidget):
         ]
 
     def start_ocr(self):
+        if self.panel.sourceHdtRadio.isChecked():
+            self.start_hdt_reader()
+            return
+
         if self.panel.sourceLogRadio.isChecked():
             self.start_log_reader()
             return
@@ -2088,6 +2102,23 @@ class MainWindow(ScreenClampMixin, QWidget):
         self.worker.start()
 
         self.statusLabel.setText("状态：正在扫描识别（0.1s 循环，识别到结果自动停止）")
+        self.panel.startButton.setText("停止识别")
+
+    def start_hdt_reader(self):
+        if self.worker is not None:
+            return
+
+        self.worker = LogReaderWorker(reader=HdtStateReader())
+        self.worker.result_signal.connect(
+            lambda *args: self.setResult(*args, source="hdt")
+        )
+        self.worker.error_signal.connect(self.on_ocr_error)
+        self._auto_stop = False
+        self._run_got_hand = False
+        self._run_got_mana = False
+        self.worker.start()
+
+        self.statusLabel.setText("状态：正在读取 HDT 状态（需 HDT 已启动且启用红龙插件）")
         self.panel.startButton.setText("停止识别")
 
     def start_log_reader(self):
