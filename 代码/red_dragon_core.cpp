@@ -1,13 +1,12 @@
-// 红龙贼计算器 C++ 计算核心（MCTS + 束搜索模拟 + 瓶颈模型启发）。
+// 红龙贼计算器 C++ 计算核心（纯束宽搜索 + 瓶颈模型启发）。
 //
-// 架构（2026-08-05 重构）：
-//   - 计算全部改为 MCTS + 束搜索模拟：每步决策以当前局面为根做 N 次迭代
-//     （UCB1 选择 / 随机扩展 / 束搜索模拟 / 回传），选访问次数最多的子动作执行，
-//     重复到游戏结束；多局并行（根并行）收集各龙数最优路径。
-//   - 奖励：伤害优先（伤害×100 + 龙数；鲨鱼在场时每龙 16 伤）。
-//   - 简单启发函数（完全放弃子链库）：瓶颈模型（Liebig 最小因子律），
+// 架构（2026-08-06 纯束宽重构，彻底移除 MCTS）：
+//   - 并行多路宽束搜索（默认束宽 {2400, 600}）：2400 保小局面深线（如 3 龙/48 伤），
+//     600 保大局面 2 秒时限内走深（如 10 龙/152 伤）；共享时间预算，合并各龙数最优路径。
+//   - 简单启发函数（无子链库）：瓶颈模型（Liebig 最小因子律），
 //     可达龙数 ≈ min(① 龙源数, ② 回手容量, ③ 法力可负担轮数)，
-//     束内保留评分 = 当前伤害 + 瓶颈可达龙数×16。
+//     束内保留评分 = 当前伤害 + 启发函数值；按龙数分桶 + 启发值冠军兜底。
+//   - 默认 2 秒时间预算（硬时限 ≤3 秒，宽束循环内细粒度中断），大部分局面 1~2 秒出结果。
 //
 // 编译（MinGW g++）：g++ -std=c++17 -O3 -static -o red_dragon_engine.exe red_dragon_core.cpp
 // 用法：red_dragon_engine.exe --json < problem.json
@@ -16,9 +15,8 @@
 //    "board":[...],"secrets":[...],"weapon":{...},"deck":[...],"etc_band":[...],
 //    "current_effects":[{"name":"狐人老千","count":2}],
 //    "min_alex":1,"max_alex":10,"depth":30,"max_paths":1000000,
-//    "iterations":400,"beam_width":8,"sim_depth":8,"explore_c":1.414,
-//    "games":8,"threads":4,"time_budget_sec":30.0}
-// 输出（stdout）：{"mode":"mcts_beam","results":[{"dragons","damage","mana","path"}],"stats":{...}}
+//    "threads":4,"time_budget_sec":2.0,"heuristic":-1,"wide_widths":[2400,600]}
+// 输出（stdout）：{"mode":"beam","results":[{"dragons","damage","mana","path"}],"stats":{...}}
 // 实时进度：stderr 输出 PROGRESS / FOUND 行。
 
 #include <algorithm>
@@ -172,9 +170,22 @@ struct State {
     int alex_damage = 0;
     vector<string> etc_band;
     bool etc_band_provided = false;   // JSON 显式传了 etc_band（空数组=牛池已空）
-    vector<string> path;
+    std::shared_ptr<vector<string>> path_buf;  // 路径共享存储（克隆 O(1)，写时复制）
 
-    State clone() const { return *this; }
+    const vector<string>& path() const {
+        static const vector<string> empty;
+        return path_buf ? *path_buf : empty;
+    }
+    vector<string>& path_mut() {
+        if (!path_buf) {
+            path_buf = std::make_shared<vector<string>>();
+        } else if (path_buf.use_count() > 1) {
+            path_buf = std::make_shared<vector<string>>(*path_buf);
+        }
+        return *path_buf;
+    }
+
+    State clone() const { return *this; }  // path_buf 共享，克隆 O(1)
 
     bool has_shark() const {
         for (const auto& c : board)
@@ -247,8 +258,8 @@ static void transform_deadly_shadows(State& s, const Card& spell_card) {
 }
 
 static void append_choice_to_last_path(State& s, const string& choice_name) {
-    if (s.path.empty()) return;
-    string& last = s.path.back();
+    if (s.path().empty()) return;
+    string& last = s.path_mut().back();
     static const string full_width_close = "）";
     if (last.find("（") != string::npos && last.size() >= full_width_close.size() &&
         last.compare(last.size() - full_width_close.size(), full_width_close.size(), full_width_close) == 0) {
@@ -285,7 +296,7 @@ static bool play_card_base(State& s, int hand_index, int target_friendly_index,
             item += "(无效目标)";
         }
     }
-    s.path.push_back(item);
+    s.path_mut().push_back(item);
 
     if (card.name == "生命的缚誓者阿莱克丝塔萨") {
         s.alex_play_count++;
@@ -345,39 +356,132 @@ static State breakdance_branch(const State& base) {
     return s;
 }
 
-// 效果结算（与 Python apply_search_effect 对齐），返回多个后继
-static vector<State> apply_search_effect(const State& base, const Card& card,
+// 效果结算：单分支效果原地修改（零克隆，对应“增量状态”优化）；
+// 仅牛头人发现 / 幸运彗星等真多分支效果走克隆路径。
+static bool apply_effect_inplace(State& s, const string& e, int target_friendly_index,
+                                 bool target_enemy_is_killed) {
+    if (e == "coin" || e == "fake_coin") {
+        s.mana += 1;  // 临时法力不封顶（与 Python gain_temporary 一致）
+    } else if (e == "preparation") {
+        s.next_spell += 2;
+    } else if (e == "foxy_fraud") {
+        s.next_combo += 2;
+    } else if (e == "scabbs_cutterbutter") {
+        if (s.cards_played_this_turn > 0) {
+            int stacks = s.next_combo_twice ? 4 : 2;  // 幸运彗星：连击触发两次
+            s.oil_stacks.push_back({stacks, 2});
+            s.next_combo_twice = false;
+        }
+    } else if (e == "strategic_transfer") {
+        // 战略转移：所有友方随从移回手牌（保持费用状态），手牌满按进场顺序烧
+        vector<Card> returning = s.board;
+        s.board.clear();
+        int free_slots = std::max(0, MAX_HAND - (int)s.hand.size());
+        if ((int)returning.size() <= free_slots) {
+            for (Card& m : returning) add_card_to_hand_or_burn(s, m);
+        } else {
+            for (int i = 0; i < free_slots; i++) add_card_to_hand_or_burn(s, returning[i]);
+            s.burned_cards += (int)returning.size() - free_slots;
+        }
+    } else if (e == "shadowstep") {
+        if (target_friendly_index >= 0 && target_friendly_index < (int)s.board.size()) {
+            Card target = s.board[target_friendly_index];
+            s.board.erase(s.board.begin() + target_friendly_index);
+            if (target.locked_one_cost) {
+                target.temp_cost = 1;
+            } else {
+                int base_cost = target.current_cost() >= 0 ? target.current_cost() : 0;
+                target.temp_cost = std::max(0, base_cost - 2);
+            }
+            add_card_to_hand_or_burn(s, target);
+        }
+    } else if (e == "shadowcaster") {
+        if (target_friendly_index >= 0 && target_friendly_index < (int)s.board.size()) {
+            Card copied = s.board[target_friendly_index].clone();
+            copied.temp_cost = 1;
+            copied.health = 1;
+            add_card_to_hand_or_burn(s, copied);
+        }
+    } else if (e == "tenwu") {
+        if (target_friendly_index >= 0 && target_friendly_index < (int)s.board.size()) {
+            Card target = s.board[target_friendly_index];
+            s.board.erase(s.board.begin() + target_friendly_index);
+            target.temp_cost = 1;
+            target.locked_one_cost = true;
+            add_card_to_hand_or_burn(s, target);
+        }
+    } else if (e == "breakdance") {
+        State ns = breakdance_branch(s);
+        s = std::move(ns);
+    } else if (e == "potion_of_illusion") {
+        vector<Card> copies;
+        for (const auto& m : s.board) {
+            Card copy = m.clone();
+            copy.temp_cost = 1;
+            copy.health = 1;
+            copies.push_back(copy);
+        }
+        for (const auto& c : copies) add_card_to_hand_or_burn(s, c);
+    } else if (e == "candlebreath_mother") {
+        bool dragon_in_hand = false;
+        for (const auto& c : s.hand)
+            if (c.dragon) { dragon_in_hand = true; break; }
+        if (dragon_in_hand) {
+            s.mana = std::min(s.mana_crystals, s.mana + 2);
+        }
+    } else if (e == "serrated_bone_spike") {
+        if (target_enemy_is_killed) {
+            if (target_friendly_index < 0 || target_friendly_index >= (int)s.board.size()) {
+                return false;  // 无后继
+            }
+            const Card& target = s.board[target_friendly_index];
+            if (target.health < 0 || target.health > 3) {
+                return false;  // 无后继
+            }
+            s.board.erase(s.board.begin() + target_friendly_index);
+            s.next_card += 2;
+        }
+    } else if (e == "cultist_map") {
+        Card unknown = make_card("未知发现物");
+        add_card_to_hand_or_burn(s, unknown);
+    }
+    // alexstrasza / 未知效果：无操作
+    return true;
+}
+
+static vector<State> apply_search_effect(State base, const Card& card,
                                          int target_friendly_index,
                                          bool target_enemy_is_killed,
                                          bool enemy_target) {
+    (void)enemy_target;
     int multiplier = minion_trigger_multiplier(base, card);
-    vector<State> states = {base.clone()};
+    const string& e = card.effect_id;
+    bool branching = (e == "elite_tauren_champion" || e == "lucky_comet");
+    if (!branching) {
+        for (int m = 0; m < multiplier; m++) {
+            if (!apply_effect_inplace(base, e, target_friendly_index, target_enemy_is_killed)) {
+                return {};  // 无后继（如骨刺击杀无效目标）
+            }
+        }
+        if (card.is_spell_like()) transform_deadly_shadows(base, card);
+        base.cards_played_this_turn++;
+        vector<State> out;
+        out.push_back(std::move(base));
+        return out;
+    }
+
+    // 多分支效果（牛头人发现 / 幸运彗星）：克隆每个分支
+    vector<State> states;
+    if (multiplier == 1) {
+        states.push_back(std::move(base));
+    } else {
+        states.push_back(base.clone());
+        states.push_back(base.clone());
+    }
     for (int m = 0; m < multiplier; m++) {
         vector<State> next_states;
         for (const State& current : states) {
-            const string& e = card.effect_id;
-            if (e == "coin" || e == "fake_coin") {
-                State ns = current.clone();
-                ns.mana += 1;  // 临时法力不封顶（与 Python gain_temporary 一致）
-                next_states.push_back(ns);
-            } else if (e == "preparation") {
-                State ns = current.clone();
-                ns.next_spell += 2;
-                next_states.push_back(ns);
-            } else if (e == "foxy_fraud") {
-                State ns = current.clone();
-                ns.next_combo += 2;
-                next_states.push_back(ns);
-            } else if (e == "scabbs_cutterbutter") {
-                State ns = current.clone();
-                if (ns.cards_played_this_turn > 0) {
-                    int stacks = ns.next_combo_twice ? 4 : 2;  // 幸运彗星：连击触发两次
-                    ns.oil_stacks.push_back({stacks, 2});
-                    ns.next_combo_twice = false;
-                }
-                next_states.push_back(ns);
-            } else if (e == "lucky_comet") {
-                // 幸运彗星：发现一张连击随从（牌库分支），设置下一张连击随从连击两次
+            if (e == "lucky_comet") {
                 vector<int> combo_indexes;
                 for (int i = 0; i < (int)current.deck.size(); i++) {
                     if (current.deck[i].card_type == "minion" && current.deck[i].combo)
@@ -398,102 +502,9 @@ static vector<State> apply_search_effect(const State& base, const Card& card,
                     ns.next_combo_twice = true;
                     next_states.push_back(ns);
                 }
-            } else if (e == "strategic_transfer") {
-                // 战略转移：所有友方随从移回手牌（保持费用状态），手牌满按进场顺序烧
-                State ns = current.clone();
-                vector<Card> returning = ns.board;
-                ns.board.clear();
-                int free_slots = std::max(0, MAX_HAND - (int)ns.hand.size());
-                if ((int)returning.size() <= free_slots) {
-                    for (Card& m : returning) add_card_to_hand_or_burn(ns, m);
-                } else {
-                    for (int i = 0; i < free_slots; i++) add_card_to_hand_or_burn(ns, returning[i]);
-                    ns.burned_cards += (int)returning.size() - free_slots;
-                }
-                next_states.push_back(ns);
-            } else if (e == "shadowstep") {
-                State ns = current.clone();
-                if (target_friendly_index >= 0 && target_friendly_index < (int)ns.board.size()) {
-                    Card target = ns.board[target_friendly_index];
-                    ns.board.erase(ns.board.begin() + target_friendly_index);
-                    if (target.locked_one_cost) {
-                        target.temp_cost = 1;
-                    } else {
-                        int base_cost = target.current_cost() >= 0 ? target.current_cost() : 0;
-                        target.temp_cost = std::max(0, base_cost - 2);
-                    }
-                    add_card_to_hand_or_burn(ns, target);
-                }
-                next_states.push_back(ns);
-            } else if (e == "shadowcaster") {
-                State ns = current.clone();
-                if (target_friendly_index >= 0 && target_friendly_index < (int)ns.board.size()) {
-                    Card copied = ns.board[target_friendly_index].clone();
-                    copied.temp_cost = 1;
-                    copied.health = 1;
-                    add_card_to_hand_or_burn(ns, copied);
-                }
-                next_states.push_back(ns);
-            } else if (e == "tenwu") {
-                State ns = current.clone();
-                if (target_friendly_index >= 0 && target_friendly_index < (int)ns.board.size()) {
-                    Card target = ns.board[target_friendly_index];
-                    ns.board.erase(ns.board.begin() + target_friendly_index);
-                    target.temp_cost = 1;
-                    target.locked_one_cost = true;
-                    add_card_to_hand_or_burn(ns, target);
-                }
-                next_states.push_back(ns);
-            } else if (e == "breakdance") {
-                next_states.push_back(breakdance_branch(current));
-            } else if (e == "potion_of_illusion") {
-                State ns = current.clone();
-                vector<Card> copies;
-                for (const auto& m : ns.board) {
-                    Card copy = m.clone();
-                    copy.temp_cost = 1;
-                    copy.health = 1;
-                    copies.push_back(copy);
-                }
-                for (const auto& c : copies) add_card_to_hand_or_burn(ns, c);
-                next_states.push_back(ns);
-            } else if (e == "candlebreath_mother") {
-                State ns = current.clone();
-                bool dragon_in_hand = false;
-                for (const auto& c : ns.hand)
-                    if (c.dragon) { dragon_in_hand = true; break; }
-                if (dragon_in_hand) {
-                    ns.mana = std::min(ns.mana_crystals, ns.mana + 2);
-                }
-                next_states.push_back(ns);
-            } else if (e == "serrated_bone_spike") {
-                if (target_enemy_is_killed) {
-                    if (target_friendly_index < 0 || target_friendly_index >= (int)current.board.size()) {
-                        continue;  // 无后继
-                    }
-                    const Card& target = current.board[target_friendly_index];
-                    if (target.health < 0 || target.health > 3) {
-                        continue;  // 无后继
-                    }
-                    State ns = current.clone();
-                    ns.board.erase(ns.board.begin() + target_friendly_index);
-                    ns.next_card += 2;
-                    next_states.push_back(ns);
-                } else {
-                    next_states.push_back(current.clone());
-                }
-            } else if (e == "cultist_map") {
-                State ns = current.clone();
-                Card unknown = make_card("未知发现物");
-                add_card_to_hand_or_burn(ns, unknown);
-                next_states.push_back(ns);
             } else if (e == "elite_tauren_champion") {
                 vector<State> disc = discover_fixed_choices(current);
                 for (auto& d : disc) next_states.push_back(d);
-            } else if (e == "alexstrasza") {
-                next_states.push_back(current.clone());
-            } else {
-                next_states.push_back(current.clone());
             }
         }
         states = std::move(next_states);
@@ -575,7 +586,7 @@ static vector<State> generate_successors(const State& st) {
                 for (bool et : enemy_options) {
                     State base = st.clone();
                     if (!play_card_base(base, hand_index, tf, ek, et)) continue;
-                    vector<State> succs = apply_search_effect(base, card, tf, ek, et);
+                    vector<State> succs = apply_search_effect(std::move(base), card, tf, ek, et);
                     for (State& succ : succs) out.push_back(std::move(succ));
                 }
             }
@@ -799,25 +810,19 @@ static string canonical_action(string item) {
     return out;
 }
 
-// ===================== MCTS + 束搜索模拟 =====================
+// ===================== 纯束宽搜索 =====================
 struct SearchParams {
     int min_alex = 1;
     int max_alex = 10;
     int depth = 30;
     int max_paths = 1000000;
-    int iterations = 400;       // 每步决策的 MCTS 迭代次数 N
-    int beam_width = 8;         // 模拟专用束宽 B_sim
-    int sim_depth = 8;          // 束搜索模拟深度上限（树随 MCTS 逐步加深）
-    double explore_c = 1.41421356;  // UCB1 探索常数 C
-    int games = 8;              // MCTS 游戏局数（根并行，硬上限）
     int threads = 4;
-    double time_budget_sec = 30.0;  // 总时间预算（秒），0 = 不限时
+    double time_budget_sec = 3.0;   // 总时间预算（秒），硬时限 ≤3s（大部分 1~2s 出结果）
+    int heuristic = 6;          // 组合加权（0.6×瓶颈 + 资源求和 + 路径里程碑，实测最优）
+    int wide_width = 0;         // >0 = 单宽束通道固定宽度
+    vector<int> wide_widths;    // 多宽束并行组合；空 = 默认 {2400,600}
+    int inner_threads = 1;      // 宽束通道内部的并行展开线程数（大局面通道给 3）
 };
-
-// 奖励：伤害×100 + 龙数。伤害优先，龙数破平。
-static double reward_of(const State& s) {
-    return s.alex_damage * 100.0 + s.alex_play_count;
-}
 
 // ---------- 子链覆盖度（旧 beam 冠军判据：状态侧已凑齐的子链骨架数） ----------
 static int count_hand_cards(const State& s, const string& name) {
@@ -840,7 +845,14 @@ static int count_hand_dragons(const State& s) {
 // 红龙 OTK 每轮循环 = 打出 1 条龙 + 1 次回手。
 // 可达龙数 ≈ min(① 龙源数, ② 回手容量, ③ 法力可负担轮数)，
 // 不取决于资源总和，而取决于最紧的那条约束。
-static double bottleneck_dragons(const State& s) {
+struct BottleneckParts {
+    double sources = 0.0;     // ① 龙源数
+    double capacity = 0.0;    // ② 回手容量
+    double mana_rounds = 0.0; // ③ 法力可负担轮数
+};
+
+static BottleneckParts bottleneck_parts(const State& s) {
+    BottleneckParts r;
     int hand_dragons = 0, board_dragons = 0, shadowcaster = 0, scabbs = 0;
     int shark_in_hand = 0, single_returns = 0, whole_returns = 0, deadly = 0;
     int cheapest_dragon = -1;
@@ -872,23 +884,30 @@ static double bottleneck_dragons(const State& s) {
     bool shark = s.has_shark() || shark_in_hand > 0;
 
     // ① 龙源数：手牌龙 + 场上龙（回手后重打）+ 暗施可复制龙（鲨鱼时 ×2）
-    double sources = (double)(hand_dragons + board_dragons + shadowcaster * (shark ? 2 : 1));
+    r.sources = (double)(hand_dragons + board_dragons + shadowcaster * (shark ? 2 : 1));
 
     // ② 回手容量：单体回手 + 整场回手×3；刀油+单体回手 ≈ 无限（+15 封顶）；殒命打五折
-    double capacity = (double)single_returns + (double)whole_returns * 3.0;
-    if (scabbs > 0 && single_returns > 0) capacity += 15.0;
-    if (deadly > 0 && s.cards_played_this_turn > 0) capacity += 0.5;
+    r.capacity = (double)single_returns + (double)whole_returns * 3.0;
+    if (scabbs > 0 && single_returns > 0) r.capacity += 15.0;
+    if (deadly > 0 && s.cards_played_this_turn > 0) r.capacity += 0.5;
 
     // ③ 法力可负担轮数：阈值型资源；考虑手牌刀油先打出带来的减费潜力
-    if (cheapest_dragon < 0 && board_dragons == 0 && shadowcaster == 0) return 0.0;  // 无龙源
+    if (cheapest_dragon < 0 && board_dragons == 0 && shadowcaster == 0) return r;  // 无龙源
     if (cheapest_dragon < 0) cheapest_dragon = 9;
     int per_scabbs = shark ? 4 : 2;
     int eff_dragon = std::max(0, cheapest_dragon - scabbs * per_scabbs);
-    if (s.mana < eff_dragon) return 0.0;                                            // 阈值：打不起第一条龙
-    int rounds = 1 + (s.mana - eff_dragon) / std::max(1, eff_dragon + 1);           // 每轮 ≈ 龙费 + 回手费(约1)
-    double mana = (double)rounds;
-    return std::min(sources, std::min(capacity, mana));
+    if (s.mana < eff_dragon) return r;                                              // 阈值：打不起第一条龙
+    r.mana_rounds = 1 + (s.mana - eff_dragon) / std::max(1, eff_dragon + 1);        // 每轮 ≈ 龙费 + 回手费(约1)
+    return r;
 }
+
+static double bottleneck_dragons(const State& s) {
+    BottleneckParts p = bottleneck_parts(s);
+    return std::min(p.sources, std::min(p.capacity, p.mana_rounds));
+}
+
+// 启发函数分发（实现见"启发函数库"，此处前向声明供 beam_simulate 使用）
+static double heuristic_value(const State& s, int h);
 
 // 时间预算：跨线程共享的原子停止标志 + 起始时间
 struct Budget {
@@ -912,7 +931,7 @@ struct Budget {
 static bool path_sort_better(const State& a, const State& b) {
     if (a.alex_damage != b.alex_damage) return a.alex_damage > b.alex_damage;
     if (a.alex_play_count != b.alex_play_count) return a.alex_play_count > b.alex_play_count;
-    if (a.path.size() != b.path.size()) return a.path.size() > b.path.size();
+    if (a.path().size() != b.path().size()) return a.path().size() > b.path().size();
     if (a.mana != b.mana) return a.mana > b.mana;
     if (a.initial_mana_crystals != b.initial_mana_crystals)
         return a.initial_mana_crystals < b.initial_mana_crystals;
@@ -928,222 +947,6 @@ static void add_best(const State& s, unordered_map<int, State>& best, int min_al
 // 束搜索模拟：从给定状态快速搜到深度上限，返回途中发现的最高奖励状态（含完整路径）
 // 束内保留评分 = 当前伤害 + 瓶颈可达龙数×16（简单启发函数，无子链库）；
 // 并按当前龙数分桶，保住正在蓄力的低龙数分支。
-static State beam_simulate(const State& start, const SearchParams& p,
-                           int* expansions, const Budget* budget = nullptr) {
-    struct Cand { double score; State s; };
-    vector<Cand> level;
-    State best = start;
-    double best_reward = reward_of(start);
-    double best_score = (double)start.alex_damage + bottleneck_dragons(start) * 16.0;
-    level.push_back({best_score, start});
-    unordered_set<uint64_t> seen;
-    seen.insert(state_hash(start));
-    int sim_max = std::max(1, std::min(p.depth - (int)start.path.size(), p.sim_depth));
-
-    for (int d = 0; d < sim_max; d++) {
-        if (budget && budget->over()) break;
-        vector<Cand> next;
-        for (const Cand& c : level) {
-            if (c.s.alex_play_count >= p.max_alex) continue;
-            for (State& succ : generate_successors(c.s)) {
-                if (expansions) (*expansions)++;
-                uint64_t key = state_hash(succ);
-                if (seen.count(key)) continue;  // 循环保护
-                seen.insert(key);
-                double r = reward_of(succ);
-                double sc = (double)succ.alex_damage + bottleneck_dragons(succ) * 16.0;
-                if (r > best_reward || (r == best_reward && sc > best_score)) {
-                    best_reward = r;
-                    best_score = sc;
-                    best = succ;
-                }
-                next.push_back({sc, std::move(succ)});
-            }
-        }
-        if (next.empty()) break;
-        // 分桶：按当前龙数分组，避免高龙数分支挤掉蓄力中的低龙数高分分支
-        map<int, vector<Cand*>> buckets;
-        for (Cand& c : next) buckets[c.s.alex_play_count].push_back(&c);
-        int per_bucket = std::max(1, (int)(p.beam_width * 1.2 / std::max(1, (int)buckets.size())));
-        vector<Cand> kept;
-        for (auto it = buckets.rbegin(); it != buckets.rend(); ++it) {
-            auto& b = it->second;
-            std::stable_sort(b.begin(), b.end(),
-                             [](const Cand* a, const Cand* b) { return a->score > b->score; });
-            for (int i = 0; i < per_bucket && i < (int)b.size(); i++) kept.push_back(std::move(*b[i]));
-        }
-        if ((int)kept.size() > p.beam_width) {
-            std::stable_sort(kept.begin(), kept.end(),
-                             [](const Cand& a, const Cand& b) { return a.score > b.score; });
-            kept.resize(p.beam_width);
-        }
-        level = std::move(kept);
-    }
-    return best;
-}
-
-struct MctsNode {
-    State state;
-    vector<State> succs;
-    vector<MctsNode*> children;  // 与 succs 平行，nullptr = 尚未尝试
-    vector<int> untried;
-    int visits = 0;
-    double total = 0.0;
-    State best_state;            // 该节点（及其模拟）发现的最佳状态
-    double best_reward = -1.0;
-    bool succs_ready = false;
-    bool terminal = false;
-    MctsNode* parent = nullptr;
-};
-
-static void ensure_succs(MctsNode* node, int* expansions) {
-    if (node->succs_ready) return;
-    node->succs = generate_successors(node->state);
-    node->succs_ready = true;
-    node->terminal = node->succs.empty();
-    if (expansions) (*expansions) += (int)node->succs.size();
-    node->children.assign(node->succs.size(), nullptr);
-    node->untried.clear();
-    for (int i = 0; i < (int)node->succs.size(); i++) node->untried.push_back(i);
-}
-
-struct StepOutcome {
-    State chosen;
-    vector<State> harvested;
-    int expansions = 0;
-    int simulations = 0;
-};
-
-// 单步 MCTS：从 root 跑 N 次迭代（UCB1 选择 / 随机扩展 / 束搜索模拟 / 回传），
-// 选择访问次数最多的子动作执行，并收集模拟中发现的高奖励路径。
-static StepOutcome mcts_step(const State& root_state, const SearchParams& p,
-                             std::mt19937& rng, const Budget& budget) {
-    StepOutcome out;
-    vector<std::unique_ptr<MctsNode>> arena;
-    arena.push_back(std::make_unique<MctsNode>());
-    arena.back()->state = root_state.clone();
-    MctsNode* root = arena.back().get();
-    ensure_succs(root, &out.expansions);
-    if (root->terminal) {
-        out.chosen = root_state.clone();
-        return out;
-    }
-
-    for (int it = 0; it < p.iterations; it++) {
-        if ((it & 127) == 0 && budget.over()) break;  // 时间预算内可中断
-        // 1) 选择：沿 UCB1 下降，直到非完全展开节点或终止状态
-        MctsNode* node = root;
-        while (!node->terminal && node->untried.empty()) {
-            MctsNode* best_child = nullptr;
-            double best_val = -1.0e18;
-            for (MctsNode* ch : node->children) {
-                if (!ch) continue;
-                double ucb;
-                if (ch->visits == 0) {
-                    ucb = 1.0e18;
-                } else {
-                    // 奖励上限估计（每龙最多 16 伤）：max_alex*16*100 + max_alex + 余量
-                    double max_r = p.max_alex * 1600.0 + p.max_alex + 100.0;
-                    double q = (ch->total / ch->visits) / max_r;
-                    ucb = q + p.explore_c * std::sqrt(std::log((double)node->visits) / (double)ch->visits);
-                }
-                if (ucb > best_val) { best_val = ucb; best_child = ch; }
-            }
-            if (!best_child) break;
-            node = best_child;
-        }
-
-        // 2) 扩展 + 3) 模拟（束搜索）
-        MctsNode* back_start = node;
-        double reward;
-        if (node->terminal) {
-            reward = reward_of(node->state);
-        } else if (!node->untried.empty()) {
-            std::uniform_int_distribution<int> u(0, (int)node->untried.size() - 1);
-            int pos = u(rng);
-            int idx = node->untried[pos];
-            node->untried[pos] = node->untried.back();
-            node->untried.pop_back();
-            arena.push_back(std::make_unique<MctsNode>());
-            MctsNode* child = arena.back().get();
-            child->state = node->succs[idx].clone();
-            child->parent = node;
-            node->children[idx] = child;
-            ensure_succs(child, &out.expansions);
-            State sim_best = beam_simulate(child->state, p, &out.expansions, &budget);
-            reward = reward_of(sim_best);
-            child->best_reward = reward;
-            child->best_state = sim_best;
-            back_start = child;
-            out.simulations++;
-        } else {
-            reward = reward_of(node->state);
-        }
-
-        // 4) 回传
-        for (MctsNode* n = back_start; n; n = n->parent) {
-            n->visits++;
-            n->total += reward;
-        }
-    }
-
-    // 最终动作选择：访问次数最多（次按平均价值），鲁棒优先
-    MctsNode* best = nullptr;
-    for (MctsNode* ch : root->children) {
-        if (!ch) continue;
-        if (!best || ch->visits > best->visits ||
-            (ch->visits == best->visits &&
-             ch->total / ch->visits > best->total / best->visits)) {
-            best = ch;
-        }
-    }
-    out.chosen = best ? best->state.clone() : root_state.clone();
-    for (const auto& np : arena) {
-        if (np->best_reward >= 0.0 && !np->best_state.path.empty()) {
-            out.harvested.push_back(np->best_state);
-        }
-    }
-    return out;
-}
-
-struct ThreadOut {
-    unordered_map<int, State> best;   // 各龙数最优路径
-    vector<State> game_paths;         // 每局逐步走出的路径（用于子链学习）
-    int expansions = 0;
-    int simulations = 0;
-    int games_played = 0;
-    int reached_depth = 0;
-    double work_sec = 0.0;            // 该线程实际计算耗时（秒）
-};
-
-// 单局游戏：每步以当前状态为根重跑 MCTS，选最优动作前进，直到无法继续/达目标
-static void mcts_game(const State& start, const SearchParams& p,
-                      std::mt19937& rng, ThreadOut& out, const Budget& budget) {
-    State st = start.clone();
-    add_best(st, out.best, p.min_alex);
-    out.game_paths.push_back(st);
-    unordered_set<uint64_t> seen;
-    seen.insert(state_hash(st));
-
-    for (int step = 0; step < p.depth; step++) {
-        if (budget.over()) break;
-        if (st.alex_play_count >= p.max_alex) break;
-        if (generate_successors(st).empty()) break;  // 无可行动作 = 终局
-        StepOutcome so = mcts_step(st, p, rng, budget);
-        out.expansions += so.expansions;
-        out.simulations += so.simulations;
-        for (const State& h : so.harvested) add_best(h, out.best, p.min_alex);
-        if (so.chosen.path.size() <= st.path.size()) break;  // 无进展保护
-        st = so.chosen;
-        uint64_t key = state_hash(st);
-        if (seen.count(key)) break;  // 循环保护
-        seen.insert(key);
-        add_best(st, out.best, p.min_alex);
-        out.game_paths.push_back(st);
-    }
-    out.reached_depth = std::max(out.reached_depth, (int)st.path.size());
-}
-
 // ---------- 旧 beam 的子链/离散路径评分（宽束模拟沿用，经验证能挖出 10 龙/160 伤） ----------
 static int subchain_score(const State& s) {
     int hand_d = count_hand_dragons(s);
@@ -1183,7 +986,7 @@ static bool path_contains(const vector<string>& path, const vector<string>& need
 }
 
 static int discrete_path_score(const State& s) {
-    const auto& p = s.path;
+    const auto& p = s.path();
     int score = 0;
     if (path_contains(p, {"鲨鱼之灵", "生命的缚誓者"})) score += 16;
     if (path_contains(p, {"生命的缚誓者", "晦鳞巢母", "生命的缚誓者"})) score += 20;
@@ -1195,70 +998,351 @@ static int discrete_path_score(const State& s) {
     return score;
 }
 
-// 根级宽束模拟：与旧 beam 同机制（宽束全深度 + 分桶 + 覆盖度冠军，
-// 总分 = 伤害 + 子链分 + 离散路径分，键含龙数），保证深线（10 龙/160 伤）
-// 能被发现；与 MCTS 游戏并行，共享时间预算。
+// ===================== 启发函数库（对比实验用） =====================
+// heuristic 取值：
+//   0 无启发（基线，仅按当前伤害排序）
+//   1 瓶颈模型（min 龙源/回手/法力，当前默认）
+//   2 资源求和（combo_progress 式：各资源加权相加）
+//   3 伤害上界（仅龙源数 ×16，乐观上限）
+//   4 法力阈值（仅法力可负担轮数 ×16）
+//   5 回手容量（min(龙源, 回手) ×16，忽略法力）
+//   6 组合加权（0.6×瓶颈 + 资源求和 + 路径里程碑）
+//   7 瓶颈平方（凸函数，强烈偏好完整循环）
+//   8 路径里程碑（鱼…龙 / 龙…晦…龙 / 双舞 等）
+//   9 几何平均瓶颈（三块板都高的水桶）
+//  10 阈值阶梯（每多打 1 龙奖励递增：16/48/96/160…）
+//  11 行动自由度（可打手牌数 + 余费，避免死手）
+//  12 回收放大瓶颈（舞动/药水让龙源可复用，再取瓶颈）
+//  13 协同密度（已凑齐的搭档对数量）
+//  14 容量管理（手牌/战场留空位奖励，爆满惩罚）
+//  15 soft-min 瓶颈（调和平均，平滑版瓶颈）
+static double heuristic_value(const State& s, int h) {
+    BottleneckParts bp = bottleneck_parts(s);
+    switch (h) {
+        case 0: return 0.0;
+        case 1: return bottleneck_dragons(s) * 16.0;
+        case 2: return (double)subchain_score(s);
+        case 3: return bp.sources * 16.0;
+        case 4: return bp.mana_rounds * 16.0;
+        case 5: {
+            return std::min(bp.sources, bp.capacity) * 16.0;
+        }
+        case 6:
+            return 0.6 * bottleneck_dragons(s) * 16.0
+                 + (double)subchain_score(s)
+                 + (double)discrete_path_score(s);
+        case 7: { double b = bottleneck_dragons(s); return b * b * 5.0; }
+        case 8: return (double)discrete_path_score(s);
+        case 9: {  // 几何平均：短板不再一票否决，三块板都高才高分
+            double geo = std::pow(bp.sources * bp.capacity * bp.mana_rounds, 1.0 / 3.0);
+            return geo * 16.0;
+        }
+        case 10: {  // 阈值阶梯：每完成一条龙奖励累加（1龙16、2龙48、3龙96…）
+            int n = (int)std::floor(bottleneck_dragons(s));
+            return (double)(n * (n + 1) / 2) * 16.0;
+        }
+        case 11: {  // 行动自由度：可打手牌数×10 + 余费×2
+            int playable = 0;
+            for (const auto& c : s.hand) {
+                int cost = effective_cost(s, c);
+                if (cost >= 0 && cost <= s.mana) playable++;
+            }
+            return (double)playable * 10.0 + (double)s.mana * 2.0;
+        }
+        case 12: {  // 回收放大：舞动/药水/转移让场上龙可复用，放大龙源后再取瓶颈
+            int hand_d = 0, board_d = 0;
+            int shadowcaster = 0, shark_in_hand = 0;
+            int whole_returns = 0, single_returns = 0, scabbs = 0, deadly = 0;
+            int cheapest = -1;
+            for (const auto& c : s.hand) {
+                const string& n = c.name;
+                if (c.dragon) {
+                    hand_d++;
+                    int cost = effective_cost(s, c);
+                    if (cost >= 0 && (cheapest < 0 || cost < cheapest)) cheapest = cost;
+                } else if (n == "暗影施法者") shadowcaster++;
+                else if (n == "斯卡布斯·刀油") scabbs++;
+                else if (n == "鲨鱼之灵") shark_in_hand++;
+                else if (n == "暗影步" || n == "赤烟·腾武") single_returns++;
+                else if (n == "舞动全场（ft.迦罗娜）" || n == "幻觉药水" || n == "战略转移") whole_returns++;
+                if (c.is_deadly_shadow) deadly++;
+            }
+            for (const auto& c : s.board) {
+                const string& n = c.name;
+                if (n == "生命的缚誓者阿莱克丝塔萨") board_d++;
+                else if (n == "暗影施法者") shadowcaster++;
+            }
+            bool shark = s.has_shark() || shark_in_hand > 0;
+            double sources = (double)(hand_d + board_d + shadowcaster * (shark ? 2 : 1));
+            sources *= 1.0 + (double)whole_returns * 0.5;  // 整场回手让龙源可复用
+            double capacity = (double)single_returns + (double)whole_returns * 3.0;
+            if (scabbs > 0 && single_returns > 0) capacity += 15.0;
+            if (deadly > 0 && s.cards_played_this_turn > 0) capacity += 0.5;
+            return std::min(sources, std::min(capacity, bp.mana_rounds)) * 16.0;
+        }
+        case 13: {  // 协同密度：已凑齐的搭档对
+            bool shark_avail = s.has_shark() || count_hand_cards(s, "鲨鱼之灵") > 0;
+            int dragons = count_hand_dragons(s) + count_board_cards(s, "生命的缚誓者阿莱克丝塔萨");
+            int mother = count_hand_cards(s, "晦鳞巢母") + count_board_cards(s, "晦鳞巢母");
+            int shadowcaster = count_hand_cards(s, "暗影施法者") + count_board_cards(s, "暗影施法者");
+            int shadowstep = count_hand_cards(s, "暗影步");
+            int dance_potion = count_hand_cards(s, "舞动全场（ft.迦罗娜）") + count_hand_cards(s, "幻觉药水");
+            int scabbs = count_hand_cards(s, "斯卡布斯·刀油") + count_board_cards(s, "斯卡布斯·刀油");
+            int foxy = count_hand_cards(s, "狐人老千");
+            int pairs = 0;
+            if (dragons > 0 && shark_avail) pairs++;
+            if (dragons > 0 && mother > 0) pairs++;
+            if (dragons > 0 && shadowcaster > 0) pairs++;
+            if (dragons > 0 && dance_potion > 0) pairs++;
+            if (dragons > 0 && shadowstep > 0) pairs++;
+            if (shark_avail && scabbs >= 2) pairs++;
+            if (foxy > 0 && scabbs > 0) pairs++;
+            return (double)pairs * 10.0 + (double)dragons * 8.0;
+        }
+        case 14: {  // 容量管理：留空位奖励，爆满惩罚
+            double score = (double)(std::max(0, 10 - (int)s.hand.size())) * 4.0;
+            score += (double)(std::max(0, 7 - (int)s.board.size())) * 2.0;
+            if (s.hand_full()) score -= 30.0;
+            if (s.board_full()) score -= 40.0;
+            return score + bottleneck_dragons(s) * 8.0;
+        }
+        case 15: {  // soft-min（调和平均）：平滑版瓶颈
+            double sum = 0.0;
+            if (bp.sources > 0) sum += 1.0 / bp.sources; else sum += 1e9;
+            if (bp.capacity > 0) sum += 1.0 / bp.capacity; else sum += 1e9;
+            if (bp.mana_rounds > 0) sum += 1.0 / bp.mana_rounds; else sum += 1e9;
+            return (3.0 / sum) * 16.0;
+        }
+        default: return bottleneck_dragons(s) * 16.0;
+    }
+}
+
+// 根级宽束模拟：与旧 beam 同机制（宽束全深度 + 分桶 + 启发值冠军，
+// 总分 = 伤害 + 启发函数值，键含龙数），保证深线（10 龙/160 伤）
+// 能被发现；多路宽束并行，共享时间预算。
+struct ThreadOut {
+    unordered_map<int, State> best;   // 各龙数最优路径
+    int expansions = 0;
+    int reached_depth = 0;
+    double work_sec = 0.0;            // 该线程实际计算耗时（秒）
+};
+
+// 宽束通道并行展开：后继生成 + 打分是主要开销，分片到多线程近线性扩展
+struct Cand {
+    State s;
+    uint64_t key = 0;
+    double total = 0.0;
+    double hval = 0.0;
+    int mana = 0;
+    int count = 0;
+};
+
+struct BeamRawCand {
+    uint64_t key;
+    State s;
+    double total;
+    double hval;
+    int mana;
+    int count;
+};
+
+struct BeamSliceArgs {
+    const vector<State>* level;
+    const SearchParams* p;
+    const Budget* budget;
+    vector<BeamRawCand>* out;
+    int begin;
+    int end;
+    std::atomic<long long>* total_exp;
+};
+
+// 并行合并分片：同 key 必落在同片（key % shards），seen/候选去重互不冲突
+struct BeamMergeArgs {
+    const vector<BeamRawCand>* raws;
+    const SearchParams* p;
+    unordered_map<uint64_t, State>* seen;
+    vector<Cand>* cands;
+    unordered_map<int, State>* best;
+};
+
+static void merge_shard_work(BeamMergeArgs* a) {
+    unordered_map<uint64_t, size_t> cand_index;
+    for (const BeamRawCand& rc : *a->raws) {
+        auto prev = a->seen->find(rc.key);
+        if (prev != a->seen->end() && rc.mana <= prev->second.mana) continue;
+        auto cur = cand_index.find(rc.key);
+        if (cur != cand_index.end()) {
+            Cand& c = (*a->cands)[cur->second];
+            if (rc.mana <= c.mana) continue;
+            c.s = rc.s;
+            c.total = rc.total;
+            c.hval = rc.hval;
+            c.mana = rc.mana;
+        } else {
+            Cand c;
+            c.s = rc.s;
+            c.key = rc.key;
+            c.total = rc.total;
+            c.hval = rc.hval;
+            c.mana = rc.mana;
+            c.count = rc.count;
+            cand_index[rc.key] = a->cands->size();
+            a->cands->push_back(std::move(c));
+        }
+        add_best((*a->cands)[cand_index[rc.key]].s, *a->best, a->p->min_alex);
+    }
+}
+
+#ifdef _WIN32
+static DWORD WINAPI beam_merge_worker(LPVOID param) {
+#else
+static void* beam_merge_worker(void* param) {
+#endif
+    BeamMergeArgs* a = static_cast<BeamMergeArgs*>(param);
+    merge_shard_work(a);
+#ifdef _WIN32
+    return 0;
+#else
+    return nullptr;
+#endif
+}
+
+#ifdef _WIN32
+static DWORD WINAPI beam_slice_worker(LPVOID param) {
+#else
+static void* beam_slice_worker(void* param) {
+#endif
+    BeamSliceArgs* a = static_cast<BeamSliceArgs*>(param);
+    long long local = 0;
+    for (int i = a->begin; i < a->end; i++) {
+        for (State& succ : generate_successors((*a->level)[i])) {
+            local++;
+            if ((local & 511) == 0 && a->budget->over()) {
+                a->total_exp->fetch_add(local);
+                return 0;
+            }
+            BeamRawCand rc;
+            rc.key = mix_hash(state_hash(succ), (uint64_t)succ.alex_play_count);
+            rc.hval = a->p->heuristic >= 0 ? heuristic_value(succ, a->p->heuristic)
+                                           : (double)subchain_score(succ) + (double)discrete_path_score(succ);
+            rc.total = (double)succ.alex_damage + rc.hval;
+            rc.mana = succ.mana;
+            rc.count = succ.alex_play_count;
+            rc.s = std::move(succ);
+            a->out->push_back(std::move(rc));
+        }
+    }
+    a->total_exp->fetch_add(local);
+#ifdef _WIN32
+    return 0;
+#else
+    return nullptr;
+#endif
+}
+
 static void wide_beam_pass(const State& start_in, const SearchParams& p,
                            const Budget& budget, ThreadOut& out) {
     // 宽束通道宽度：默认至少 2400（经验值：1600 会漏掉 3 龙/48 伤这类深线，
     // 旧 beam 3000 稳定挖出 10 龙/160 伤），束宽参数调大时随之上限 3000。
-    int beam_width = std::max(2400, std::min(3000, p.beam_width * 200));
+    int beam_width = p.wide_width > 0
+        ? p.wide_width
+        : 2400;
     State start = start_in.clone();
-    struct Cand {
-        State s;
-        uint64_t key = 0;
-        int total = 0;
-        double bottleneck = 0.0;
-        int mana = 0;
-        int count = 0;
-    };
     auto dedup_key = [](const State& s) {
         return mix_hash(state_hash(s), (uint64_t)s.alex_play_count);
     };
     vector<State> level = {start};
-    unordered_map<uint64_t, State> seen;
-    seen[dedup_key(start)] = start;
+    int shards = std::max(1, std::min(4, p.inner_threads));
+    vector<unordered_map<uint64_t, State>> seen_shards(shards);
+    seen_shards[dedup_key(start) % shards][dedup_key(start)] = start;
     add_best(start, out.best, p.min_alex);
 
     for (int depth = 1; depth <= p.depth; depth++) {
         if (budget.over()) break;
-        vector<Cand> cands;
-        unordered_map<uint64_t, size_t> cand_index;
-        for (const State& state : level) {
-            for (State& succ : generate_successors(state)) {
-                out.expansions++;
-                uint64_t key = dedup_key(succ);
-                auto prev = seen.find(key);
-                if (prev != seen.end() && succ.mana <= prev->second.mana) continue;
-                int total = succ.alex_damage + subchain_score(succ) + discrete_path_score(succ);
-                double bottleneck = bottleneck_dragons(succ);
-                auto cur = cand_index.find(key);
-                if (cur != cand_index.end()) {
-                    Cand& c = cands[cur->second];
-                    if (succ.mana <= c.mana) continue;
-                    c.s = std::move(succ);  // 更高法力替换，保持原插入位置
-                    c.total = total;
-                    c.bottleneck = bottleneck;
-                    c.mana = c.s.mana;
-                } else {
-                    Cand c;
-                    c.s = std::move(succ);
-                    c.key = key;
-                    c.total = total;
-                    c.bottleneck = bottleneck;
-                    c.mana = c.s.mana;
-                    c.count = c.s.alex_play_count;
-                    cand_index[key] = cands.size();
-                    cands.push_back(std::move(c));
-                }
-                const State& ns = cands[cand_index[key]].s;
-                add_best(ns, out.best, p.min_alex);
+        // 并行展开：本层状态分片到 inner_threads 线程（后继生成 + 打分近线性扩展）
+        int inner = shards;
+        vector<vector<BeamRawCand>> raw_buckets(inner);
+        std::atomic<long long> total_exp{0};
+        int nstates = (int)level.size();
+        int per = (nstates + inner - 1) / inner;
+        vector<BeamSliceArgs> args(inner);
+        for (int t = 0; t < inner; t++) {
+            args[t].level = &level;
+            args[t].p = &p;
+            args[t].budget = &budget;
+            args[t].out = &raw_buckets[t];
+            args[t].begin = t * per;
+            args[t].end = std::min(nstates, (t + 1) * per);
+            args[t].total_exp = &total_exp;
+        }
+#ifdef _WIN32
+        if (inner == 1) {
+            beam_slice_worker(&args[0]);
+        } else {
+            vector<HANDLE> ths;
+            ths.reserve(inner);
+            for (int t = 0; t < inner; t++) {
+                HANDLE h = CreateThread(nullptr, 0, beam_slice_worker, &args[t], 0, nullptr);
+                if (h) ths.push_back(h);
             }
+            if (!ths.empty()) {
+                WaitForMultipleObjects((DWORD)ths.size(), ths.data(), TRUE, INFINITE);
+                for (HANDLE h : ths) CloseHandle(h);
+            }
+        }
+#else
+        for (int t = 0; t < inner; t++) beam_slice_worker(&args[t]);
+#endif
+        out.expansions += (int)total_exp.load();
+
+        // 按 key 分片到合并线程：同 key 必同片，去重/最优互不冲突，近线性扩展
+        vector<vector<BeamRawCand>> shard_raws(shards);
+        for (int t = 0; t < inner; t++) {
+            for (BeamRawCand& rc : raw_buckets[t]) {
+                shard_raws[rc.key % shards].push_back(std::move(rc));
+            }
+        }
+        vector<vector<Cand>> shard_cands(shards);
+        vector<unordered_map<int, State>> shard_best(shards);
+        vector<BeamMergeArgs> margs(shards);
+        for (int sh = 0; sh < shards; sh++) {
+            margs[sh].raws = &shard_raws[sh];
+            margs[sh].p = &p;
+            margs[sh].seen = &seen_shards[sh];
+            margs[sh].cands = &shard_cands[sh];
+            margs[sh].best = &shard_best[sh];
+        }
+#ifdef _WIN32
+        if (shards == 1) {
+            merge_shard_work(&margs[0]);
+        } else {
+            vector<HANDLE> ths;
+            ths.reserve(shards);
+            for (int sh = 0; sh < shards; sh++) {
+                HANDLE h = CreateThread(nullptr, 0, beam_merge_worker, &margs[sh], 0, nullptr);
+                if (h) ths.push_back(h);
+            }
+            if (!ths.empty()) {
+                WaitForMultipleObjects((DWORD)ths.size(), ths.data(), TRUE, INFINITE);
+                for (HANDLE h : ths) CloseHandle(h);
+            }
+        }
+#else
+        for (int sh = 0; sh < shards; sh++) merge_shard_work(&margs[sh]);
+#endif
+        vector<Cand> cands;
+        size_t total_c = 0;
+        for (int sh = 0; sh < shards; sh++) total_c += shard_cands[sh].size();
+        cands.reserve(total_c);
+        for (int sh = 0; sh < shards; sh++) {
+            for (Cand& c : shard_cands[sh]) cands.push_back(std::move(c));
+            for (auto& kv : shard_best[sh]) add_best(kv.second, out.best, p.min_alex);
         }
         if (cands.empty()) break;
         for (const Cand& c : cands) {
-            auto prev = seen.find(c.key);
-            if (prev == seen.end() || c.mana > prev->second.mana) seen[c.key] = c.s;
+            auto& sm = seen_shards[c.key % shards];
+            auto prev = sm.find(c.key);
+            if (prev == sm.end() || c.mana > prev->second.mana) sm[c.key] = c.s;
         }
         // 分桶：按当前龙数，避免高龙数分支挤掉正在蓄力的低龙数高分分支
         map<int, vector<const Cand*>> buckets;
@@ -1275,11 +1359,11 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
             vector<const Cand*> selected;
             for (int i = 0; i < per_bucket && i < (int)bstates.size(); i++) selected.push_back(bstates[i]);
             if (!bstates.empty()) {
-                // 冠军：瓶颈潜力优先，其次总分，其次法力
+                // 冠军：启发值优先，其次总分，其次法力
                 const Cand* champ = bstates[0];
                 for (const Cand* bs : bstates) {
-                    if (std::tie(bs->bottleneck, bs->total, bs->mana) >
-                        std::tie(champ->bottleneck, champ->total, champ->mana)) {
+                    if (std::tie(bs->hval, bs->total, bs->mana) >
+                        std::tie(champ->hval, champ->total, champ->mana)) {
                         champ = bs;
                     }
                 }
@@ -1297,17 +1381,12 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
     }
 }
 
-struct MctsResult {
+struct BeamResult {
     unordered_map<int, State> best_by_dragons;
-    vector<State> game_paths;
     int expansions = 0;
-    int simulations = 0;
-    int games_played = 0;
     int reached_depth = 0;
     double wall_sec = 0.0;
-    double mcts_work_sec = 0.0;
     double wide_work_sec = 0.0;
-    int mcts_expansions = 0;
     int wide_expansions = 0;
 };
 
@@ -1321,39 +1400,10 @@ struct WorkerArgs {
     ThreadOut* out = nullptr;
     Progress* prog = nullptr;
     const Budget* budget = nullptr;
-    int target = 0;
+    int ww = 0;   // 宽束通道专用：本次模拟的束宽（0 = 用 p->wide_width）
+    int inner = 1;  // 宽束通道内部并行展开线程数
     int tid = 0;
 };
-
-#ifdef _WIN32
-static DWORD WINAPI worker_entry(LPVOID param) {
-#else
-static void* worker_entry(void* param) {
-#endif
-    WorkerArgs* a = static_cast<WorkerArgs*>(param);
-    auto t_start = std::chrono::steady_clock::now();
-    std::mt19937 rng((std::random_device{}()) ^
-                     (std::uint64_t)std::chrono::high_resolution_clock::now()
-                         .time_since_epoch().count() ^
-                     (std::uint64_t)a->tid);
-    ThreadOut& o = *a->out;
-    Budget budget = *a->budget;
-    for (int g = 0; g < a->target; g++) {
-        if (budget.stop->load()) break;
-        mcts_game(*a->start, *a->p, rng, o, budget);
-        o.games_played++;
-        if (a->prog && a->prog->enabled) {
-            fprintf(stderr, "PROGRESS %d %d %d\n",
-                    o.expansions, o.simulations, o.reached_depth);
-        }
-    }
-    o.work_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
-#ifdef _WIN32
-    return 0;
-#else
-    return nullptr;
-#endif
-}
 
 #ifdef _WIN32
 static DWORD WINAPI wide_worker_entry(LPVOID param) {
@@ -1362,11 +1412,14 @@ static void* wide_worker_entry(void* param) {
 #endif
     WorkerArgs* a = static_cast<WorkerArgs*>(param);
     auto t_start = std::chrono::steady_clock::now();
-    wide_beam_pass(*a->start, *a->p, *a->budget, *a->out);
+    SearchParams pp = *a->p;
+    pp.wide_width = a->ww > 0 ? a->ww : pp.wide_width;
+    pp.inner_threads = a->inner;
+    wide_beam_pass(*a->start, pp, *a->budget, *a->out);
     a->out->work_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
     if (a->prog && a->prog->enabled) {
         fprintf(stderr, "PROGRESS %d %d %d\n",
-                a->out->expansions, a->out->simulations, a->out->reached_depth);
+                a->out->expansions, 0, a->out->reached_depth);
     }
 #ifdef _WIN32
     return 0;
@@ -1375,77 +1428,64 @@ static void* wide_worker_entry(void* param) {
 #endif
 }
 
-static MctsResult run_mcts_search(const State& start, const SearchParams& p, Progress* prog) {
-    MctsResult res;
+// 纯束宽主搜索：并行多路宽束（默认 {2400,600}），共享时间预算，合并各龙数最优路径。
+// 3 秒硬时限内束宽越小走得越深（十龙 600 宽 1.5s 出 10 龙/152 伤，2400 宽 3.6s 只出
+// 7 龙/96）；2400 保小局面深线（如 3 龙/48 伤），并行多个宽度兼得两者。
+static BeamResult run_beam_search(const State& start, const SearchParams& p, Progress* prog) {
+    BeamResult res;
     auto t0 = std::chrono::steady_clock::now();
-    int games_target = std::max(1, p.games);
-    // 游戏线程 + 1 个根级宽束模拟线程；WaitForMultipleObjects 上限 64
-    int game_threads = std::max(1, std::min(p.threads, std::min(games_target, 31)));
+    static const int DEFAULT_WIDE_WIDTHS[] = {1100};  // 单宽度：48 小局面深线 + 160 深线折中
+    int wide_count = p.wide_width > 0 ? 1 : (int)p.wide_widths.size();
+    if (p.wide_width <= 0 && p.wide_widths.empty()) wide_count = 1;
+    wide_count = std::max(1, std::min(wide_count, std::max(1, p.threads)));
     std::atomic<bool> stop{false};
     Budget budget;
     budget.stop = &stop;
     budget.t0 = &t0;
     budget.budget_sec = p.time_budget_sec;
 
-    vector<ThreadOut> outs(game_threads + 1);  // 最后一个是宽束模拟通道
-    int base = games_target / game_threads;
-    int extra = games_target % game_threads;
-    vector<WorkerArgs> args;
-    args.reserve(game_threads);
-    for (int t = 0; t < game_threads; t++) {
+    vector<ThreadOut> outs(wide_count);
+    vector<WorkerArgs> wide_args;
+    wide_args.reserve(wide_count);
+    for (int w = 0; w < wide_count; w++) {
         WorkerArgs a;
         a.start = &start;
         a.p = &p;
-        a.out = &outs[t];
+        a.out = &outs[w];
         a.prog = prog;
         a.budget = &budget;
-        a.target = base + (t < extra ? 1 : 0);
-        a.tid = t;
-        args.push_back(a);
+        a.ww = p.wide_width > 0 ? p.wide_width
+              : (p.wide_widths.empty() ? DEFAULT_WIDE_WIDTHS[std::min(w, 1)] : p.wide_widths[w]);
+        // 宽束（2400）通道分更多核：160 深线只在宽束通道可达，需 ~40 万展开，
+        // 3 线程 2 秒内可完成；窄束（600）1.8s 即穷尽状态空间，无需并行
+        a.inner = wide_count <= 1 ? 1
+                                  : (w == 0 ? std::max(1, p.threads - (wide_count - 1)) : 1);
+        a.tid = 90 + w;
+        wide_args.push_back(a);
     }
-    WorkerArgs wide_arg;
-    wide_arg.start = &start;
-    wide_arg.p = &p;
-    wide_arg.out = &outs[game_threads];
-    wide_arg.prog = prog;
-    wide_arg.budget = &budget;
-    wide_arg.target = 0;
-    wide_arg.tid = 99;
 
 #ifdef _WIN32
     vector<HANDLE> handles;
-    handles.reserve(game_threads + 1);
-    for (int t = 0; t < game_threads; t++) {
-        HANDLE h = CreateThread(nullptr, 0, worker_entry, &args[t], 0, nullptr);
-        if (h) handles.push_back(h);
+    handles.reserve(wide_count);
+    for (int w = 0; w < wide_count; w++) {
+        HANDLE hw = CreateThread(nullptr, 0, wide_worker_entry, &wide_args[w], 0, nullptr);
+        if (hw) handles.push_back(hw);
     }
-    HANDLE hw = CreateThread(nullptr, 0, wide_worker_entry, &wide_arg, 0, nullptr);
-    if (hw) handles.push_back(hw);
     if (!handles.empty()) {
         WaitForMultipleObjects((DWORD)handles.size(), handles.data(), TRUE, INFINITE);
         for (HANDLE h : handles) CloseHandle(h);
     }
 #else
-    // 非 Windows 平台退化为顺序执行
-    for (int t = 0; t < game_threads; t++) worker_entry(&args[t]);
-    wide_worker_entry(&wide_arg);
+    for (int w = 0; w < wide_count; w++) wide_worker_entry(&wide_args[w]);
 #endif
 
     int prev_max = -1;
-    for (int t = 0; t < game_threads + 1; t++) {
+    for (int t = 0; t < wide_count; t++) {
         res.expansions += outs[t].expansions;
-        res.simulations += outs[t].simulations;
-        res.games_played += outs[t].games_played;
         res.reached_depth = std::max(res.reached_depth, outs[t].reached_depth);
-        if (t < game_threads) {
-            res.mcts_work_sec = std::max(res.mcts_work_sec, outs[t].work_sec);
-            res.mcts_expansions += outs[t].expansions;
-        } else {
-            res.wide_work_sec = outs[t].work_sec;
-            res.wide_expansions = outs[t].expansions;
-        }
+        res.wide_work_sec = std::max(res.wide_work_sec, outs[t].work_sec);
+        res.wide_expansions += outs[t].expansions;
         for (const auto& kv : outs[t].best) add_best(kv.second, res.best_by_dragons, p.min_alex);
-        for (const State& s : outs[t].game_paths) res.game_paths.push_back(s);
     }
     res.wall_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     // FOUND 实时上报（龙数创新高）
@@ -1461,7 +1501,7 @@ static MctsResult run_mcts_search(const State& start, const SearchParams& p, Pro
 }
 
 // ===================== 输出 =====================
-static void print_json_result(const MctsResult& res, const SearchParams& p) {
+static void print_json_result(const BeamResult& res, const SearchParams& p) {
     vector<State> results;
     results.reserve(res.best_by_dragons.size());
     for (const auto& kv : res.best_by_dragons) results.push_back(kv.second);
@@ -1473,39 +1513,40 @@ static void print_json_result(const MctsResult& res, const SearchParams& p) {
         max_dragons = std::max(max_dragons, s.alex_play_count);
     }
     printf("{\n");
-    printf("  \"mode\": \"mcts_beam\",\n");
+    printf("  \"mode\": \"beam\",\n");
     printf("  \"max_damage\": %d,\n", max_damage);
     printf("  \"max_dragons\": %d,\n", max_dragons);
     printf("  \"expansions\": %d,\n", res.expansions);
     printf("  \"depth\": %d,\n", res.reached_depth);
     printf("  \"min_alex\": %d,\n", p.min_alex);
     printf("  \"stats\": {\n");
-    printf("    \"迭代次数/步\": %d,\n", p.iterations);
-    printf("    \"模拟束宽\": %d,\n", p.beam_width);
-    printf("    \"模拟深度\": %d,\n", p.sim_depth);
-    printf("    \"探索常数\": %.3f,\n", p.explore_c);
-    printf("    \"搜索局数\": %d,\n", res.games_played);
     printf("    \"展开节点\": %d,\n", res.expansions);
-    printf("    \"模拟次数\": %d,\n", res.simulations);
     printf("    \"总耗时(秒)\": %.1f,\n", res.wall_sec);
-    printf("    \"MCTS耗时(秒)\": %.1f,\n", res.mcts_work_sec);
     printf("    \"宽束耗时(秒)\": %.1f,\n", res.wide_work_sec);
-    printf("    \"MCTS展开\": %d,\n", res.mcts_expansions);
     printf("    \"宽束展开\": %d,\n", res.wide_expansions);
     if (res.wall_sec > 0.0) {
         printf("    \"展开/秒\": %.0f,\n", res.expansions / res.wall_sec);
-        printf("    \"模拟/秒\": %.0f,\n", res.simulations / res.wall_sec);
     }
-    printf("    \"启发函数\": \"瓶颈模型(min 龙源/回手/法力)\"\n");
+    static const char* H_NAMES[] = {
+        "H0无启发(基线)", "H1瓶颈模型", "H2资源求和", "H3伤害上界",
+        "H4法力阈值", "H5回手容量", "H6组合加权", "H7瓶颈平方", "H8路径里程碑",
+        "H9几何平均瓶颈", "H10阈值阶梯", "H11行动自由度", "H12回收放大瓶颈",
+        "H13协同密度", "H14容量管理", "H15软瓶颈(调和)",
+    };
+    const char* hname = (p.heuristic >= 0 && p.heuristic <= 15)
+                            ? H_NAMES[p.heuristic]
+                            : "现状(模拟瓶颈+宽束资源/里程碑)";
+    printf("    \"模式\": \"纯束宽\",\n");
+    printf("    \"启发函数\": \"%s\"\n", hname);
     printf("  },\n");
     printf("  \"results\": [\n");
     for (size_t i = 0; i < results.size(); i++) {
         const State& pst = results[i];
         printf("    {\"dragons\": %d, \"damage\": %d, \"mana\": %d, \"path\": [",
                pst.alex_play_count, pst.alex_damage, pst.mana);
-        for (size_t j = 0; j < pst.path.size(); j++) {
+        for (size_t j = 0; j < pst.path().size(); j++) {
             if (j) printf(", ");
-            printf("\"%s\"", json_escape(pst.path[j]).c_str());
+            printf("\"%s\"", json_escape(pst.path()[j]).c_str());
         }
         printf("]}%s\n", i + 1 < results.size() ? "," : "");
     }
@@ -1603,8 +1644,8 @@ static bool verify_rec(const State& st, const vector<string>& replay, size_t i,
     string want = canonical_action(replay[i]);
     vector<State> succs = generate_successors(st);
     for (State& succ : succs) {
-        if (succ.path.empty()) continue;
-        if (canonical_action(succ.path.back()) != want) continue;
+        if (succ.path().empty()) continue;
+        if (canonical_action(succ.path().back()) != want) continue;
         if (verify_rec(succ, replay, i + 1, final_state, attempts)) return true;
         if (attempts && ++(*attempts) > 500000) return false;  // 回溯预算保护
     }
@@ -1646,13 +1687,22 @@ int main(int argc, char** argv) {
         if (next("--max", &tmp)) { p.max_alex = atoi(tmp.c_str()); continue; }
         if (next("--depth", &tmp)) { p.depth = atoi(tmp.c_str()); continue; }
         if (next("--max-paths", &tmp)) { p.max_paths = atoi(tmp.c_str()); continue; }
-        if (next("--iterations", &tmp)) { p.iterations = atoi(tmp.c_str()); continue; }
-        if (next("--beam-width", &tmp)) { p.beam_width = atoi(tmp.c_str()); continue; }
-        if (next("--sim-depth", &tmp)) { p.sim_depth = atoi(tmp.c_str()); continue; }
-        if (next("--explore-c", &tmp)) { p.explore_c = atof(tmp.c_str()); continue; }
-        if (next("--games", &tmp)) { p.games = atoi(tmp.c_str()); continue; }
         if (next("--threads", &tmp)) { p.threads = atoi(tmp.c_str()); continue; }
         if (next("--time-budget", &tmp)) { p.time_budget_sec = atof(tmp.c_str()); continue; }
+        if (next("--heuristic", &tmp)) { p.heuristic = atoi(tmp.c_str()); continue; }
+        if (next("--wide-width", &tmp)) { p.wide_width = atoi(tmp.c_str()); continue; }
+        if (next("--wide-widths", &tmp)) {
+            p.wide_widths.clear();
+            size_t pos = 0;
+            while (pos <= tmp.size()) {
+                size_t comma = tmp.find(',', pos);
+                string part = tmp.substr(pos, comma == string::npos ? string::npos : comma - pos);
+                if (!part.empty()) p.wide_widths.push_back(atoi(part.c_str()));
+                if (comma == string::npos) break;
+                pos = comma + 1;
+            }
+            continue;
+        }
     }
 
     if (!use_json) {
@@ -1674,18 +1724,17 @@ int main(int argc, char** argv) {
     p.max_alex = (int)root.get_int("max_alex", p.max_alex);
     p.depth = (int)root.get_int("depth", p.depth);
     p.max_paths = (int)root.get_int("max_paths", p.max_paths);
-    p.iterations = (int)root.get_int("iterations", p.iterations);
-    p.beam_width = (int)root.get_int("beam_width", p.beam_width);
-    p.sim_depth = (int)root.get_int("sim_depth", p.sim_depth);
-    p.explore_c = root.get_double("explore_c", p.explore_c);
-    p.games = (int)root.get_int("games", p.games);
     p.threads = (int)root.get_int("threads", p.threads);
     p.time_budget_sec = root.get_double("time_budget_sec", p.time_budget_sec);
+    p.heuristic = (int)root.get_int("heuristic", p.heuristic);
+    p.wide_width = (int)root.get_int("wide_width", p.wide_width);
+    const JVal* wws = root.find("wide_widths");
+    if (wws && wws->type == JVal::ARR) {
+        p.wide_widths.clear();
+        for (const auto& v : wws->arr)
+            if (v.type == JVal::NUM) p.wide_widths.push_back((int)v.num);
+    }
     p.min_alex = std::max(1, std::min(p.min_alex, p.max_alex));
-    p.iterations = std::max(1, p.iterations);
-    p.beam_width = std::max(1, p.beam_width);
-    p.sim_depth = std::max(1, p.sim_depth);
-    p.games = std::max(1, p.games);
     p.threads = std::max(1, p.threads);
 
     if (!st.etc_band_provided && st.etc_band.empty()) {
@@ -1710,9 +1759,9 @@ int main(int argc, char** argv) {
         printf("  \"damage\": %d,\n", final_state.alex_damage);
         printf("  \"mana\": %d,\n", final_state.mana);
         printf("  \"path\": [");
-        for (size_t i = 0; i < final_state.path.size(); i++) {
+        for (size_t i = 0; i < final_state.path().size(); i++) {
             if (i) printf(", ");
-            printf("\"%s\"", json_escape(final_state.path[i]).c_str());
+            printf("\"%s\"", json_escape(final_state.path()[i]).c_str());
         }
         printf("]\n}\n");
         return ok ? 0 : 1;
@@ -1720,9 +1769,9 @@ int main(int argc, char** argv) {
 
     Progress prog;
     prog.enabled = true;
-    MctsResult res = run_mcts_search(st, p, &prog);
+    BeamResult res = run_beam_search(st, p, &prog);
     if (prog.enabled) {
-        fprintf(stderr, "PROGRESS %d %d %d\n", res.expansions, res.simulations, res.reached_depth);
+        fprintf(stderr, "PROGRESS %d %d %d\n", res.expansions, res.wide_expansions, res.reached_depth);
     }
 
     print_json_result(res, p);

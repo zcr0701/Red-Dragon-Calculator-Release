@@ -2,7 +2,7 @@
 
 职责划分：
   - Python：PyQt5 图形界面 + 基于 hslog 读取本机 Power.log 对局快照 + 手动输入
-  - C++：   red_dragon_engine.exe 纯计算（MCTS + 束搜索模拟 + 瓶颈模型启发）
+  - C++：   red_dragon_engine.exe 纯计算（纯束宽搜索 + 瓶颈模型启发）
 
 运行：
   python 代码/main.py
@@ -35,7 +35,6 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
-    QDoubleSpinBox,
     QSpinBox,
     QSplitter,
     QVBoxLayout,
@@ -109,18 +108,12 @@ class CalculationWorker(QThread):
         try:
             result = engine.compute(
                 self.snapshot,
-                mode=str(self.options["mode"]),
                 min_alex=int(self.options["min_alex"]),
                 max_alex=int(self.options["max_alex"]),
                 depth=int(self.options["depth"]),
                 max_paths=int(self.options["max_paths"]),
-                iterations=int(self.options["iterations"]),
-                beam_width=int(self.options["beam_width"]),
-                sim_depth=int(self.options.get("sim_depth", 8)),
-                explore_c=float(self.options["explore_c"]),
-                games=int(self.options["games"]),
                 threads=int(self.options.get("threads", 4)),
-                time_budget_sec=float(self.options.get("time_budget_sec", 30.0)),
+                time_budget_sec=float(self.options.get("time_budget_sec", 3.0)),
                 etc_band=list(self.options.get("etc_band") or []),
                 progress_callback=self.progress.emit,
                 found_callback=self.found.emit,
@@ -360,8 +353,8 @@ class MainWindow(QWidget):
         param_box = QGroupBox("计算参数")
         param_grid = QGridLayout(param_box)
 
-        mode_label = QLabel("搜索方式：MCTS + 束搜索模拟（每步 UCB1 选子节点，束搜索快速模拟，"
-                            "简单启发函数 = 瓶颈模型 min(龙源数, 回手容量, 法力轮数)）")
+        mode_label = QLabel("搜索方式：纯束宽搜索（多路宽束并行 {2400,600}，2 秒时限内出结果，"
+                            "启发函数 = 瓶颈模型 min(龙源数, 回手容量, 法力轮数)）")
         mode_label.setWordWrap(True)
         mode_label.setStyleSheet("font-size:12px;color:#555;")
 
@@ -385,16 +378,7 @@ class MainWindow(QWidget):
 
         self.min_alex = self._spin(1, 1, 10)
         self.max_alex = self._spin(10, 1, 10)
-        self.iterations = self._spin(400, 10, 20000, step=50)
-        self.beam_width = self._spin(8, 1, 100)
-        self.sim_depth = self._spin(8, 1, 30)
-        self.explore_c = QDoubleSpinBox()
-        self.explore_c.setRange(0.0, 5.0)
-        self.explore_c.setSingleStep(0.05)
-        self.explore_c.setDecimals(2)
-        self.explore_c.setValue(1.41)
-        self.games = self._spin(8, 1, 100)
-        self.time_budget = self._spin(30, 0, 600, step=5)
+        self.time_budget = self._spin(3, 1, 30, step=1)
         self.beam_depth = self._spin(30, 1, 100)
         self.max_paths = self._spin(1000000, 1000, 100000000, step=1000)
 
@@ -405,22 +389,12 @@ class MainWindow(QWidget):
         param_grid.addWidget(self.min_alex, 2, 1)
         param_grid.addWidget(QLabel("最多龙数："), 3, 0)
         param_grid.addWidget(self.max_alex, 3, 1)
-        param_grid.addWidget(QLabel("迭代次数/步："), 4, 0)
-        param_grid.addWidget(self.iterations, 4, 1)
-        param_grid.addWidget(QLabel("模拟束宽："), 5, 0)
-        param_grid.addWidget(self.beam_width, 5, 1)
-        param_grid.addWidget(QLabel("模拟深度："), 6, 0)
-        param_grid.addWidget(self.sim_depth, 6, 1)
-        param_grid.addWidget(QLabel("探索常数 C："), 7, 0)
-        param_grid.addWidget(self.explore_c, 7, 1)
-        param_grid.addWidget(QLabel("搜索局数："), 8, 0)
-        param_grid.addWidget(self.games, 8, 1)
-        param_grid.addWidget(QLabel("时间预算(秒)："), 9, 0)
-        param_grid.addWidget(self.time_budget, 9, 1)
-        param_grid.addWidget(QLabel("最大深度："), 10, 0)
-        param_grid.addWidget(self.beam_depth, 10, 1)
-        param_grid.addWidget(QLabel("最大路径数："), 11, 0)
-        param_grid.addWidget(self.max_paths, 11, 1)
+        param_grid.addWidget(QLabel("时间预算(秒)："), 4, 0)
+        param_grid.addWidget(self.time_budget, 4, 1)
+        param_grid.addWidget(QLabel("最大深度："), 5, 0)
+        param_grid.addWidget(self.beam_depth, 5, 1)
+        param_grid.addWidget(QLabel("最大路径数："), 6, 0)
+        param_grid.addWidget(self.max_paths, 6, 1)
         right_layout.addWidget(param_box)
 
         run_row = QHBoxLayout()
@@ -782,16 +756,10 @@ class MainWindow(QWidget):
     def _options(self) -> Dict[str, object]:
         band = [name for name, box in self.etc_checks if box.isChecked()]
         return {
-            "mode": "mcts_beam",
             "min_alex": self.min_alex.value(),
             "max_alex": self.max_alex.value(),
             "depth": self.beam_depth.value(),
             "max_paths": self.max_paths.value(),
-            "iterations": self.iterations.value(),
-            "beam_width": self.beam_width.value(),
-            "sim_depth": self.sim_depth.value(),
-            "explore_c": self.explore_c.value(),
-            "games": self.games.value(),
             "threads": 4,
             "time_budget_sec": self.time_budget.value(),
             "etc_band": band,
@@ -820,7 +788,7 @@ class MainWindow(QWidget):
         snapshot = dict(self.snapshot)
         snapshot["deadly_shadow_hand_indexes"] = deadly_indexes
         options = self._options()
-        self.result_text.setPlainText("正在运行 MCTS + 束搜索模拟 …")
+        self.result_text.setPlainText("正在运行纯束宽搜索 …")
         self.progress_bar.setVisible(True)
         self.calc_button.setText("中止计算")
         self._update_calc_enabled()
@@ -842,7 +810,7 @@ class MainWindow(QWidget):
     def _on_result(self, data: Dict[str, object]) -> None:
         results = data.get("results") or []
         lines = [
-            "搜索方式：MCTS + 束搜索模拟",
+            "搜索方式：纯束宽搜索",
             f"最大伤害：{data.get('max_damage', 0)}，最大龙数：{data.get('max_dragons', 0)}",
             f"展开节点：{data.get('expansions', 0)}，路径数：{len(results)}",
             "",
@@ -904,13 +872,8 @@ def main() -> int:
             try:
                 options = window._options()
                 options.update(
-                    mode="mcts_beam",
-                    iterations=400,
-                    beam_width=8,
-                    sim_depth=8,
-                    games=6,
                     threads=4,
-                    time_budget_sec=30.0,
+                    time_budget_sec=3.0,
                     depth=25,
                     max_paths=200000,
                 )
