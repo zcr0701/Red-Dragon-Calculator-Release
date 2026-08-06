@@ -210,8 +210,10 @@ def build_payload(
         "threads": threads,
         "time_budget_sec": time_budget_sec,
         "heuristic": heuristic,
-        "wide_widths": wide_widths or [1100],
-        "heuristics": heuristics or [6],
+        # 默认四通道：H6/1100（8水晶十龙深线）、H1/1100（4水晶十龙/紧线）、
+        # H2/1100（96 伤线）、H2/3000（6水晶紧 48 伤线）
+        "wide_widths": wide_widths or [1100, 1100, 1100, 3000],
+        "heuristics": heuristics or [6, 1, 2, 2],
         "deck_is_known": bool(snapshot.get("deck")),
         "deck": [{"name": item["name"]} for item in snapshot.get("deck") or []],
         "hand": hand,

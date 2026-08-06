@@ -57,10 +57,11 @@ static const int MAX_SECRET = 5;
 
 // ===================== 卡牌 =====================
 struct Card {
-    string name;
-    string original_name;
+    std::shared_ptr<const std::string> name_;           // 驻留共享：克隆 O(1) 零分配
+    std::shared_ptr<const std::string> original_name_;
     string card_type;      // minion / spell / secret / weapon / unknown
     string effect_id;
+    uint64_t static_hash = 0;  // name/original_name/card_type/effect_id 的哈希，创建时一次算好
     int cost = -1;         // -1 = 无固定费用（殒命暗影）
     int temp_cost = -1;    // -1 = 无
     int health = -1;       // -1 = 无
@@ -70,10 +71,38 @@ struct Card {
     bool is_deadly_shadow = false;
     bool locked_one_cost = false;
 
+    const string& name() const {
+        static const string empty;
+        return name_ ? *name_ : empty;
+    }
+    const string& original_name() const {
+        static const string empty;
+        return original_name_ ? *original_name_ : empty;
+    }
     int current_cost() const { return temp_cost >= 0 ? temp_cost : cost; }
     bool is_spell_like() const { return card_type == "spell" || card_type == "secret"; }
     Card clone() const { return *this; }
 };
+
+// 卡名驻留池：同名牌共享同一份字符串，搜索中反复创建（药水复制/牛头人选择/刀油衍生物）
+// 只发生一次分配；跨线程用轻量自旋锁保护（仅卡牌创建时走锁，克隆不碰锁）。
+static std::shared_ptr<const std::string> intern_name(const string& name) {
+    static std::atomic<bool> spin_lock{false};
+    while (spin_lock.exchange(true, std::memory_order_acquire)) {
+        // 自旋等待（临界区极短，仅首次插入才分配）
+    }
+    static unordered_map<string, std::shared_ptr<const std::string>> pool;
+    std::shared_ptr<const std::string> sp;
+    auto it = pool.find(name);
+    if (it == pool.end()) {
+        sp = std::make_shared<const std::string>(name);
+        pool.emplace(name, sp);
+    } else {
+        sp = it->second;
+    }
+    spin_lock.store(false, std::memory_order_release);
+    return sp;
+}
 
 struct CardDef {
     int cost;
@@ -116,19 +145,25 @@ static const unordered_map<string, CardDef> DB = {
     {"狐人老千", {2, "minion", "foxy_fraud", true, false, false, 2}},
 };
 
+static uint64_t str_hash(const string& s);
+static uint64_t mix_hash(uint64_t h, uint64_t x);
+
 static Card make_card(const string& name, int cost_override = -1) {
     Card c;
     auto it = DB.find(name);
     if (it == DB.end()) {
-        c.name = name;
-        c.original_name = name;
+        c.name_ = intern_name(name);
+        c.original_name_ = c.name_;
         c.card_type = "unknown";
         c.effect_id = "unknown";
+        c.static_hash = mix_hash(str_hash(*c.name_), str_hash(*c.original_name_));
+        c.static_hash = mix_hash(c.static_hash, str_hash(c.card_type));
+        c.static_hash = mix_hash(c.static_hash, str_hash(c.effect_id));
         return c;
     }
     const CardDef& d = it->second;
-    c.name = name;
-    c.original_name = name;
+    c.name_ = intern_name(name);
+    c.original_name_ = c.name_;
     c.card_type = d.card_type;
     c.effect_id = d.effect_id;
     c.cost = cost_override >= 0 ? cost_override : d.cost;
@@ -137,6 +172,9 @@ static Card make_card(const string& name, int cost_override = -1) {
     c.dragon = d.dragon;
     c.health = d.health;
     if (name == "殒命暗影") c.is_deadly_shadow = true;
+    c.static_hash = mix_hash(str_hash(*c.name_), str_hash(*c.original_name_));
+    c.static_hash = mix_hash(c.static_hash, str_hash(c.card_type));
+    c.static_hash = mix_hash(c.static_hash, str_hash(c.effect_id));
     return c;
 }
 
@@ -187,9 +225,47 @@ struct State {
 
     State clone() const { return *this; }  // path_buf 共享，克隆 O(1)
 
+    // 克隆时直接按目标容量各分配一次（避免"拷贝后 reserve"的二次重分配），
+    // 后续 push_back 不触发重分配；path_buf 共享，克隆 O(1)。
+    State clone_reserved() const {
+        State c;
+        c.hand.reserve(std::max((size_t)MAX_HAND, hand.size()));
+        c.hand.assign(hand.begin(), hand.end());
+        c.board.reserve(std::max((size_t)MAX_BOARD, board.size()));
+        c.board.assign(board.begin(), board.end());
+        c.deck.reserve(std::max((size_t)16, deck.size()));
+        c.deck.assign(deck.begin(), deck.end());
+        c.secrets.reserve(std::max((size_t)MAX_SECRET, secrets.size()));
+        c.secrets.assign(secrets.begin(), secrets.end());
+        c.oil_stacks.reserve(oil_stacks.size() + 1);
+        c.oil_stacks.assign(oil_stacks.begin(), oil_stacks.end());
+        c.etc_band.reserve(etc_band.size() + 2);
+        c.etc_band.assign(etc_band.begin(), etc_band.end());
+        c.weapon = weapon;
+        c.has_weapon = has_weapon;
+        c.deck_is_known = deck_is_known;
+        c.mana_crystals = mana_crystals;
+        c.mana = mana;
+        c.initial_mana_crystals = initial_mana_crystals;
+        c.initial_mana = initial_mana;
+        c.cards_played_this_turn = cards_played_this_turn;
+        c.next_spell = next_spell;
+        c.next_combo = next_combo;
+        c.next_combo_twice = next_combo_twice;
+        c.next_card = next_card;
+        c.next_two_cards = next_two_cards;
+        c.next_two_cards_count = next_two_cards_count;
+        c.burned_cards = burned_cards;
+        c.alex_play_count = alex_play_count;
+        c.alex_damage = alex_damage;
+        c.etc_band_provided = etc_band_provided;
+        c.path_buf = path_buf;
+        return c;
+    }
+
     bool has_shark() const {
         for (const auto& c : board)
-            if (c.name == "鲨鱼之灵") return true;
+            if (c.name() == "鲨鱼之灵") return true;
         return false;
     }
 
@@ -213,6 +289,14 @@ static int effective_cost(const State& s, const Card& card) {
     if (card.combo && s.next_combo > 0) discount += s.next_combo;
     int cost = base - discount;
     return cost < 0 ? 0 : cost;
+}
+
+// 同名同状态手牌：打出效果与结果完全相同（手牌位置不影响状态哈希），
+// 展开时只保留第一张，避免为重复卡各克隆一次状态。
+static bool same_playable_card(const Card& a, const Card& b) {
+    return a.name_ == b.name_ && a.current_cost() == b.current_cost() &&
+           a.is_deadly_shadow == b.is_deadly_shadow &&
+           a.locked_one_cost == b.locked_one_cost;
 }
 
 static void consume_discounts(State& s, const Card& card) {
@@ -245,12 +329,12 @@ static void add_card_to_hand_or_burn(State& s, const Card& card) {
 }
 
 static void transform_deadly_shadows(State& s, const Card& spell_card) {
-    if (spell_card.original_name == "殒命暗影") return;
-    auto it = DB.find(spell_card.original_name);
+    if (spell_card.original_name() == "殒命暗影") return;
+    auto it = DB.find(spell_card.original_name());
     if (it == DB.end()) return;
     for (auto& c : s.hand) {
         if (c.is_deadly_shadow) {
-            Card copy = make_card(spell_card.original_name);
+            Card copy = make_card(spell_card.original_name());
             copy.is_deadly_shadow = true;
             c = copy;
         }
@@ -270,8 +354,8 @@ static void append_choice_to_last_path(State& s, const string& choice_name) {
 }
 
 static string display_card_name(const Card& card) {
-    if (card.is_deadly_shadow) return card.name + "[殒命暗影]";
-    return card.name;
+    if (card.is_deadly_shadow) return card.name() + "[殒命暗影]";
+    return card.name();
 }
 
 // 打出基础：扣费、移出手牌、消耗减费、记账、进区
@@ -291,14 +375,14 @@ static bool play_card_base(State& s, int hand_index, int target_friendly_index,
     string item = display_card_name(card);
     if (target_friendly_index >= 0) {
         if (target_friendly_index < (int)s.board.size()) {
-            item += "(" + s.board[target_friendly_index].name + ")";
+            item += "(" + s.board[target_friendly_index].name() + ")";
         } else {
             item += "(无效目标)";
         }
     }
     s.path_mut().push_back(item);
 
-    if (card.name == "生命的缚誓者阿莱克丝塔萨") {
+    if (card.name() == "生命的缚誓者阿莱克丝塔萨") {
         s.alex_play_count++;
         if (enemy_target) {
             int mult = s.has_shark() ? 2 : 1;
@@ -321,11 +405,11 @@ static bool play_card_base(State& s, int hand_index, int target_friendly_index,
 static vector<State> discover_fixed_choices(const State& base) {
     vector<State> out;
     if (base.etc_band.empty()) {
-        out.push_back(base.clone());
+        out.push_back(base.clone_reserved());
         return out;
     }
     for (size_t i = 0; i < base.etc_band.size(); i++) {
-        State s = base.clone();
+        State s = base.clone_reserved();
         string choice = s.etc_band[i];
         s.etc_band.erase(s.etc_band.begin() + i);
         add_card_to_hand_or_burn(s, make_card(choice));
@@ -337,7 +421,7 @@ static vector<State> discover_fixed_choices(const State& base) {
 
 // 舞动全场：按进场顺序全部回手（1 费），手牌满则按进场顺序爆牌
 static State breakdance_branch(const State& base) {
-    State s = base.clone();
+    State s = base.clone_reserved();
     vector<Card> returning = s.board;
     s.board.clear();
     int free_slots = std::max(0, MAX_HAND - s.hand_size());
@@ -475,8 +559,8 @@ static vector<State> apply_search_effect(State base, const Card& card,
     if (multiplier == 1) {
         states.push_back(std::move(base));
     } else {
-        states.push_back(base.clone());
-        states.push_back(base.clone());
+        states.push_back(base.clone_reserved());
+        states.push_back(base.clone_reserved());
     }
     for (int m = 0; m < multiplier; m++) {
         vector<State> next_states;
@@ -489,7 +573,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
                 }
                 if (!combo_indexes.empty()) {
                     for (size_t k = 0; k < combo_indexes.size() && k < 3; k++) {
-                        State ns = current.clone();
+                        State ns = current.clone_reserved();
                         Card card = ns.deck[combo_indexes[k]];
                         ns.deck.erase(ns.deck.begin() + combo_indexes[k]);
                         add_card_to_hand_or_burn(ns, card);
@@ -497,7 +581,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
                         next_states.push_back(ns);
                     }
                 } else {
-                    State ns = current.clone();
+                    State ns = current.clone_reserved();
                     add_card_to_hand_or_burn(ns, make_card("斯卡布斯·刀油"));
                     ns.next_combo_twice = true;
                     next_states.push_back(ns);
@@ -561,7 +645,15 @@ static vector<State> generate_successors(const State& st) {
     vector<State> out;
     for (int hand_index = 0; hand_index < (int)st.hand.size(); hand_index++) {
         const Card& card = st.hand[hand_index];
-        if (card.name.rfind("未知", 0) == 0) continue;
+        if (card.name().rfind("未知", 0) == 0) continue;
+        bool duplicate = false;
+        for (int j = 0; j < hand_index; j++) {
+            if (same_playable_card(st.hand[j], card)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) continue;
         int cost = effective_cost(st, card);
         if (cost < 0) continue;
         if (st.mana < cost) continue;
@@ -582,9 +674,9 @@ static vector<State> generate_successors(const State& st) {
         if (card.effect_id == "alexstrasza") enemy_options = {true, false};
 
         for (int tf : friendly_targets) {
-            for (bool ek : kill_options) {
+                for (bool ek : kill_options) {
                 for (bool et : enemy_options) {
-                    State base = st.clone();
+                    State base = st.clone_reserved();
                     if (!play_card_base(base, hand_index, tf, ek, et)) continue;
                     vector<State> succs = apply_search_effect(std::move(base), card, tf, ek, et);
                     for (State& succ : succs) out.push_back(std::move(succ));
@@ -614,10 +706,7 @@ static uint64_t mix_hash(uint64_t h, uint64_t x) {
 }
 
 static uint64_t card_hash(const Card& c) {
-    uint64_t h = str_hash(c.name);
-    h = mix_hash(h, str_hash(c.original_name));
-    h = mix_hash(h, str_hash(c.card_type));
-    h = mix_hash(h, str_hash(c.effect_id));
+    uint64_t h = c.static_hash;
     h = mix_hash(h, (uint64_t)c.current_cost());
     h = mix_hash(h, c.is_deadly_shadow ? 1ULL : 0ULL);
     h = mix_hash(h, c.locked_one_cost ? 1ULL : 0ULL);
@@ -628,11 +717,20 @@ static uint64_t card_hash(const Card& c) {
 static uint64_t state_hash(const State& s) {
     uint64_t h = 1469598103934665603ULL;
     h = mix_hash(h, s.deck_is_known ? 1ULL : 0ULL);
-    vector<uint64_t> hand_keys;
-    hand_keys.reserve(s.hand.size());
-    for (const auto& c : s.hand) hand_keys.push_back(card_hash(c));
-    std::sort(hand_keys.begin(), hand_keys.end());
-    for (uint64_t k : hand_keys) h = mix_hash(h, k);
+    // 手牌无序：固定数组 + 插入排序，避免每次哈希的堆分配与 std::sort 开销
+    uint64_t hand_keys[MAX_HAND];
+    int nk = 0;
+    for (const auto& c : s.hand) hand_keys[nk++] = card_hash(c);
+    for (int i = 1; i < nk; i++) {
+        uint64_t key = hand_keys[i];
+        int j = i - 1;
+        while (j >= 0 && hand_keys[j] > key) {
+            hand_keys[j + 1] = hand_keys[j];
+            j--;
+        }
+        hand_keys[j + 1] = key;
+    }
+    for (int i = 0; i < nk; i++) h = mix_hash(h, hand_keys[i]);
     for (const auto& c : s.deck) h = mix_hash(h, card_hash(c));
     for (const auto& c : s.board) h = mix_hash(h, card_hash(c));
     for (const auto& c : s.secrets) h = mix_hash(h, card_hash(c));
@@ -828,12 +926,12 @@ struct SearchParams {
 // ---------- 子链覆盖度（旧 beam 冠军判据：状态侧已凑齐的子链骨架数） ----------
 static int count_hand_cards(const State& s, const string& name) {
     int n = 0;
-    for (const auto& c : s.hand) if (c.name == name) n++;
+    for (const auto& c : s.hand) if (c.name() == name) n++;
     return n;
 }
 static int count_board_cards(const State& s, const string& name) {
     int n = 0;
-    for (const auto& c : s.board) if (c.name == name) n++;
+    for (const auto& c : s.board) if (c.name() == name) n++;
     return n;
 }
 static int count_hand_dragons(const State& s) {
@@ -858,7 +956,7 @@ static BottleneckParts bottleneck_parts(const State& s) {
     int shark_in_hand = 0, single_returns = 0, whole_returns = 0, deadly = 0;
     int cheapest_dragon = -1;
     for (const auto& c : s.hand) {
-        const string& n = c.name;
+        const string& n = c.name();
         if (c.dragon) {
             hand_dragons++;
             int cost = effective_cost(s, c);
@@ -877,7 +975,7 @@ static BottleneckParts bottleneck_parts(const State& s) {
         if (c.is_deadly_shadow) deadly++;
     }
     for (const auto& c : s.board) {
-        const string& n = c.name;
+        const string& n = c.name();
         if (n == "生命的缚誓者阿莱克丝塔萨") board_dragons++;
         else if (n == "暗影施法者") shadowcaster++;
         else if (n == "斯卡布斯·刀油") scabbs++;
@@ -950,31 +1048,45 @@ static void add_best(const State& s, unordered_map<int, State>& best, int min_al
 // 并按当前龙数分桶，保住正在蓄力的低龙数分支。
 // ---------- 旧 beam 的子链/离散路径评分（宽束模拟沿用，经验证能挖出 10 龙/160 伤） ----------
 static int subchain_score(const State& s) {
-    int hand_d = count_hand_dragons(s);
-    int board_d = count_board_cards(s, "生命的缚誓者阿莱克丝塔萨");
-    int dragons = hand_d + board_d;
-    bool shark_on = s.has_shark();
-    bool shark_in_hand = count_hand_cards(s, "鲨鱼之灵") > 0;
-    int mother = count_hand_cards(s, "晦鳞巢母") + count_board_cards(s, "晦鳞巢母");
-    int shadowcaster = count_hand_cards(s, "暗影施法者") + count_board_cards(s, "暗影施法者");
-    int shadowstep = count_hand_cards(s, "暗影步");
-    int dance = count_hand_cards(s, "舞动全场（ft.迦罗娜）");
-    int potion = count_hand_cards(s, "幻觉药水");
+    int hand_d = 0, board_d = 0;
+    int shark_in_hand = 0, shark_on = 0;
+    int mother = 0, shadowcaster = 0;
+    int shadowstep = 0, dance = 0, potion = 0, scabbs = 0, etc_count = 0;
     bool deadly = false;
-    for (const auto& c : s.hand) if (c.is_deadly_shadow) { deadly = true; break; }
-    int scabbs = count_hand_cards(s, "斯卡布斯·刀油");
     int oil = 0;
+    for (const auto& c : s.hand) {
+        if (c.dragon) hand_d++;
+        if (c.is_deadly_shadow) deadly = true;
+        const string& n = c.name();
+        if (n == "鲨鱼之灵") shark_in_hand++;
+        else if (n == "晦鳞巢母") mother++;
+        else if (n == "暗影施法者") shadowcaster++;
+        else if (n == "暗影步") shadowstep++;
+        else if (n == "舞动全场（ft.迦罗娜）") dance++;
+        else if (n == "幻觉药水") potion++;
+        else if (n == "斯卡布斯·刀油") scabbs++;
+        else if (n == "乐队经理精英牛头人酋长") etc_count++;
+    }
+    for (const auto& c : s.board) {
+        const string& n = c.name();
+        if (n == "生命的缚誓者阿莱克丝塔萨") board_d++;
+        else if (n == "晦鳞巢母") mother++;
+        else if (n == "暗影施法者") shadowcaster++;
+        else if (n == "鲨鱼之灵") shark_on++;
+    }
+    int dragons = hand_d + board_d;
+    bool shark = shark_on > 0 || shark_in_hand > 0;
     for (const auto& p : s.oil_stacks) if (p.first > 0 && p.second > 0) oil += p.second * p.first;
 
     int score = oil * 2;
-    if (dragons > 0 && (shark_on || shark_in_hand)) score += dragons * 16;
+    if (dragons > 0 && shark) score += dragons * 16;
     if (dragons > 0 && mother > 0) score += 12;
     if (dragons > 0 && shadowcaster > 0) score += 12;
     if (dragons > 0 && (dance > 0 || potion > 0)) score += 12;
     if (board_d > 0 && shadowstep > 0) score += 12;
     if (deadly && (dance > 0 || potion > 0)) score += 15;
-    if ((shark_on || shark_in_hand) && scabbs >= 2) score += 8;
-    score += count_hand_cards(s, "乐队经理精英牛头人酋长") * 8;
+    if (shark && scabbs >= 2) score += 8;
+    score += etc_count * 8;
     return score;
 }
 
@@ -1028,10 +1140,12 @@ static double heuristic_value(const State& s, int h) {
         case 5: {
             return std::min(bp.sources, bp.capacity) * 16.0;
         }
-        case 6:
-            return 0.6 * bottleneck_dragons(s) * 16.0
+        case 6: {
+            double b6 = std::min(bp.sources, std::min(bp.capacity, bp.mana_rounds));
+            return 0.6 * b6 * 16.0
                  + (double)subchain_score(s)
                  + (double)discrete_path_score(s);
+        }
         case 7: { double b = bottleneck_dragons(s); return b * b * 5.0; }
         case 8: return (double)discrete_path_score(s);
         case 9: {  // 几何平均：短板不再一票否决，三块板都高才高分
@@ -1056,7 +1170,7 @@ static double heuristic_value(const State& s, int h) {
             int whole_returns = 0, single_returns = 0, scabbs = 0, deadly = 0;
             int cheapest = -1;
             for (const auto& c : s.hand) {
-                const string& n = c.name;
+                const string& n = c.name();
                 if (c.dragon) {
                     hand_d++;
                     int cost = effective_cost(s, c);
@@ -1069,7 +1183,7 @@ static double heuristic_value(const State& s, int h) {
                 if (c.is_deadly_shadow) deadly++;
             }
             for (const auto& c : s.board) {
-                const string& n = c.name;
+                const string& n = c.name();
                 if (n == "生命的缚誓者阿莱克丝塔萨") board_d++;
                 else if (n == "暗影施法者") shadowcaster++;
             }
@@ -1171,6 +1285,7 @@ static void merge_shard_work(BeamMergeArgs* a) {
     for (const BeamRawCand& rc : *a->raws) {
         auto prev = a->seen->find(rc.key);
         if (prev != a->seen->end() && rc.mana <= prev->second) continue;
+        (*a->seen)[rc.key] = rc.mana;
         auto cur = cand_index.find(rc.key);
         if (cur != cand_index.end()) {
             Cand& c = (*a->cands)[cur->second];
@@ -1248,7 +1363,7 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
     int beam_width = p.wide_width > 0
         ? p.wide_width
         : 2400;
-    State start = start_in.clone();
+    State start = start_in.clone_reserved();
     auto dedup_key = [](const State& s) {
         return mix_hash(state_hash(s), (uint64_t)s.alex_play_count);
     };
@@ -1340,16 +1455,12 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
             for (auto& kv : shard_best[sh]) add_best(kv.second, out.best, p.min_alex);
         }
         if (cands.empty()) break;
-        for (const Cand& c : cands) {
-            auto& sm = seen_shards[c.key % shards];
-            auto prev = sm.find(c.key);
-            if (prev == sm.end() || c.mana > prev->second) sm[c.key] = c.mana;
-        }
         // 分桶：按当前龙数，避免高龙数分支挤掉正在蓄力的低龙数高分分支
         map<int, vector<const Cand*>> buckets;
         for (const Cand& c : cands) buckets[c.count].push_back(&c);
         int per_bucket = std::max(1, (int)(beam_width * 1.25 / std::max(1, (int)buckets.size())));
         vector<State> next_level;
+        next_level.reserve(std::min((size_t)beam_width, cands.size()));
         for (auto it = buckets.rbegin(); it != buckets.rend(); ++it) {
             auto& bstates = it->second;
             std::stable_sort(bstates.begin(), bstates.end(),
@@ -1437,8 +1548,10 @@ static void* wide_worker_entry(void* param) {
 static BeamResult run_beam_search(const State& start, const SearchParams& p, Progress* prog) {
     BeamResult res;
     auto t0 = std::chrono::steady_clock::now();
-    static const int DEFAULT_WIDE_WIDTHS[] = {1100, 2000};
-    static const int DEFAULT_HEURISTICS[] = {6, 2};
+    // 默认四通道：H6/1100（8水晶十龙深线）、H1/1100（4水晶十龙/紧线）、
+    // H2/1100（96 伤线）、H2/3000（6水晶紧 48 伤线）
+    static const int DEFAULT_WIDE_WIDTHS[] = {1100, 1100, 1100, 3000};
+    static const int DEFAULT_HEURISTICS[] = {6, 1, 2, 2};
     int wide_count = p.wide_width > 0 ? 1 : (int)std::max(p.wide_widths.size(), p.heuristics.size());
     if (p.wide_width <= 0 && p.wide_widths.empty() && p.heuristics.empty()) wide_count = 2;
     wide_count = std::max(1, std::min(wide_count, std::max(1, p.threads)));
