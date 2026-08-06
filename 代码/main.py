@@ -106,7 +106,24 @@ CARD_ABBREVIATIONS = {
     "战略转移": "转",
 }
 
-ROUND_SPLIT_NAMES = ("战略转移", "舞动全场（ft.迦罗娜）")
+ROUND_SPLIT_NAMES = ("战略转移", "舞动全场")  # 与 split_path_rounds 提取的基础名匹配
+
+_CN_DIGITS = "零一二三四五六七八九"
+
+
+def chinese_round_number(n: int) -> str:
+    """轮次序号转中文数字（1->一, 11->十一, 21->二十一...）。"""
+    if n <= 0:
+        return str(n)
+
+    if n < 10:
+        return _CN_DIGITS[n]
+
+    if n < 20:
+        return "十" + (_CN_DIGITS[n % 10] if n % 10 else "")
+
+    tens, ones = divmod(n, 10)
+    return _CN_DIGITS[tens] + "十" + (_CN_DIGITS[ones] if ones else "")
 
 
 def abbreviate_card_name(name: str) -> str:
@@ -195,7 +212,7 @@ def format_mini_results(data: Dict[str, object]) -> str:
 
     for index, rnd in enumerate(rounds, start=1):
         abbr = "-".join(abbreviate_step(step) for step in rnd)
-        lines.append(f"标题[第{index}轮]")
+        lines.append(f"[第{chinese_round_number(index)}轮]：")
         lines.append(abbr if abbr else "（空）")
         lines.append("")
 
