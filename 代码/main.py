@@ -648,19 +648,28 @@ class MainWindow(QWidget):
 
         board_lines: List[str] = []
 
+        def _hp_text(item: Dict[str, object]) -> str:
+            health = item.get("health")
+            health_max = item.get("health_max")
+            if health is None:
+                return "生命?"
+            if health_max not in (None, health):
+                return f"生命{health}/{health_max}"
+            return f"生命{health}"
+
         for index, item in enumerate(snap.get("board") or [], start=1):
             cost = item.get("cost")
-            health = item.get("health")
             cost_text = f"{cost}费" if cost is not None else "?费"
-            hp_text = f"生命{health}" if health is not None else "生命?"
-            board_lines.append(f"{index:2d}. [{cost_text}] {item['name']}（{hp_text}）")
+            board_lines.append(
+                f"{index:2d}. [{cost_text}] {item['name']}（{_hp_text(item)}）"
+            )
 
         enemy_lines: List[str] = []
 
         for index, item in enumerate(snap.get("enemy_board") or [], start=1):
-            health = item.get("health")
-            hp_text = f"生命{health}" if health is not None else "生命?"
-            enemy_lines.append(f"{index:2d}. {item.get('name') or '敌方随从'}（{hp_text}）")
+            enemy_lines.append(
+                f"{index:2d}. {item.get('name') or '敌方随从'}（{_hp_text(item)}）"
+            )
 
         if enemy_lines:
             board_lines.append("敌方随从：")

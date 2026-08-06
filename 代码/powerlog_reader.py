@@ -493,12 +493,20 @@ class PowerLogParser:
     def _entity_item(self, ent: dict) -> dict:
         card_id = ent.get("card_id") or ""
         card_type = ent.get("card_type")
+        health = ent.get("health")
+        health_max = health
+        if card_type == "MINION":
+            # 当前血量 = 基础血量 - 已受伤害（TAG_DAMAGE），随标签变化实时更新
+            damage = ent.get("DAMAGE") or ent.get("damage") or 0
+            if isinstance(health, int) and isinstance(damage, int) and damage > 0:
+                health = max(0, health - damage)
 
         return {
             "card_id": card_id,
             "name": card_name(card_id),
             "cost": ent.get("cost"),
-            "health": ent.get("health") if card_type == "MINION" else None,
+            "health": health if card_type == "MINION" else None,
+            "health_max": health_max if card_type == "MINION" else None,
             "attack": ent.get("ATK"),
             "zone_position": ent.get("ZONE_POSITION"),
             "ghostly": bool(ent.get("ghostly")),
