@@ -142,6 +142,7 @@ def build_payload(
     time_budget_sec: float = 3.0,
     heuristic: int = 6,
     wide_widths: Optional[List[int]] = None,
+    heuristics: Optional[List[int]] = None,
     etc_band: Optional[List[str]] = None,
 ) -> Dict[str, object]:
     """把日志快照转成 C++ JSON 局面（纯束宽搜索）。
@@ -210,6 +211,7 @@ def build_payload(
         "time_budget_sec": time_budget_sec,
         "heuristic": heuristic,
         "wide_widths": wide_widths or [1100],
+        "heuristics": heuristics or [6],
         "deck_is_known": bool(snapshot.get("deck")),
         "deck": [{"name": item["name"]} for item in snapshot.get("deck") or []],
         "hand": hand,
@@ -329,6 +331,7 @@ def compute(
     time_budget_sec: float = 3.0,
     heuristic: int = 6,
     wide_widths: Optional[List[int]] = None,
+    heuristics: Optional[List[int]] = None,
     etc_band: Optional[List[str]] = None,
     exe_path: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
@@ -346,6 +349,7 @@ def compute(
         time_budget_sec=time_budget_sec,
         heuristic=heuristic,
         wide_widths=wide_widths,
+        heuristics=heuristics,
         etc_band=etc_band,
     )
     return run_engine(

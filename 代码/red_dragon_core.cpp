@@ -820,7 +820,8 @@ struct SearchParams {
     double time_budget_sec = 3.0;   // 总时间预算（秒），硬时限 ≤3s（大部分 1~2s 出结果）
     int heuristic = 6;          // 组合加权（0.6×瓶颈 + 资源求和 + 路径里程碑，实测最优）
     int wide_width = 0;         // >0 = 单宽束通道固定宽度
-    vector<int> wide_widths;    // 多宽束并行组合；空 = 默认 {2400,600}
+    vector<int> wide_widths;    // 多宽束并行组合；空 = 默认 {1100,2000}
+    vector<int> heuristics;     // 各宽束通道的启发函数；空 = 默认 {6,2}
     int inner_threads = 1;      // 宽束通道内部的并行展开线程数（大局面通道给 3）
 };
 
@@ -1160,7 +1161,7 @@ struct BeamSliceArgs {
 struct BeamMergeArgs {
     const vector<BeamRawCand>* raws;
     const SearchParams* p;
-    unordered_map<uint64_t, State>* seen;
+    unordered_map<uint64_t, int>* seen;  // key -> 已见过的最高法力（无需存整状态）
     vector<Cand>* cands;
     unordered_map<int, State>* best;
 };
@@ -1169,7 +1170,7 @@ static void merge_shard_work(BeamMergeArgs* a) {
     unordered_map<uint64_t, size_t> cand_index;
     for (const BeamRawCand& rc : *a->raws) {
         auto prev = a->seen->find(rc.key);
-        if (prev != a->seen->end() && rc.mana <= prev->second.mana) continue;
+        if (prev != a->seen->end() && rc.mana <= prev->second) continue;
         auto cur = cand_index.find(rc.key);
         if (cur != cand_index.end()) {
             Cand& c = (*a->cands)[cur->second];
@@ -1253,8 +1254,8 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
     };
     vector<State> level = {start};
     int shards = std::max(1, std::min(4, p.inner_threads));
-    vector<unordered_map<uint64_t, State>> seen_shards(shards);
-    seen_shards[dedup_key(start) % shards][dedup_key(start)] = start;
+    vector<unordered_map<uint64_t, int>> seen_shards(shards);
+    seen_shards[dedup_key(start) % shards][dedup_key(start)] = start.mana;
     add_best(start, out.best, p.min_alex);
 
     for (int depth = 1; depth <= p.depth; depth++) {
@@ -1342,7 +1343,7 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
         for (const Cand& c : cands) {
             auto& sm = seen_shards[c.key % shards];
             auto prev = sm.find(c.key);
-            if (prev == sm.end() || c.mana > prev->second.mana) sm[c.key] = c.s;
+            if (prev == sm.end() || c.mana > prev->second) sm[c.key] = c.mana;
         }
         // 分桶：按当前龙数，避免高龙数分支挤掉正在蓄力的低龙数高分分支
         map<int, vector<const Cand*>> buckets;
@@ -1401,6 +1402,7 @@ struct WorkerArgs {
     Progress* prog = nullptr;
     const Budget* budget = nullptr;
     int ww = 0;   // 宽束通道专用：本次模拟的束宽（0 = 用 p->wide_width）
+    int heur = -1;  // 宽束通道专用：本次模拟的启发函数（<0 = 用 p->heuristic）
     int inner = 1;  // 宽束通道内部并行展开线程数
     int tid = 0;
 };
@@ -1414,6 +1416,7 @@ static void* wide_worker_entry(void* param) {
     auto t_start = std::chrono::steady_clock::now();
     SearchParams pp = *a->p;
     pp.wide_width = a->ww > 0 ? a->ww : pp.wide_width;
+    if (a->heur >= 0) pp.heuristic = a->heur;
     pp.inner_threads = a->inner;
     wide_beam_pass(*a->start, pp, *a->budget, *a->out);
     a->out->work_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
@@ -1434,9 +1437,10 @@ static void* wide_worker_entry(void* param) {
 static BeamResult run_beam_search(const State& start, const SearchParams& p, Progress* prog) {
     BeamResult res;
     auto t0 = std::chrono::steady_clock::now();
-    static const int DEFAULT_WIDE_WIDTHS[] = {1100};  // 单宽度：48 小局面深线 + 160 深线折中
-    int wide_count = p.wide_width > 0 ? 1 : (int)p.wide_widths.size();
-    if (p.wide_width <= 0 && p.wide_widths.empty()) wide_count = 1;
+    static const int DEFAULT_WIDE_WIDTHS[] = {1100, 2000};
+    static const int DEFAULT_HEURISTICS[] = {6, 2};
+    int wide_count = p.wide_width > 0 ? 1 : (int)std::max(p.wide_widths.size(), p.heuristics.size());
+    if (p.wide_width <= 0 && p.wide_widths.empty() && p.heuristics.empty()) wide_count = 2;
     wide_count = std::max(1, std::min(wide_count, std::max(1, p.threads)));
     std::atomic<bool> stop{false};
     Budget budget;
@@ -1456,10 +1460,8 @@ static BeamResult run_beam_search(const State& start, const SearchParams& p, Pro
         a.budget = &budget;
         a.ww = p.wide_width > 0 ? p.wide_width
               : (p.wide_widths.empty() ? DEFAULT_WIDE_WIDTHS[std::min(w, 1)] : p.wide_widths[w]);
-        // 宽束（2400）通道分更多核：160 深线只在宽束通道可达，需 ~40 万展开，
-        // 3 线程 2 秒内可完成；窄束（600）1.8s 即穷尽状态空间，无需并行
-        a.inner = wide_count <= 1 ? 1
-                                  : (w == 0 ? std::max(1, p.threads - (wide_count - 1)) : 1);
+        a.heur = p.heuristics.empty() ? DEFAULT_HEURISTICS[std::min(w, 1)] : p.heuristics[w];
+        a.inner = 1;  // 多通道并行，各通道单线程即可（分配瘦身后跨线程可缩放）
         a.tid = 90 + w;
         wide_args.push_back(a);
     }
@@ -1703,6 +1705,18 @@ int main(int argc, char** argv) {
             }
             continue;
         }
+        if (next("--heuristics", &tmp)) {
+            p.heuristics.clear();
+            size_t pos = 0;
+            while (pos <= tmp.size()) {
+                size_t comma = tmp.find(',', pos);
+                string part = tmp.substr(pos, comma == string::npos ? string::npos : comma - pos);
+                if (!part.empty()) p.heuristics.push_back(atoi(part.c_str()));
+                if (comma == string::npos) break;
+                pos = comma + 1;
+            }
+            continue;
+        }
     }
 
     if (!use_json) {
@@ -1733,6 +1747,12 @@ int main(int argc, char** argv) {
         p.wide_widths.clear();
         for (const auto& v : wws->arr)
             if (v.type == JVal::NUM) p.wide_widths.push_back((int)v.num);
+    }
+    const JVal* hs = root.find("heuristics");
+    if (hs && hs->type == JVal::ARR) {
+        p.heuristics.clear();
+        for (const auto& v : hs->arr)
+            if (v.type == JVal::NUM) p.heuristics.push_back((int)v.num);
     }
     p.min_alex = std::max(1, std::min(p.min_alex, p.max_alex));
     p.threads = std::max(1, p.threads);
