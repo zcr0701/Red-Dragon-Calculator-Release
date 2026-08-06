@@ -70,6 +70,8 @@ struct Card {
     bool dragon = false;
     bool is_deadly_shadow = false;
     bool locked_one_cost = false;
+    bool entered_hand_this_turn = false;  // 快枪判定：本回合进入手牌（含回手/发现/复制）
+    bool is_mini_copy = false;            // 暗影施法者/幻觉药水制造的 1/1 复制（回手不还原）
 
     const string& name() const {
         static const string empty;
@@ -142,6 +144,8 @@ static const unordered_map<string, CardDef> DB = {
     {"暗影施法者", {5, "minion", "shadowcaster", true, false, false, 4}},
     {"生命的缚誓者阿莱克丝塔萨", {9, "minion", "alexstrasza", true, false, true, 8}},
     {"赤烟·腾武", {2, "minion", "tenwu", true, false, false, 2}},
+    {"“赤烟”腾武", {2, "minion", "tenwu", true, false, false, 2}},  // 官方名（日志/卡图）别名
+    {"押注猎手", {3, "minion", "gambler_hunter", false, true, false, 4}},  // 快枪或连击：获取一张幸运币
     {"狐人老千", {2, "minion", "foxy_fraud", true, false, false, 2}},
 };
 
@@ -150,9 +154,11 @@ static uint64_t mix_hash(uint64_t h, uint64_t x);
 
 static Card make_card(const string& name, int cost_override = -1) {
     Card c;
-    auto it = DB.find(name);
+    string normalized = name;
+    if (name == "“赤烟”腾武") normalized = "赤烟·腾武";  // 统一规范名
+    auto it = DB.find(normalized);
     if (it == DB.end()) {
-        c.name_ = intern_name(name);
+        c.name_ = intern_name(normalized);
         c.original_name_ = c.name_;
         c.card_type = "unknown";
         c.effect_id = "unknown";
@@ -162,7 +168,7 @@ static Card make_card(const string& name, int cost_override = -1) {
         return c;
     }
     const CardDef& d = it->second;
-    c.name_ = intern_name(name);
+    c.name_ = intern_name(normalized);
     c.original_name_ = c.name_;
     c.card_type = d.card_type;
     c.effect_id = d.effect_id;
@@ -186,6 +192,7 @@ static bool is_coin_name(const string& n) {
 struct State {
     vector<Card> hand;
     vector<Card> board;
+    vector<Card> enemy_board;  // 敌方随从（只需血量，用于锯齿骨刺击杀抽牌）
     vector<Card> deck;
     vector<Card> secrets;
     Card weapon;
@@ -233,6 +240,8 @@ struct State {
         c.hand.assign(hand.begin(), hand.end());
         c.board.reserve(std::max((size_t)MAX_BOARD, board.size()));
         c.board.assign(board.begin(), board.end());
+        c.enemy_board.reserve(enemy_board.size() + 1);
+        c.enemy_board.assign(enemy_board.begin(), enemy_board.end());
         c.deck.reserve(std::max((size_t)16, deck.size()));
         c.deck.assign(deck.begin(), deck.end());
         c.secrets.reserve(std::max((size_t)MAX_SECRET, secrets.size()));
@@ -293,10 +302,25 @@ static int effective_cost(const State& s, const Card& card) {
 
 // 同名同状态手牌：打出效果与结果完全相同（手牌位置不影响状态哈希），
 // 展开时只保留第一张，避免为重复卡各克隆一次状态。
-static bool same_playable_card(const Card& a, const Card& b) {
-    return a.name_ == b.name_ && a.current_cost() == b.current_cost() &&
-           a.is_deadly_shadow == b.is_deadly_shadow &&
-           a.locked_one_cost == b.locked_one_cost;
+// 仅当该差异会影响打出结果时才不合并：押注猎手的快枪（本回合入牌）与
+// 战略转移可还原时的 1/1 复制身份。
+static bool same_playable_card(const State& s, const Card& a, const Card& b) {
+    if (a.name_ != b.name_ || a.current_cost() != b.current_cost() ||
+        a.is_deadly_shadow != b.is_deadly_shadow ||
+        a.locked_one_cost != b.locked_one_cost)
+        return false;
+    if (a.effect_id == "gambler_hunter" &&
+        a.entered_hand_this_turn != b.entered_hand_this_turn)
+        return false;
+    bool transfer_around = false;
+    for (const auto& c : s.hand)
+        if (c.name() == "战略转移") { transfer_around = true; break; }
+    if (!transfer_around) {
+        for (const auto& n : s.etc_band)
+            if (n == "战略转移") { transfer_around = true; break; }
+    }
+    if (transfer_around && a.is_mini_copy != b.is_mini_copy) return false;
+    return true;
 }
 
 static void consume_discounts(State& s, const Card& card) {
@@ -316,15 +340,18 @@ static void consume_discounts(State& s, const Card& card) {
 }
 
 static int minion_trigger_multiplier(const State& s, const Card& card) {
+    if (card.effect_id == "tenwu") return 1;  // 腾武是单体回手，鲨鱼不重复触发（避免回两张）
     if ((card.battlecry || card.combo) && s.has_shark()) return 2;
     return 1;
 }
 
 static void add_card_to_hand_or_burn(State& s, const Card& card) {
+    Card added = card;
+    added.entered_hand_this_turn = true;  // 搜索中的入牌都算“本回合进入手牌”（快枪判定）
     if (s.hand_full()) {
         s.burned_cards++;
     } else {
-        s.hand.push_back(card);
+        s.hand.push_back(added);
     }
 }
 
@@ -365,7 +392,8 @@ static bool play_card_base(State& s, int hand_index, int target_friendly_index,
     Card card = s.hand[hand_index];
     int cost = effective_cost(s, card);
     if (cost < 0 || s.mana < cost) return false;
-    if (card.card_type == "minion" && s.board_full()) return false;
+    // 杂牌（unknown）可能是随从：打出会占格子，按随从处理
+    if ((card.card_type == "minion" || card.card_type == "unknown") && s.board_full()) return false;
     if (card.card_type == "secret" && (int)s.secrets.size() >= MAX_SECRET) return false;
 
     s.mana -= cost;
@@ -375,9 +403,17 @@ static bool play_card_base(State& s, int hand_index, int target_friendly_index,
     string item = display_card_name(card);
     if (target_friendly_index >= 0) {
         if (target_friendly_index < (int)s.board.size()) {
-            item += "(" + s.board[target_friendly_index].name() + ")";
+            item += "（" + s.board[target_friendly_index].name() + "）";
         } else {
-            item += "(无效目标)";
+            item += "（无效目标）";
+        }
+    } else if (target_friendly_index < -1) {
+        // 敌方随从目标（编码：-2 = 第0个敌方随从）
+        int eidx = -target_friendly_index - 2;
+        if (eidx >= 0 && eidx < (int)s.enemy_board.size()) {
+            item += "（" + s.enemy_board[eidx].name() + "）";
+        } else {
+            item += "（敌方随从）";
         }
     }
     s.path_mut().push_back(item);
@@ -390,7 +426,7 @@ static bool play_card_base(State& s, int hand_index, int target_friendly_index,
         }
     }
 
-    if (card.card_type == "minion") {
+    if (card.card_type == "minion" || card.card_type == "unknown") {
         s.board.push_back(card);
     } else if (card.card_type == "secret") {
         s.secrets.push_back(card);
@@ -442,8 +478,8 @@ static State breakdance_branch(const State& base) {
 
 // 效果结算：单分支效果原地修改（零克隆，对应“增量状态”优化）；
 // 仅牛头人发现 / 幸运彗星等真多分支效果走克隆路径。
-static bool apply_effect_inplace(State& s, const string& e, int target_friendly_index,
-                                 bool target_enemy_is_killed) {
+static bool apply_effect_inplace(State& s, const string& e, const Card& card,
+                                 int target_friendly_index, bool target_enemy_is_killed) {
     if (e == "coin" || e == "fake_coin") {
         s.mana += 1;  // 临时法力不封顶（与 Python gain_temporary 一致）
     } else if (e == "preparation") {
@@ -457,14 +493,34 @@ static bool apply_effect_inplace(State& s, const string& e, int target_friendly_
             s.next_combo_twice = false;
         }
     } else if (e == "strategic_transfer") {
-        // 战略转移：所有友方随从移回手牌（保持费用状态），手牌满按进场顺序烧
+        // 战略转移：所有友方随从移回手牌，并还原为原始版本
+        // （费用恢复原始消耗、身材恢复原始身材；暗施/药水 1/1 复制保持 1/1；腾武锁 1 费保留）
         vector<Card> returning = s.board;
         s.board.clear();
         int free_slots = std::max(0, MAX_HAND - (int)s.hand.size());
         if ((int)returning.size() <= free_slots) {
-            for (Card& m : returning) add_card_to_hand_or_burn(s, m);
+            for (Card& m : returning) {
+                if (!m.is_mini_copy) {
+                    Card orig = make_card(m.name());
+                    orig.locked_one_cost = m.locked_one_cost;   // 腾武锁定不还原
+                    orig.is_deadly_shadow = m.is_deadly_shadow;
+                    orig.entered_hand_this_turn = true;
+                    m = orig;
+                }
+                add_card_to_hand_or_burn(s, m);
+            }
         } else {
-            for (int i = 0; i < free_slots; i++) add_card_to_hand_or_burn(s, returning[i]);
+            for (int i = 0; i < free_slots; i++) {
+                Card& m = returning[i];
+                if (!m.is_mini_copy) {
+                    Card orig = make_card(m.name());
+                    orig.locked_one_cost = m.locked_one_cost;
+                    orig.is_deadly_shadow = m.is_deadly_shadow;
+                    orig.entered_hand_this_turn = true;
+                    m = orig;
+                }
+                add_card_to_hand_or_burn(s, m);
+            }
             s.burned_cards += (int)returning.size() - free_slots;
         }
     } else if (e == "shadowstep") {
@@ -484,6 +540,7 @@ static bool apply_effect_inplace(State& s, const string& e, int target_friendly_
             Card copied = s.board[target_friendly_index].clone();
             copied.temp_cost = 1;
             copied.health = 1;
+            copied.is_mini_copy = true;
             add_card_to_hand_or_burn(s, copied);
         }
     } else if (e == "tenwu") {
@@ -503,6 +560,7 @@ static bool apply_effect_inplace(State& s, const string& e, int target_friendly_
             Card copy = m.clone();
             copy.temp_cost = 1;
             copy.health = 1;
+            copy.is_mini_copy = true;
             copies.push_back(copy);
         }
         for (const auto& c : copies) add_card_to_hand_or_burn(s, c);
@@ -515,15 +573,34 @@ static bool apply_effect_inplace(State& s, const string& e, int target_friendly_
         }
     } else if (e == "serrated_bone_spike") {
         if (target_enemy_is_killed) {
-            if (target_friendly_index < 0 || target_friendly_index >= (int)s.board.size()) {
-                return false;  // 无后继
+            if (target_friendly_index < -1) {
+                // 敌方随从目标（编码 -2 起）：血量 <= 3 必死，抽 2
+                int eidx = -target_friendly_index - 2;
+                if (eidx < 0 || eidx >= (int)s.enemy_board.size()) return false;
+                const Card& target = s.enemy_board[eidx];
+                if (target.health < 0 || target.health > 3) return false;
+                s.enemy_board.erase(s.enemy_board.begin() + eidx);
+                s.next_card += 2;
+            } else {
+                if (target_friendly_index < 0 || target_friendly_index >= (int)s.board.size()) {
+                    return false;  // 无后继
+                }
+                const Card& target = s.board[target_friendly_index];
+                if (target.health < 0 || target.health > 3) {
+                    return false;  // 无后继
+                }
+                s.board.erase(s.board.begin() + target_friendly_index);
+                s.next_card += 2;
             }
-            const Card& target = s.board[target_friendly_index];
-            if (target.health < 0 || target.health > 3) {
-                return false;  // 无后继
-            }
-            s.board.erase(s.board.begin() + target_friendly_index);
-            s.next_card += 2;
+        }
+    } else if (e == "gambler_hunter") {
+        // 押注猎手：快枪或连击 → 获取一张幸运币（两者不叠加）
+        bool quick_draw = card.entered_hand_this_turn;
+        bool triggered = s.cards_played_this_turn > 0 || quick_draw;
+        if (triggered) {
+            int coins = s.next_combo_twice ? 2 : 1;  // 幸运彗星：连击触发两次
+            s.next_combo_twice = false;
+            for (int i = 0; i < coins; i++) add_card_to_hand_or_burn(s, make_card("幸运币"));
         }
     } else if (e == "cultist_map") {
         Card unknown = make_card("未知发现物");
@@ -543,7 +620,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
     bool branching = (e == "elite_tauren_champion" || e == "lucky_comet");
     if (!branching) {
         for (int m = 0; m < multiplier; m++) {
-            if (!apply_effect_inplace(base, e, target_friendly_index, target_enemy_is_killed)) {
+            if (!apply_effect_inplace(base, e, card, target_friendly_index, target_enemy_is_killed)) {
                 return {};  // 无后继（如骨刺击杀无效目标）
             }
         }
@@ -566,23 +643,21 @@ static vector<State> apply_search_effect(State base, const Card& card,
         vector<State> next_states;
         for (const State& current : states) {
             if (e == "lucky_comet") {
-                vector<int> combo_indexes;
-                for (int i = 0; i < (int)current.deck.size(); i++) {
-                    if (current.deck[i].card_type == "minion" && current.deck[i].combo)
-                        combo_indexes.push_back(i);
-                }
-                if (!combo_indexes.empty()) {
-                    for (size_t k = 0; k < combo_indexes.size() && k < 3; k++) {
-                        State ns = current.clone_reserved();
-                        Card card = ns.deck[combo_indexes[k]];
-                        ns.deck.erase(ns.deck.begin() + combo_indexes[k]);
-                        add_card_to_hand_or_burn(ns, card);
-                        ns.next_combo_twice = true;
-                        next_states.push_back(ns);
+                // 幸运彗星：发现一张连击随从牌；下一张连击随从的连击触发两次
+                vector<string> options;
+                if (current.deck_is_known) {
+                    for (const auto& c : current.deck) {
+                        if (c.card_type == "minion" && c.combo) options.push_back(c.name());
                     }
+                    std::sort(options.begin(), options.end());
+                    options.erase(std::unique(options.begin(), options.end()), options.end());
                 } else {
+                    options = {"斯卡布斯·刀油", "押注猎手"};
+                }
+                if (options.empty()) options = {"斯卡布斯·刀油"};
+                for (const string& opt : options) {
                     State ns = current.clone_reserved();
-                    add_card_to_hand_or_burn(ns, make_card("斯卡布斯·刀油"));
+                    add_card_to_hand_or_burn(ns, make_card(opt));
                     ns.next_combo_twice = true;
                     next_states.push_back(ns);
                 }
@@ -645,10 +720,9 @@ static vector<State> generate_successors(const State& st) {
     vector<State> out;
     for (int hand_index = 0; hand_index < (int)st.hand.size(); hand_index++) {
         const Card& card = st.hand[hand_index];
-        if (card.name().rfind("未知", 0) == 0) continue;
         bool duplicate = false;
         for (int j = 0; j < hand_index; j++) {
-            if (same_playable_card(st.hand[j], card)) {
+            if (same_playable_card(st, st.hand[j], card)) {
                 duplicate = true;
                 break;
             }
@@ -657,7 +731,8 @@ static vector<State> generate_successors(const State& st) {
         int cost = effective_cost(st, card);
         if (cost < 0) continue;
         if (st.mana < cost) continue;
-        if (card.card_type == "minion" && st.board_full()) continue;
+        // 杂牌（unknown）可能是随从：打出占格子
+        if ((card.card_type == "minion" || card.card_type == "unknown") && st.board_full()) continue;
         if (card.card_type == "secret" && (int)st.secrets.size() >= MAX_SECRET) continue;
         if (cards_drawn_if_played(st, card) > 0) continue;
 
@@ -674,13 +749,24 @@ static vector<State> generate_successors(const State& st) {
         if (card.effect_id == "alexstrasza") enemy_options = {true, false};
 
         for (int tf : friendly_targets) {
-                for (bool ek : kill_options) {
+            for (bool ek : kill_options) {
                 for (bool et : enemy_options) {
                     State base = st.clone_reserved();
                     if (!play_card_base(base, hand_index, tf, ek, et)) continue;
                     vector<State> succs = apply_search_effect(std::move(base), card, tf, ek, et);
                     for (State& succ : succs) out.push_back(std::move(succ));
                 }
+            }
+        }
+        // 锯齿骨刺：可击杀的敌方随从（血量 <= 3）→ 击杀并抽 2（编码负目标：-2 起）
+        if (card.effect_id == "serrated_bone_spike") {
+            for (int ei = 0; ei < (int)st.enemy_board.size(); ei++) {
+                const Card& target = st.enemy_board[ei];
+                if (target.health < 0 || target.health > 3) continue;
+                State base = st.clone_reserved();
+                if (!play_card_base(base, hand_index, -2 - ei, true, false)) continue;
+                vector<State> succs = apply_search_effect(std::move(base), card, -2 - ei, true, false);
+                for (State& succ : succs) out.push_back(std::move(succ));
             }
         }
     }
@@ -733,6 +819,7 @@ static uint64_t state_hash(const State& s) {
     for (int i = 0; i < nk; i++) h = mix_hash(h, hand_keys[i]);
     for (const auto& c : s.deck) h = mix_hash(h, card_hash(c));
     for (const auto& c : s.board) h = mix_hash(h, card_hash(c));
+    for (const auto& c : s.enemy_board) h = mix_hash(h, card_hash(c));
     for (const auto& c : s.secrets) h = mix_hash(h, card_hash(c));
     if (s.has_weapon) h = mix_hash(h, card_hash(s.weapon));
     for (const auto& n : s.etc_band) h = mix_hash(h, str_hash(n));
@@ -989,6 +1076,8 @@ static BottleneckParts bottleneck_parts(const State& s) {
     r.capacity = (double)single_returns + (double)whole_returns * 3.0;
     if (scabbs > 0 && single_returns > 0) r.capacity += 15.0;
     if (deadly > 0 && s.cards_played_this_turn > 0) r.capacity += 0.5;
+    for (const auto& c : s.enemy_board)
+        if (c.health >= 0 && c.health <= 3) { r.capacity += 1.0; break; }  // 骨刺可击杀敌方随从→抽2
 
     // ③ 法力可负担轮数：阈值型资源；考虑手牌刀油先打出带来的减费潜力
     if (cheapest_dragon < 0 && board_dragons == 0 && shadowcaster == 0) return r;  // 无龙源
@@ -1079,6 +1168,8 @@ static int subchain_score(const State& s) {
     for (const auto& p : s.oil_stacks) if (p.first > 0 && p.second > 0) oil += p.second * p.first;
 
     int score = oil * 2;
+    for (const auto& c : s.enemy_board)
+        if (c.health >= 0 && c.health <= 3) { score += 10; break; }  // 骨刺击杀敌方随从抽2
     if (dragons > 0 && shark) score += dragons * 16;
     if (dragons > 0 && mother > 0) score += 12;
     if (dragons > 0 && shadowcaster > 0) score += 12;
@@ -1700,7 +1791,18 @@ static State state_from_json(const JVal& root) {
             if (hp >= 0) c.health = (int)hp;
             long long tc = item.get_int("temp_cost", -1);
             if (tc >= 0) c.temp_cost = (int)tc;
+            if (item.find("mini") && item.find("mini")->type == JVal::BOOL)
+                c.is_mini_copy = item.find("mini")->b;
             st.board.push_back(c);
+        }
+    }
+    const JVal* enemy_board = root.find("enemy_board");
+    if (enemy_board && enemy_board->type == JVal::ARR) {
+        for (const auto& item : enemy_board->arr) {
+            Card c = make_card(item.get_str("name", "敌方随从"));
+            long long hp = item.get_int("health", -1);
+            if (hp >= 0) c.health = (int)hp;
+            st.enemy_board.push_back(c);
         }
     }
     const JVal* secrets = root.find("secrets");

@@ -57,8 +57,10 @@ KNOWN_BASE_COSTS = {
     "鲨鱼之灵": 4,
     "暗影施法者": 5,
     "赤烟·腾武": 2,
+    "“赤烟”腾武": 2,
     "幸运彗星": 2,
     "战略转移": 1,
+    "押注猎手": 3,
     "幸运币": 0,
 }
 
@@ -83,6 +85,7 @@ CARD_ALIASES = {
     "晦": "晦鳞巢母",
     "腾武": "赤烟·腾武",
     "彗星": "幸运彗星",
+    "押": "押注猎手",
 }
 
 EFFECT_NAMES = ("狐人老千", "伺机待发", "斯卡布斯·刀油", "锯齿骨刺")
@@ -194,6 +197,19 @@ def build_payload(
             }
         )
 
+    enemy_board: List[dict] = []
+
+    for item in snapshot.get("enemy_board") or []:
+        if isinstance(item, dict):
+            enemy_board.append(
+                {
+                    "name": resolve_card_name(item.get("name") or "敌方随从"),
+                    "health": int(item["health"]) if item.get("health") is not None else -1,
+                }
+            )
+        else:
+            enemy_board.append({"name": "敌方随从", "health": int(item)})
+
     effect_payload = [
         {"name": effect["name"], "count": int(effect.get("count", 1) or 1)}
         for effect in effects
@@ -218,6 +234,7 @@ def build_payload(
         "deck": [{"name": item["name"]} for item in snapshot.get("deck") or []],
         "hand": hand,
         "board": board,
+        "enemy_board": enemy_board,
         "secrets": [{"name": item["name"]} for item in snapshot.get("secrets") or []],
         "weapon": {"name": snapshot["weapon"]["name"]} if snapshot.get("weapon") else None,
         "current_effects": effect_payload,

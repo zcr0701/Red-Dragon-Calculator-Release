@@ -78,7 +78,18 @@ COMBO_CARD_NAMES = {
 
 # HearthstoneJSON 卡名与项目卡名不一致时的修正
 NAME_ALIASES = {
-    '"赤烟"腾武': "赤烟·腾武",
+    '"赤烟"腾武': "赤烟·腾武",    # 兼容 ASCII 引号变体
+    "“赤烟”腾武": "赤烟·腾武",   # 官方全角引号名
+}
+
+# 乐队经理精英牛头人酋长的乐队可选卡（CardID → 项目名）
+ETC_BAND_CARD_IDS = {
+    "ETC_079": "舞动全场（ft.迦罗娜）",
+    "SCH_352": "幻觉药水",
+    "CS3_031": "生命的缚誓者阿莱克丝塔萨",
+    "LEG_CS3_031": "生命的缚誓者阿莱克丝塔萨",
+    "DAL_728": "战略转移",
+    "DMF_071": "赤烟·腾武",
 }
 
 
@@ -209,6 +220,8 @@ class PowerLogParser:
         self.local_entity_id: Optional[int] = None
         self.pending_effects: Dict[str, int] = {}
         self.seen_play_events = False
+        self._etc_chosen: Set[str] = set()  # 已通过牛头人酋长选走的乐队卡
+        self._etc_pending_choice = False    # 刚打出牛头人酋长，等待手牌中出现选中的乐队卡
 
     # ---- 行入口 ----
 
@@ -339,6 +352,10 @@ class PowerLogParser:
 
         if name in EFFECT_CARD_NAMES:
             self.pending_effects[name] = self.pending_effects.get(name, 0) + 1
+
+        if ent["card_id"] == "ETC_080":
+            # 乐队经理精英牛头人酋长：打出后等待手牌出现选中的乐队卡
+            self._etc_pending_choice = True
 
     def _consume_effects(self, name: str, ent: dict) -> None:
         card_type = ent.get("card_type")
@@ -519,14 +536,24 @@ class PowerLogParser:
 
         hand: List[dict] = []
         board: List[dict] = []
+        enemy_board: List[dict] = []
         deck: List[dict] = []
         secrets: List[dict] = []
         weapon: Optional[dict] = None
+        etc_band: Optional[List[str]] = None
+
+        # 牛头人乐队：SETASIDE 区的乐队卡即本局牛池；被选走后从池中移除
+        raw_band: List[str] = []
+        for ent in self.entities.values():
+            card_id = ent.get("card_id") or ""
+            name = ETC_BAND_CARD_IDS.get(card_id)
+            if name and ent.get("zone") == ZONE_SETASIDE:
+                raw_band.append(name)
+
+        if raw_band:
+            etc_band = [n for n in raw_band if n not in self._etc_chosen]
 
         for ent in self.entities.values():
-            if ent.get("controller") != local_controller:
-                continue
-
             card_id = ent.get("card_id")
 
             if not card_id:
@@ -539,6 +566,12 @@ class PowerLogParser:
 
             zone = ent.get("zone")
             item = self._entity_item(ent)
+
+            if ent.get("controller") != local_controller:
+                # 敌方随从：只需血量（用于锯齿骨刺击杀抽牌）
+                if zone == ZONE_PLAY and card_type == "MINION":
+                    enemy_board.append(item)
+                continue
 
             if zone == ZONE_HAND:
                 hand.append(item)
@@ -554,6 +587,18 @@ class PowerLogParser:
 
         hand.sort(key=lambda item: (item["zone_position"] is None, item["zone_position"] or 0))
         board.sort(key=lambda item: (item["zone_position"] is None, item["zone_position"] or 0))
+        enemy_board.sort(key=lambda item: (item["zone_position"] is None, item["zone_position"] or 0))
+
+        # 打出牛头人酋长后，手牌中出现的乐队卡 = 本次选中的牌（持久记录）
+        if self._etc_pending_choice:
+            for item in hand:
+                name = item["name"]
+                if name in ETC_BAND_CARD_IDS.values() and name not in self._etc_chosen:
+                    self._etc_chosen.add(name)
+                    self._etc_pending_choice = False
+                    break
+        if raw_band:
+            etc_band = [n for n in raw_band if n not in self._etc_chosen]
 
         if self.seen_play_events:
             effect_counts = dict(self.pending_effects)
@@ -603,9 +648,11 @@ class PowerLogParser:
             "mana": mana,
             "hand": hand,
             "board": board,
+            "enemy_board": enemy_board,
             "deck": deck,
             "secrets": secrets,
             "weapon": weapon,
+            "etc_band": etc_band,
             "current_effects": current_effects,
             "deadly_shadow_hand_indexes": deadly_shadow_hand_indexes,
             "parser": "hslog",

@@ -106,6 +106,12 @@ class CalculationWorker(QThread):
 
     def run(self) -> None:
         try:
+            beam = int(self.options.get("beam_width") or 0)
+            wide_widths = None
+            heuristics = None
+            if beam > 0:
+                wide_widths = [beam]
+                heuristics = [6]
             result = engine.compute(
                 self.snapshot,
                 min_alex=int(self.options["min_alex"]),
@@ -114,6 +120,8 @@ class CalculationWorker(QThread):
                 max_paths=int(self.options["max_paths"]),
                 threads=int(self.options.get("threads", 4)),
                 time_budget_sec=float(self.options.get("time_budget_sec", 3.0)),
+                wide_widths=wide_widths,
+                heuristics=heuristics,
                 etc_band=list(self.options.get("etc_band") or []),
                 progress_callback=self.progress.emit,
                 found_callback=self.found.emit,
@@ -243,6 +251,31 @@ def parse_manual_effect_lines(text: str) -> Tuple[List[Tuple[str, int]], List[st
     return entries, warnings
 
 
+def parse_manual_enemy_lines(text: str) -> Tuple[List[Tuple[str, int]], List[str]]:
+    """敌方随从栏：每行“血量”或“血量 名字”；只需血量即可参与计算。"""
+    entries: List[Tuple[str, int]] = []
+    warnings: List[str] = []
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or _SECTION_RE.match(line):
+            continue
+        tokens = line.split()
+        if not tokens:
+            continue
+        if not tokens[0].isdigit():
+            warnings.append(f"忽略无法识别的敌方随从行：{line}")
+            continue
+        health = int(tokens[0])
+        if len(tokens) >= 2:
+            name = engine.resolve_card_name(" ".join(tokens[1:]))
+        else:
+            name = "敌方随从"
+        entries.append((name, health))
+
+    return entries, warnings
+
+
 class MainWindow(QWidget):
     def __init__(self, demo: bool = False):
         super().__init__()
@@ -353,8 +386,8 @@ class MainWindow(QWidget):
         param_box = QGroupBox("计算参数")
         param_grid = QGridLayout(param_box)
 
-        mode_label = QLabel("搜索方式：纯束宽搜索（多路宽束并行 {2400,600}，2 秒时限内出结果，"
-                            "启发函数 = 瓶颈模型 min(龙源数, 回手容量, 法力轮数)）")
+        mode_label = QLabel("搜索方式：纯束宽搜索（默认四通道并行：H6/1100、H1/1100、H2/1100、H2/3000，"
+                            "3 秒硬时限内出结果；束宽填 0 = 自动四通道）")
         mode_label.setWordWrap(True)
         mode_label.setStyleSheet("font-size:12px;color:#555;")
 
@@ -395,6 +428,9 @@ class MainWindow(QWidget):
         param_grid.addWidget(self.beam_depth, 5, 1)
         param_grid.addWidget(QLabel("最大路径数："), 6, 0)
         param_grid.addWidget(self.max_paths, 6, 1)
+        self.beam_width = self._spin(0, 0, 9999, step=100)
+        param_grid.addWidget(QLabel("束宽（0=自动四通道）："), 7, 0)
+        param_grid.addWidget(self.beam_width, 7, 1)
         right_layout.addWidget(param_box)
 
         run_row = QHBoxLayout()
@@ -451,6 +487,12 @@ class MainWindow(QWidget):
         self.manual_board_edit = make_manual_edit("例：\n4 鲨鱼之灵 3\n4 刀油 3\n5 暗影施法者 2")
         board_panel.addWidget(self.manual_board_edit)
         manual_row.addLayout(board_panel, 1)
+
+        enemy_panel = QVBoxLayout()
+        enemy_panel.addWidget(QLabel("敌方随从（只需血量）"))
+        self.manual_enemy_edit = make_manual_edit("例：\n3\n5\n4 敌方随从")
+        enemy_panel.addWidget(self.manual_enemy_edit)
+        manual_row.addLayout(enemy_panel, 1)
 
         effect_panel = QVBoxLayout()
         effect_panel.addWidget(QLabel("当前效果（可选）"))
@@ -613,7 +655,28 @@ class MainWindow(QWidget):
             hp_text = f"生命{health}" if health is not None else "生命?"
             board_lines.append(f"{index:2d}. [{cost_text}] {item['name']}（{hp_text}）")
 
+        enemy_lines: List[str] = []
+
+        for index, item in enumerate(snap.get("enemy_board") or [], start=1):
+            health = item.get("health")
+            hp_text = f"生命{health}" if health is not None else "生命?"
+            enemy_lines.append(f"{index:2d}. {item.get('name') or '敌方随从'}（{hp_text}）")
+
+        if enemy_lines:
+            board_lines.append("敌方随从：")
+            board_lines.extend(enemy_lines)
+
         self.board_text.setPlainText("\n".join(board_lines) or "（空）")
+
+        # 日志检测到牛池（SETASIDE 乐队卡）时，实时同步勾选；手动画选择保持用户设置
+        etc_band = snap.get("etc_band")
+        if isinstance(etc_band, list):
+            for name, box in self.etc_checks:
+                checked = name in etc_band
+                if box.isChecked() != checked:
+                    box.blockSignals(True)
+                    box.setChecked(checked)
+                    box.blockSignals(False)
 
         if not in_game:
             self.result_text.setPlainText("等待进入对局…")
@@ -678,12 +741,14 @@ class MainWindow(QWidget):
             "5 暗影施法者 2"
         )
         self.manual_effect_edit.setPlainText("狐人老千 2")
+        self.manual_enemy_edit.setPlainText("")
         self.status_label.setText("已填入示例，可点击“解析并应用”")
 
     def clear_manual_input(self) -> None:
         self.manual_hand_edit.clear()
         self.manual_board_edit.clear()
         self.manual_effect_edit.clear()
+        self.manual_enemy_edit.clear()
         self.status_label.setText("手动输入区已清空")
 
     def apply_manual_input(self) -> None:
@@ -696,6 +761,9 @@ class MainWindow(QWidget):
         effect_entries, effect_warnings = parse_manual_effect_lines(
             self.manual_effect_edit.toPlainText()
         )
+        enemy_entries, enemy_warnings = parse_manual_enemy_lines(
+            self.manual_enemy_edit.toPlainText()
+        )
 
         hand = [
             {"name": name, "cost": cost, "ghostly": cost is None and name == "殒命暗影"}
@@ -704,6 +772,10 @@ class MainWindow(QWidget):
         board = [
             {"name": name, "cost": cost, "health": health}
             for cost, name, health in board_entries
+        ]
+        enemy_board = [
+            {"name": name, "health": health}
+            for name, health in enemy_entries
         ]
 
         deadly_auto = [
@@ -732,6 +804,7 @@ class MainWindow(QWidget):
             "mana": self.manual_mana.value(),
             "hand": hand,
             "board": board,
+            "enemy_board": enemy_board,
             "deck": [],
             "secrets": [],
             "weapon": None,
@@ -746,7 +819,7 @@ class MainWindow(QWidget):
         self._apply_snapshot(snap)
         self.status_label.setText("手动输入已解析并应用，可点击“开始计算”")
 
-        warnings = zone_warnings + board_warnings + effect_warnings
+        warnings = zone_warnings + board_warnings + effect_warnings + enemy_warnings
 
         if warnings:
             QMessageBox.warning(self, "解析警告", "\n".join(warnings[:10]))
@@ -763,6 +836,7 @@ class MainWindow(QWidget):
             "threads": 4,
             "time_budget_sec": self.time_budget.value(),
             "etc_band": band,
+            "beam_width": self.beam_width.value(),
         }
 
     def _update_calc_enabled(self) -> None:
