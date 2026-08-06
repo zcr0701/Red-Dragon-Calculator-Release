@@ -2,7 +2,7 @@
 
 职责划分：
   - Python：PyQt5 图形界面 + 基于 hslog 读取本机 Power.log 对局快照 + 手动输入
-  - C++：   red_dragon_engine.exe 纯计算（MCTS + 束搜索模拟 + 动态子链库）
+  - C++：   red_dragon_engine.exe 纯计算（MCTS + 束搜索模拟 + 瓶颈模型启发）
 
 运行：
   python 代码/main.py
@@ -361,7 +361,7 @@ class MainWindow(QWidget):
         param_grid = QGridLayout(param_box)
 
         mode_label = QLabel("搜索方式：MCTS + 束搜索模拟（每步 UCB1 选子节点，束搜索快速模拟，"
-                            "计算完成动态更新子链库）")
+                            "简单启发函数 = 瓶颈模型 min(龙源数, 回手容量, 法力轮数)）")
         mode_label.setWordWrap(True)
         mode_label.setStyleSheet("font-size:12px;color:#555;")
 

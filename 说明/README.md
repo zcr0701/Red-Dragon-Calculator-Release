@@ -20,8 +20,7 @@
 │   ├── main.py                 # PyQt5 GUI 主入口（Python 入口）
 │   ├── powerlog_reader.py      # Power.log 实时读取器（hslog 解析 → 对局快照）
 │   ├── engine.py               # 快照 → JSON → C++ exe → 结果解析（薄封装）
-│   ├── red_dragon_core.cpp     # C++ 计算核心（MCTS + 束搜索模拟 + 动态子链库）
-│   ├── subchain_library.json   # 动态子链库（计算完成后自动更新，可删除重建）
+│   ├── red_dragon_core.cpp     # C++ 计算核心（MCTS + 束搜索模拟 + 瓶颈模型启发）
 │   ├── red_dragon_engine.exe   # 编译产物（计算核心）
 │   ├── build_engine.bat        # 重新编译 C++ 核心（MinGW g++）
 │   ├── card_id_map.json        # CardID → 中文卡名（日志读取用）
@@ -56,8 +55,6 @@ python 代码/main.py
     模拟深度（默认 8）、探索常数 C（默认 1.414，可按奖励范围 0.5~2 调整）；
   - 搜索局数（默认 8，根并行上限）、时间预算秒数（默认 30，0 = 不限时）、
     最大深度（默认 30）、最少/最多龙数、最大路径数；
-- 每次计算完成后，C++ 会把发现路径的连续子链写回
-  `代码/subchain_library.json`（价值 = 所在路径龙数×10），下次计算自动加载加权；
 - 结果按伤害排序展示路径，并自动写入 `代码/logs/red_dragon_all_paths_时间戳.txt`。
 
 自测参数：
@@ -94,8 +91,7 @@ Get-Content 局面.json | 代码\red_dragon_engine.exe --json
   "min_alex": 1, "max_alex": 10, "depth": 30,
   "max_paths": 1000000, "mode": "mcts_beam",
   "iterations": 400, "beam_width": 8, "sim_depth": 8, "explore_c": 1.414,
-  "games": 8, "threads": 4, "time_budget_sec": 30.0,
-  "library_path": "代码/subchain_library.json"
+  "games": 8, "threads": 4, "time_budget_sec": 30.0
 }
 ```
 
@@ -134,15 +130,15 @@ python 代码/powerlog_reader.py --watch   # 持续跟随最新对局
 ## 计算模式说明（MCTS + 束搜索模拟）
 
 - 每步决策以当前局面为根运行 N 次 MCTS 迭代：UCB1 选择 → 随机扩展 →
-  束搜索快速模拟（模拟束宽 B_sim，按子链库给后继动作加权）→ 回传奖励；
+  束搜索快速模拟（模拟束宽 B_sim，按**瓶颈模型启发函数**给后继动作打分）→ 回传奖励；
 - 奖励 = **伤害优先**（伤害×100 + 龙数，鲨鱼在场每龙 16 伤）；
 - 迭代结束后选择访问次数最多的子动作执行，进入下一状态，直到游戏结束；
 - 多局根并行（默认 4 线程），时间预算到时自动停止并返回当前最优路径；
 - 另开一个**根级宽束模拟线程**（宽束全深度、按龙数分桶 + 覆盖度冠军），
   保证 25 步以上的深线（如 10 龙/160 伤）能被发现；
-- **独立子链库**：内置短子链 + 离散长距离子链种子（各自独立评分），
-  束搜索模拟按“当前路径后缀命中子链前缀”的综合加权给动作打分；
-- **动态更新**：计算完成后把发现路径的连续子链提取进库并更新对应价值，
-  持久化到 `subchain_library.json`，跨次计算持续学习。
+- **简单启发函数（完全放弃子链库）**：瓶颈模型（Liebig 最小因子律），
+  可达龙数 ≈ min(① 龙源数, ② 回手容量, ③ 法力可负担轮数)，束内保留评分 =
+  当前伤害 + 瓶颈可达龙数×16。三个约束分别计算，避免“资源求和”式的假高分、
+  无交互和法力线性化问题。
 
 搜索算法细节见 `说明/计算流程.md`。

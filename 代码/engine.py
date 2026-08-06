@@ -3,7 +3,7 @@
 把 powerlog_reader 的对局快照（或手工局面）转成 C++ 认识的 JSON 局面，
 通过子进程调用 red_dragon_engine.exe --json，并把 stdout 的 JSON 结果
 解析回 Python dict。实时进度 PROGRESS / FOUND 走 stderr，可回调到 GUI。
-子链库（subchain_library.json）由 C++ 每次计算后动态更新并持久化。
+瓶颈模型启发函数（可达龙数 ≈ min(龙源数, 回手容量, 法力轮数)），无子链库。
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from typing import Callable, Dict, List, Optional
 BASE_DIR = Path(__file__).resolve().parent
 
 DEFAULT_ETC_BAND = ["舞动全场（ft.迦罗娜）", "幻觉药水", "生命的缚誓者阿莱克丝塔萨"]
-DEFAULT_LIBRARY_PATH = BASE_DIR / "subchain_library.json"
 
 # 牛头人酋长卡池勾选选项：(卡名, 界面显示名)
 ETC_OPTIONS = [
@@ -148,7 +147,6 @@ def build_payload(
     time_budget_sec: float = 30.0,
     mode: str = "mcts_beam",
     etc_band: Optional[List[str]] = None,
-    library_path: Optional[str] = None,
 ) -> Dict[str, object]:
     """把日志快照转成 C++ JSON 局面（MCTS + 束搜索模拟）。
 
@@ -220,7 +218,6 @@ def build_payload(
         "games": games,
         "threads": threads,
         "time_budget_sec": time_budget_sec,
-        "library_path": str(library_path or DEFAULT_LIBRARY_PATH),
         "deck_is_known": bool(snapshot.get("deck")),
         "deck": [{"name": item["name"]} for item in snapshot.get("deck") or []],
         "hand": hand,
@@ -345,7 +342,6 @@ def compute(
     threads: int = 4,
     time_budget_sec: float = 30.0,
     etc_band: Optional[List[str]] = None,
-    library_path: Optional[str] = None,
     exe_path: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
     found_callback: Optional[Callable[[int, int], None]] = None,
@@ -367,7 +363,6 @@ def compute(
         time_budget_sec=time_budget_sec,
         mode=mode,
         etc_band=etc_band,
-        library_path=library_path,
     )
     return run_engine(
         payload,

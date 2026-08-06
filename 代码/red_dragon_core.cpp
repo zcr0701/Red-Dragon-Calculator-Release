@@ -1,14 +1,13 @@
-// 红龙贼计算器 C++ 计算核心（MCTS + 束搜索模拟 + 动态子链库）。
+// 红龙贼计算器 C++ 计算核心（MCTS + 束搜索模拟 + 瓶颈模型启发）。
 //
 // 架构（2026-08-05 重构）：
 //   - 计算全部改为 MCTS + 束搜索模拟：每步决策以当前局面为根做 N 次迭代
 //     （UCB1 选择 / 随机扩展 / 束搜索模拟 / 回传），选访问次数最多的子动作执行，
 //     重复到游戏结束；多局并行（根并行）收集各龙数最优路径。
 //   - 奖励：伤害优先（伤害×100 + 龙数；鲨鱼在场时每龙 16 伤）。
-//   - 独立子链库：短子链 + 离散长距离子链（种子内置，各自独立评分）；
-//     束搜索模拟按"当前路径后缀命中子链前缀"的综合加权给后继动作打分。
-//   - 动态更新：计算完成后把发现路径的连续子链写入库（价值 = 所在路径龙数×10），
-//     持久化到 library_path，下次计算自动加载继续加权。
+//   - 简单启发函数（完全放弃子链库）：瓶颈模型（Liebig 最小因子律），
+//     可达龙数 ≈ min(① 龙源数, ② 回手容量, ③ 法力可负担轮数)，
+//     束内保留评分 = 当前伤害 + 瓶颈可达龙数×16。
 //
 // 编译（MinGW g++）：g++ -std=c++17 -O3 -static -o red_dragon_engine.exe red_dragon_core.cpp
 // 用法：red_dragon_engine.exe --json < problem.json
@@ -18,7 +17,7 @@
 //    "current_effects":[{"name":"狐人老千","count":2}],
 //    "min_alex":1,"max_alex":10,"depth":30,"max_paths":1000000,
 //    "iterations":400,"beam_width":8,"sim_depth":8,"explore_c":1.414,
-//    "games":8,"threads":4,"time_budget_sec":30.0,"library_path":"subchain_library.json"}
+//    "games":8,"threads":4,"time_budget_sec":30.0}
 // 输出（stdout）：{"mode":"mcts_beam","results":[{"dragons","damage","mana","path"}],"stats":{...}}
 // 实时进度：stderr 输出 PROGRESS / FOUND 行。
 
@@ -57,8 +56,6 @@ using std::vector;
 static const int MAX_HAND = 10;
 static const int MAX_BOARD = 7;
 static const int MAX_SECRET = 5;
-static const int MAX_DYNAMIC_SUBCHAINS = 5000; // 动态子链库条数上限
-static const int MAX_EXTRACT_LEN = 8;          // 从路径提取子链的最大长度
 
 // ===================== 卡牌 =====================
 struct Card {
@@ -791,37 +788,8 @@ static string json_escape(const string& s) {
     return out;
 }
 
-// Windows 下 fopen 按 ANSI 代码页解析路径，中文路径（UTF-8）会失败；
-// 这里统一用宽字符 API 打开文件。
-static FILE* open_file(const string& utf8_path, const char* mode) {
-#ifdef _WIN32
-    auto to_wide = [](const char* s) -> std::wstring {
-        int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
-        if (n <= 0) return L"";
-        std::wstring w(n, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, s, -1, &w[0], n);
-        return w;
-    };
-    std::wstring wpath = to_wide(utf8_path.c_str());
-    std::wstring wmode = to_wide(mode);
-    if (wpath.empty() || wmode.empty()) return nullptr;
-    return _wfopen(wpath.c_str(), wmode.c_str());
-#else
-    return fopen(utf8_path.c_str(), mode);
-#endif
-}
-
-// ===================== 子链库（独立评分 + 动态更新） =====================
-static string join_actions(const vector<string>& actions) {
-    string k;
-    for (size_t i = 0; i < actions.size(); i++) {
-        if (i) k += "->";
-        k += actions[i];
-    }
-    return k;
-}
-
-// 统一匹配用标签：去除 [殒命暗影] 标记，两种硬币视为同一张
+// ===================== 路径匹配标签（--verify 用） =====================
+// 去除 [殒命暗影] 标记，两种硬币视为同一张
 static string canonical_action(string item) {
     string out = item;
     string needle = "[殒命暗影]";
@@ -830,222 +798,6 @@ static string canonical_action(string item) {
     if (is_coin_name(out)) return "幸运币";
     return out;
 }
-
-static vector<string> canonical_path(const vector<string>& path) {
-    vector<string> out;
-    out.reserve(path.size());
-    for (const auto& p : path) out.push_back(canonical_action(p));
-    return out;
-}
-
-struct SubchainEntry {
-    string key;
-    vector<string> actions;
-    double value = 0.0;   // 独立评分：种子按龙数×10 手写，动态更新取所在路径伤害
-    int hits = 0;
-    bool dynamic = false;
-};
-
-class SubchainLibrary {
-public:
-    void load_seeds() {
-        // 已有短子链 + 离散长距离子链（旧 beam 手写里程碑 / 公式表离散库），
-        // 每条独立评分（龙数×10）。
-        static const vector<pair<double, vector<string>>> seeds = {
-            // 短子链里程碑
-            {30.0, {"鲨鱼之灵", "生命的缚誓者阿莱克丝塔萨"}},                                  // 鱼龙
-            {40.0, {"生命的缚誓者阿莱克丝塔萨", "晦鳞巢母", "生命的缚誓者阿莱克丝塔萨"}},      // 龙晦龙
-            {30.0, {"生命的缚誓者阿莱克丝塔萨", "暗影施法者(生命的缚誓者阿莱克丝塔萨)", "生命的缚誓者阿莱克丝塔萨"}}, // 龙暗龙
-            {30.0, {"生命的缚誓者阿莱克丝塔萨", "舞动全场（ft.迦罗娜）", "生命的缚誓者阿莱克丝塔萨"}}, // 龙舞龙
-            {30.0, {"暗影步(生命的缚誓者阿莱克丝塔萨)", "生命的缚誓者阿莱克丝塔萨"}},          // 步龙
-            {50.0, {"舞动全场（ft.迦罗娜）", "舞动全场（ft.迦罗娜）"}},                        // 双舞
-            {50.0, {"鲨鱼之灵", "晦鳞巢母", "生命的缚誓者阿莱克丝塔萨"}},                      // 鱼晦龙
-            // 引擎/组合
-            {20.0, {"鲨鱼之灵", "狐人老千", "斯卡布斯·刀油"}},
-            {30.0, {"斯卡布斯·刀油", "暗影施法者(斯卡布斯·刀油)", "乐队经理精英牛头人酋长"}},
-            {40.0, {"鲨鱼之灵", "斯卡布斯·刀油", "斯卡布斯·刀油", "生命的缚誓者阿莱克丝塔萨"}},
-            {40.0, {"生命的缚誓者阿莱克丝塔萨", "暗影施法者(生命的缚誓者阿莱克丝塔萨)", "生命的缚誓者阿莱克丝塔萨", "生命的缚誓者阿莱克丝塔萨"}},
-            // 离散长距离子链（公式表离散库）
-            {30.0, {"乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜）->生命的缚誓者阿莱克丝塔萨）"}},
-            {50.0, {"乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜）->生命的缚誓者阿莱克丝塔萨）", "舞动全场（ft.迦罗娜）", "舞动全场（ft.迦罗娜）"}},
-            {30.0, {"鲨鱼之灵", "斯卡布斯·刀油", "斯卡布斯·刀油"}},                          // 刀油叠费引擎
-            {30.0, {"暗影施法者(生命的缚誓者阿莱克丝塔萨)", "生命的缚誓者阿莱克丝塔萨", "生命的缚誓者阿莱克丝塔萨"}}, // 暗施双龙复制
-            {30.0, {"幸运币", "幸运币"}},                                                      // 殒命双币开手
-            {30.0, {"晦鳞巢母", "舞动全场（ft.迦罗娜）", "鲨鱼之灵", "晦鳞巢母"}},              // 晦鳞回收轮
-            {50.0, {"暗影步(生命的缚誓者阿莱克丝塔萨)", "暗影步(生命的缚誓者阿莱克丝塔萨)"}},  // 双步回龙
-            {70.0, {"舞动全场（ft.迦罗娜）", "暗影步(生命的缚誓者阿莱克丝塔萨)", "生命的缚誓者阿莱克丝塔萨"}}, // 双舞+步龙重铺
-        };
-        for (const auto& s : seeds) add(s.second, s.first, false);
-    }
-
-    void add(const vector<string>& actions, double value, bool dynamic, int hits = 0) {
-        vector<string> canon;
-        canon.reserve(actions.size());
-        for (const auto& a : actions) canon.push_back(canonical_action(a));
-        if (canon.empty()) return;
-        string key = join_actions(canon);
-        auto it = entries_.find(key);
-        if (it == entries_.end()) {
-            SubchainEntry e;
-            e.key = key;
-            e.actions = std::move(canon);
-            e.value = value;
-            e.dynamic = dynamic;
-            e.hits = std::max(0, hits);
-            entries_[key] = std::move(e);
-        } else {
-            it->second.value = std::max(it->second.value, value);
-            if (dynamic) it->second.dynamic = true;
-            it->second.hits += std::max(0, hits);
-        }
-    }
-
-    void load(const string& path) {
-        FILE* f = open_file(path, "rb");
-        if (!f) return;
-        string text;
-        char buf[65536];
-        size_t n;
-        while ((n = fread(buf, 1, sizeof(buf), f)) > 0) text.append(buf, n);
-        fclose(f);
-        JVal root;
-        if (!parse_json(text, root)) {
-            fprintf(stderr, "WARN 子链库 JSON 解析失败，忽略: %s\n", path.c_str());
-            return;
-        }
-        const JVal* ents = root.find("entries");
-        if (!ents || ents->type != JVal::ARR) return;
-        for (const auto& e : ents->arr) {
-            const JVal* acts = e.find("actions");
-            if (!acts || acts->type != JVal::ARR) continue;
-            vector<string> actions;
-            for (const auto& a : acts->arr)
-                if (a.type == JVal::STR) actions.push_back(a.str);
-            double value = e.get_double("value", 0.0);
-            int hits = (int)e.get_int("hits", 0);
-            if (actions.size() >= 2 && value > 0.0) add(actions, value, true, hits);
-        }
-    }
-
-    void save(const string& path) const {
-        FILE* f = open_file(path, "wb");
-        if (!f) {
-            fprintf(stderr, "WARN 子链库写入失败: %s\n", path.c_str());
-            return;
-        }
-        fprintf(f, "{\n  \"version\": 1,\n  \"entries\": [\n");
-        bool first = true;
-        for (const auto& kv : entries_) {
-            if (!kv.second.dynamic) continue;
-            if (!first) fprintf(f, ",\n");
-            first = false;
-            fprintf(f, "    {\"actions\": [");
-            for (size_t j = 0; j < kv.second.actions.size(); j++) {
-                if (j) fprintf(f, ", ");
-                fprintf(f, "\"%s\"", json_escape(kv.second.actions[j]).c_str());
-            }
-            fprintf(f, "], \"value\": %.1f, \"hits\": %d, \"source\": \"dynamic\"}",
-                    kv.second.value, kv.second.hits);
-        }
-        fprintf(f, "\n  ]\n}\n");
-        fclose(f);
-    }
-
-    // 前缀索引：前缀动作串 → 所有以该前缀开头的子链
-    void rebuild_index() {
-        ordered_.clear();
-        prefix_index_.clear();
-        max_len_ = 0;
-        for (const auto& kv : entries_) {
-            max_len_ = std::max(max_len_, (int)kv.second.actions.size());
-            ordered_.push_back(&kv.second);
-        }
-        for (size_t i = 0; i < ordered_.size(); i++) {
-            const SubchainEntry* e = ordered_[i];
-            string prefix;
-            for (size_t l = 0; l < e->actions.size(); l++) {
-                if (l) prefix += "->";
-                prefix += e->actions[l];
-                prefix_index_[prefix].push_back((int)i);
-            }
-        }
-    }
-
-    // 路径评分：当前路径的后缀命中子链前缀的综合加权
-    // （对每个后缀长度 l，累加所有前 l 个动作等于该后缀的子链价值；
-    //   一条子链命中越深、价值越高，累加权重越大。）
-    double score_path(const vector<string>& raw_path) const {
-        vector<string> p = canonical_path(raw_path);
-        double score = 0.0;
-        int n = (int)p.size();
-        int maxl = std::min(n, max_len_);
-        for (int l = 1; l <= maxl; l++) {
-            string prefix = join_actions(vector<string>(p.end() - l, p.end()));
-            auto it = prefix_index_.find(prefix);
-            if (it != prefix_index_.end()) {
-                for (int idx : it->second) score += ordered_[idx]->value;
-            }
-        }
-        return score;
-    }
-
-    // 计算完成后的动态学习：从找到的路径提取连续子链，更新库及对应价值
-    void learn(const vector<State>& states) {
-        struct BatchItem { vector<string> actions; double value; };
-        unordered_map<string, BatchItem> batch;
-        unordered_map<string, int> hits;
-        for (const State& s : states) {
-            if (s.alex_play_count < 1) continue;
-            vector<string> p = canonical_path(s.path);
-            int n = (int)p.size();
-            if (n < 2) continue;
-            double value = (double)s.alex_damage;  // 子链价值 = 所在路径总伤害（奖励伤害优先）
-            int maxlen = std::min(n, MAX_EXTRACT_LEN);
-            for (int len = 2; len <= maxlen; len++) {
-                for (int i = 0; i + len <= n; i++) {
-                    vector<string> sub(p.begin() + i, p.begin() + i + len);
-                    string key = join_actions(sub);
-                    auto it = batch.find(key);
-                    if (it == batch.end()) {
-                        batch[key] = {std::move(sub), value};
-                    } else {
-                        it->second.value = std::max(it->second.value, value);
-                    }
-                    hits[key]++;
-                }
-            }
-        }
-        for (const auto& kv : batch) add(kv.second.actions, kv.second.value, true, hits[kv.first]);
-        trim();
-    }
-
-    int size() const { return (int)entries_.size(); }
-
-    int dynamic_count() const {
-        int n = 0;
-        for (const auto& kv : entries_) if (kv.second.dynamic) n++;
-        return n;
-    }
-
-private:
-    void trim() {
-        vector<string> keys;
-        for (const auto& kv : entries_) if (kv.second.dynamic) keys.push_back(kv.first);
-        if ((int)keys.size() <= MAX_DYNAMIC_SUBCHAINS) return;
-        std::stable_sort(keys.begin(), keys.end(), [&](const string& a, const string& b) {
-            const SubchainEntry& ea = entries_.at(a);
-            const SubchainEntry& eb = entries_.at(b);
-            if (ea.hits != eb.hits) return ea.hits < eb.hits;
-            return ea.value < eb.value;
-        });
-        for (int i = 0; i < (int)keys.size() - MAX_DYNAMIC_SUBCHAINS; i++) entries_.erase(keys[i]);
-    }
-
-    unordered_map<string, SubchainEntry> entries_;
-    vector<const SubchainEntry*> ordered_;
-    unordered_map<string, vector<int>> prefix_index_;
-    int max_len_ = 0;
-};
 
 // ===================== MCTS + 束搜索模拟 =====================
 struct SearchParams {
@@ -1084,29 +836,58 @@ static int count_hand_dragons(const State& s) {
     return n;
 }
 
-static int subchain_coverage(const State& s) {
-    int hand_d = count_hand_dragons(s);
-    int board_d = count_board_cards(s, "生命的缚誓者阿莱克丝塔萨");
-    int dragons = hand_d + board_d;
-    bool shark_on = s.has_shark();
-    bool shark_in_hand = count_hand_cards(s, "鲨鱼之灵") > 0;
-    int mother = count_hand_cards(s, "晦鳞巢母") + count_board_cards(s, "晦鳞巢母");
-    int shadowcaster = count_hand_cards(s, "暗影施法者") + count_board_cards(s, "暗影施法者");
-    int shadowstep = count_hand_cards(s, "暗影步");
-    int dance = count_hand_cards(s, "舞动全场（ft.迦罗娜）");
-    int potion = count_hand_cards(s, "幻觉药水");
-    bool deadly = false;
-    for (const auto& c : s.hand) if (c.is_deadly_shadow) { deadly = true; break; }
-    int scabbs = count_hand_cards(s, "斯卡布斯·刀油");
-    int coverage = 0;
-    if (dragons > 0 && (shark_on || shark_in_hand)) coverage++;   // 鱼龙
-    if (dragons > 0 && mother > 0) coverage++;                    // 龙晦龙
-    if (dragons > 0 && shadowcaster > 0) coverage++;              // 龙暗龙
-    if (dragons > 0 && (dance > 0 || potion > 0)) coverage++;     // 龙舞龙
-    if (board_d > 0 && shadowstep > 0) coverage++;                // 龙步龙
-    if (deadly && (dance > 0 || potion > 0)) coverage++;          // 双舞
-    if ((shark_on || shark_in_hand) && scabbs >= 2) coverage++;   // 刀刀引擎
-    return coverage;
+// ===================== 瓶颈启发（Liebig 最小因子律） =====================
+// 红龙 OTK 每轮循环 = 打出 1 条龙 + 1 次回手。
+// 可达龙数 ≈ min(① 龙源数, ② 回手容量, ③ 法力可负担轮数)，
+// 不取决于资源总和，而取决于最紧的那条约束。
+static double bottleneck_dragons(const State& s) {
+    int hand_dragons = 0, board_dragons = 0, shadowcaster = 0, scabbs = 0;
+    int shark_in_hand = 0, single_returns = 0, whole_returns = 0, deadly = 0;
+    int cheapest_dragon = -1;
+    for (const auto& c : s.hand) {
+        const string& n = c.name;
+        if (c.dragon) {
+            hand_dragons++;
+            int cost = effective_cost(s, c);
+            if (cost >= 0 && (cheapest_dragon < 0 || cost < cheapest_dragon)) cheapest_dragon = cost;
+        } else if (n == "暗影施法者") {
+            shadowcaster++;
+        } else if (n == "斯卡布斯·刀油") {
+            scabbs++;
+        } else if (n == "鲨鱼之灵") {
+            shark_in_hand++;
+        } else if (n == "暗影步" || n == "赤烟·腾武") {
+            single_returns++;
+        } else if (n == "舞动全场（ft.迦罗娜）" || n == "幻觉药水" || n == "战略转移") {
+            whole_returns++;
+        }
+        if (c.is_deadly_shadow) deadly++;
+    }
+    for (const auto& c : s.board) {
+        const string& n = c.name;
+        if (n == "生命的缚誓者阿莱克丝塔萨") board_dragons++;
+        else if (n == "暗影施法者") shadowcaster++;
+        else if (n == "斯卡布斯·刀油") scabbs++;
+    }
+    bool shark = s.has_shark() || shark_in_hand > 0;
+
+    // ① 龙源数：手牌龙 + 场上龙（回手后重打）+ 暗施可复制龙（鲨鱼时 ×2）
+    double sources = (double)(hand_dragons + board_dragons + shadowcaster * (shark ? 2 : 1));
+
+    // ② 回手容量：单体回手 + 整场回手×3；刀油+单体回手 ≈ 无限（+15 封顶）；殒命打五折
+    double capacity = (double)single_returns + (double)whole_returns * 3.0;
+    if (scabbs > 0 && single_returns > 0) capacity += 15.0;
+    if (deadly > 0 && s.cards_played_this_turn > 0) capacity += 0.5;
+
+    // ③ 法力可负担轮数：阈值型资源；考虑手牌刀油先打出带来的减费潜力
+    if (cheapest_dragon < 0 && board_dragons == 0 && shadowcaster == 0) return 0.0;  // 无龙源
+    if (cheapest_dragon < 0) cheapest_dragon = 9;
+    int per_scabbs = shark ? 4 : 2;
+    int eff_dragon = std::max(0, cheapest_dragon - scabbs * per_scabbs);
+    if (s.mana < eff_dragon) return 0.0;                                            // 阈值：打不起第一条龙
+    int rounds = 1 + (s.mana - eff_dragon) / std::max(1, eff_dragon + 1);           // 每轮 ≈ 龙费 + 回手费(约1)
+    double mana = (double)rounds;
+    return std::min(sources, std::min(capacity, mana));
 }
 
 // 时间预算：跨线程共享的原子停止标志 + 起始时间
@@ -1145,16 +926,15 @@ static void add_best(const State& s, unordered_map<int, State>& best, int min_al
 }
 
 // 束搜索模拟：从给定状态快速搜到深度上限，返回途中发现的最高奖励状态（含完整路径）
-// 束内保留评分 = 伤害 + 子链库评分（与旧 beam 的 damage+subchain 同量级，
-// 避免高伤害贪心把蓄力线剪掉）；并按当前龙数分桶，保住正在蓄力的低龙数分支。
+// 束内保留评分 = 当前伤害 + 瓶颈可达龙数×16（简单启发函数，无子链库）；
+// 并按当前龙数分桶，保住正在蓄力的低龙数分支。
 static State beam_simulate(const State& start, const SearchParams& p,
-                           const SubchainLibrary& lib, int* expansions,
-                           const Budget* budget = nullptr) {
+                           int* expansions, const Budget* budget = nullptr) {
     struct Cand { double score; State s; };
     vector<Cand> level;
     State best = start;
     double best_reward = reward_of(start);
-    double best_score = lib.score_path(start.path) + (double)start.alex_damage;
+    double best_score = (double)start.alex_damage + bottleneck_dragons(start) * 16.0;
     level.push_back({best_score, start});
     unordered_set<uint64_t> seen;
     seen.insert(state_hash(start));
@@ -1171,7 +951,7 @@ static State beam_simulate(const State& start, const SearchParams& p,
                 if (seen.count(key)) continue;  // 循环保护
                 seen.insert(key);
                 double r = reward_of(succ);
-                double sc = lib.score_path(succ.path) + (double)succ.alex_damage;
+                double sc = (double)succ.alex_damage + bottleneck_dragons(succ) * 16.0;
                 if (r > best_reward || (r == best_reward && sc > best_score)) {
                     best_reward = r;
                     best_score = sc;
@@ -1237,8 +1017,7 @@ struct StepOutcome {
 // 单步 MCTS：从 root 跑 N 次迭代（UCB1 选择 / 随机扩展 / 束搜索模拟 / 回传），
 // 选择访问次数最多的子动作执行，并收集模拟中发现的高奖励路径。
 static StepOutcome mcts_step(const State& root_state, const SearchParams& p,
-                             const SubchainLibrary& lib, std::mt19937& rng,
-                             const Budget& budget) {
+                             std::mt19937& rng, const Budget& budget) {
     StepOutcome out;
     vector<std::unique_ptr<MctsNode>> arena;
     arena.push_back(std::make_unique<MctsNode>());
@@ -1291,7 +1070,7 @@ static StepOutcome mcts_step(const State& root_state, const SearchParams& p,
             child->parent = node;
             node->children[idx] = child;
             ensure_succs(child, &out.expansions);
-            State sim_best = beam_simulate(child->state, p, lib, &out.expansions, &budget);
+            State sim_best = beam_simulate(child->state, p, &out.expansions, &budget);
             reward = reward_of(sim_best);
             child->best_reward = reward;
             child->best_state = sim_best;
@@ -1338,7 +1117,7 @@ struct ThreadOut {
 };
 
 // 单局游戏：每步以当前状态为根重跑 MCTS，选最优动作前进，直到无法继续/达目标
-static void mcts_game(const State& start, const SearchParams& p, const SubchainLibrary& lib,
+static void mcts_game(const State& start, const SearchParams& p,
                       std::mt19937& rng, ThreadOut& out, const Budget& budget) {
     State st = start.clone();
     add_best(st, out.best, p.min_alex);
@@ -1350,7 +1129,7 @@ static void mcts_game(const State& start, const SearchParams& p, const SubchainL
         if (budget.over()) break;
         if (st.alex_play_count >= p.max_alex) break;
         if (generate_successors(st).empty()) break;  // 无可行动作 = 终局
-        StepOutcome so = mcts_step(st, p, lib, rng, budget);
+        StepOutcome so = mcts_step(st, p, rng, budget);
         out.expansions += so.expansions;
         out.simulations += so.simulations;
         for (const State& h : so.harvested) add_best(h, out.best, p.min_alex);
@@ -1420,15 +1199,14 @@ static int discrete_path_score(const State& s) {
 // 总分 = 伤害 + 子链分 + 离散路径分，键含龙数），保证深线（10 龙/160 伤）
 // 能被发现；与 MCTS 游戏并行，共享时间预算。
 static void wide_beam_pass(const State& start_in, const SearchParams& p,
-                           const SubchainLibrary& lib, const Budget& budget, ThreadOut& out) {
-    (void)lib;  // 宽束评分沿用旧 beam 的子链分/离散路径分（经验证更稳）
+                           const Budget& budget, ThreadOut& out) {
     int beam_width = std::max(1500, std::min(3000, p.beam_width * 200));
     State start = start_in.clone();
     struct Cand {
         State s;
         uint64_t key = 0;
         int total = 0;
-        int coverage = 0;
+        double bottleneck = 0.0;
         int mana = 0;
         int count = 0;
     };
@@ -1451,21 +1229,21 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
                 auto prev = seen.find(key);
                 if (prev != seen.end() && succ.mana <= prev->second.mana) continue;
                 int total = succ.alex_damage + subchain_score(succ) + discrete_path_score(succ);
-                int coverage = subchain_coverage(succ);
+                double bottleneck = bottleneck_dragons(succ);
                 auto cur = cand_index.find(key);
                 if (cur != cand_index.end()) {
                     Cand& c = cands[cur->second];
                     if (succ.mana <= c.mana) continue;
                     c.s = std::move(succ);  // 更高法力替换，保持原插入位置
                     c.total = total;
-                    c.coverage = coverage;
+                    c.bottleneck = bottleneck;
                     c.mana = c.s.mana;
                 } else {
                     Cand c;
                     c.s = std::move(succ);
                     c.key = key;
                     c.total = total;
-                    c.coverage = coverage;
+                    c.bottleneck = bottleneck;
                     c.mana = c.s.mana;
                     c.count = c.s.alex_play_count;
                     cand_index[key] = cands.size();
@@ -1495,11 +1273,11 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
             vector<const Cand*> selected;
             for (int i = 0; i < per_bucket && i < (int)bstates.size(); i++) selected.push_back(bstates[i]);
             if (!bstates.empty()) {
-                // 冠军：子链覆盖度优先，其次总分，其次法力
+                // 冠军：瓶颈潜力优先，其次总分，其次法力
                 const Cand* champ = bstates[0];
                 for (const Cand* bs : bstates) {
-                    if (std::tie(bs->coverage, bs->total, bs->mana) >
-                        std::tie(champ->coverage, champ->total, champ->mana)) {
+                    if (std::tie(bs->bottleneck, bs->total, bs->mana) >
+                        std::tie(champ->bottleneck, champ->total, champ->mana)) {
                         champ = bs;
                     }
                 }
@@ -1538,7 +1316,6 @@ struct Progress {
 struct WorkerArgs {
     const State* start = nullptr;
     const SearchParams* p = nullptr;
-    const SubchainLibrary* lib = nullptr;
     ThreadOut* out = nullptr;
     Progress* prog = nullptr;
     const Budget* budget = nullptr;
@@ -1561,7 +1338,7 @@ static void* worker_entry(void* param) {
     Budget budget = *a->budget;
     for (int g = 0; g < a->target; g++) {
         if (budget.stop->load()) break;
-        mcts_game(*a->start, *a->p, *a->lib, rng, o, budget);
+        mcts_game(*a->start, *a->p, rng, o, budget);
         o.games_played++;
         if (a->prog && a->prog->enabled) {
             fprintf(stderr, "PROGRESS %d %d %d\n",
@@ -1583,7 +1360,7 @@ static void* wide_worker_entry(void* param) {
 #endif
     WorkerArgs* a = static_cast<WorkerArgs*>(param);
     auto t_start = std::chrono::steady_clock::now();
-    wide_beam_pass(*a->start, *a->p, *a->lib, *a->budget, *a->out);
+    wide_beam_pass(*a->start, *a->p, *a->budget, *a->out);
     a->out->work_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
     if (a->prog && a->prog->enabled) {
         fprintf(stderr, "PROGRESS %d %d %d\n",
@@ -1596,8 +1373,7 @@ static void* wide_worker_entry(void* param) {
 #endif
 }
 
-static MctsResult run_mcts_search(const State& start, const SearchParams& p,
-                                  const SubchainLibrary& lib, Progress* prog) {
+static MctsResult run_mcts_search(const State& start, const SearchParams& p, Progress* prog) {
     MctsResult res;
     auto t0 = std::chrono::steady_clock::now();
     int games_target = std::max(1, p.games);
@@ -1618,7 +1394,6 @@ static MctsResult run_mcts_search(const State& start, const SearchParams& p,
         WorkerArgs a;
         a.start = &start;
         a.p = &p;
-        a.lib = &lib;
         a.out = &outs[t];
         a.prog = prog;
         a.budget = &budget;
@@ -1629,7 +1404,6 @@ static MctsResult run_mcts_search(const State& start, const SearchParams& p,
     WorkerArgs wide_arg;
     wide_arg.start = &start;
     wide_arg.p = &p;
-    wide_arg.lib = &lib;
     wide_arg.out = &outs[game_threads];
     wide_arg.prog = prog;
     wide_arg.budget = &budget;
@@ -1685,8 +1459,7 @@ static MctsResult run_mcts_search(const State& start, const SearchParams& p,
 }
 
 // ===================== 输出 =====================
-static void print_json_result(const MctsResult& res, const SearchParams& p,
-                              const SubchainLibrary& lib) {
+static void print_json_result(const MctsResult& res, const SearchParams& p) {
     vector<State> results;
     results.reserve(res.best_by_dragons.size());
     for (const auto& kv : res.best_by_dragons) results.push_back(kv.second);
@@ -1721,8 +1494,7 @@ static void print_json_result(const MctsResult& res, const SearchParams& p,
         printf("    \"展开/秒\": %.0f,\n", res.expansions / res.wall_sec);
         printf("    \"模拟/秒\": %.0f,\n", res.simulations / res.wall_sec);
     }
-    printf("    \"子链库大小\": %d,\n", lib.size());
-    printf("    \"动态子链数\": %d\n", lib.dynamic_count());
+    printf("    \"启发函数\": \"瓶颈模型(min 龙源/回手/法力)\"\n");
     printf("  },\n");
     printf("  \"results\": [\n");
     for (size_t i = 0; i < results.size(); i++) {
@@ -1854,7 +1626,6 @@ int main(int argc, char** argv) {
     bool use_json = false;
     bool use_verify = false;
     SearchParams p;
-    string library_path = "subchain_library.json";
 
     for (int i = 1; i < argc; i++) {
         auto next = [&](const char* flag, string* out) -> bool {
@@ -1880,7 +1651,6 @@ int main(int argc, char** argv) {
         if (next("--games", &tmp)) { p.games = atoi(tmp.c_str()); continue; }
         if (next("--threads", &tmp)) { p.threads = atoi(tmp.c_str()); continue; }
         if (next("--time-budget", &tmp)) { p.time_budget_sec = atof(tmp.c_str()); continue; }
-        if (next("--library", &tmp)) { library_path = tmp; continue; }
     }
 
     if (!use_json) {
@@ -1909,8 +1679,6 @@ int main(int argc, char** argv) {
     p.games = (int)root.get_int("games", p.games);
     p.threads = (int)root.get_int("threads", p.threads);
     p.time_budget_sec = root.get_double("time_budget_sec", p.time_budget_sec);
-    library_path = root.get_str("library_path", library_path);
-
     p.min_alex = std::max(1, std::min(p.min_alex, p.max_alex));
     p.iterations = std::max(1, p.iterations);
     p.beam_width = std::max(1, p.beam_width);
@@ -1948,26 +1716,13 @@ int main(int argc, char** argv) {
         return ok ? 0 : 1;
     }
 
-    // 子链库：种子 + 上次动态学习结果
-    SubchainLibrary lib;
-    lib.load_seeds();
-    lib.load(library_path);
-    lib.rebuild_index();
-
     Progress prog;
     prog.enabled = true;
-    MctsResult res = run_mcts_search(st, p, lib, &prog);
+    MctsResult res = run_mcts_search(st, p, &prog);
     if (prog.enabled) {
         fprintf(stderr, "PROGRESS %d %d %d\n", res.expansions, res.simulations, res.reached_depth);
     }
 
-    // 计算完成：动态更新子链库（各龙数最优路径 + 各局路径）并持久化
-    vector<State> learn_states = res.game_paths;
-    for (const auto& kv : res.best_by_dragons) learn_states.push_back(kv.second);
-    lib.learn(learn_states);
-    lib.rebuild_index();
-    lib.save(library_path);
-
-    print_json_result(res, p, lib);
+    print_json_result(res, p);
     return 0;
 }
