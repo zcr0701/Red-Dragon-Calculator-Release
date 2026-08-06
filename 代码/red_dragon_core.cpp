@@ -146,7 +146,7 @@ static const unordered_map<string, CardDef> DB = {
     {"赤烟·腾武", {2, "minion", "tenwu", true, false, false, 2}},
     {"“赤烟”腾武", {2, "minion", "tenwu", true, false, false, 2}},  // 官方名（日志/卡图）别名
     {"押注猎手", {3, "minion", "gambler_hunter", false, true, false, 4}},  // 快枪或连击：获取一张幸运币
-    {"狐人老千", {2, "minion", "foxy_fraud", true, false, false, 2}},
+    {"狐人老千", {2, "minion", "foxy_fraud", false, true, false, 2}},
 };
 
 static uint64_t str_hash(const string& s);
@@ -489,7 +489,12 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
     } else if (e == "preparation") {
         s.next_spell += 2;
     } else if (e == "foxy_fraud") {
-        s.next_combo += 2;
+        if (s.cards_played_this_turn > 0) {
+            // 连击：本回合已出过牌才触发；幸运彗星令连击触发两次
+            int stacks = s.next_combo_twice ? 4 : 2;
+            s.next_combo += stacks;
+            s.next_combo_twice = false;
+        }
     } else if (e == "scabbs_cutterbutter") {
         if (s.cards_played_this_turn > 0) {
             int stacks = s.next_combo_twice ? 4 : 2;  // 幸运彗星：连击触发两次
@@ -649,12 +654,15 @@ static vector<State> apply_search_effect(State base, const Card& card,
                     std::sort(options.begin(), options.end());
                     options.erase(std::unique(options.begin(), options.end()), options.end());
                 } else {
-                    options = {"斯卡布斯·刀油", "押注猎手"};
+                    options = {"斯卡布斯·刀油", "押注猎手", "狐人老千"};
                 }
                 if (options.empty()) options = {"斯卡布斯·刀油"};
                 for (const string& opt : options) {
                     State ns = current.clone_reserved();
-                    add_card_to_hand_or_burn(ns, make_card(opt));
+                    Card nc = make_card(opt);
+                    nc.entered_hand_this_turn = true;  // 发现入手：快枪判定
+                    add_card_to_hand_or_burn(ns, nc);
+                    append_choice_to_last_path(ns, opt);  // 路径显示：幸运彗星（选择）
                     ns.next_combo_twice = true;
                     next_states.push_back(ns);
                 }
