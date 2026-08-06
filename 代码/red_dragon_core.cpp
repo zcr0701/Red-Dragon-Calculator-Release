@@ -999,7 +999,7 @@ struct SearchParams {
     int depth = 30;
     int max_paths = 1000000;
     int threads = 4;
-    double time_budget_sec = 3.0;   // 总时间预算（秒），硬时限 ≤3s（大部分 1~2s 出结果）
+    double time_budget_sec = 3.0;   // 总时间预算（秒）；<=0 = 不限时，按 束宽×最大深度 跑完
     int heuristic = 6;          // 组合加权（0.6×瓶颈 + 资源求和 + 路径里程碑，实测最优）
     int wide_width = 0;         // >0 = 单宽束通道固定宽度
     vector<int> wide_widths;    // 多宽束并行组合；空 = 默认 {1100,2000}

@@ -146,6 +146,7 @@ def build_payload(
     max_paths: int = 1000000,
     threads: int = 4,
     time_budget_sec: float = 3.0,
+    # 时间预算（秒）；0 / 负数 = 不限时：按束宽×最大深度跑完，不因时间停止
     heuristic: int = 6,
     wide_widths: Optional[List[int]] = None,
     heuristics: Optional[List[int]] = None,

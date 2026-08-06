@@ -431,6 +431,9 @@ class MainWindow(QWidget):
         self.beam_width = self._spin(0, 0, 9999, step=100)
         param_grid.addWidget(QLabel("束宽（0=自动四通道）："), 7, 0)
         param_grid.addWidget(self.beam_width, 7, 1)
+        self.no_time_limit = QCheckBox("不限时：按束宽×最大深度跑完（时间预算失效，大束宽可能很慢）")
+        self.no_time_limit.setToolTip("勾选后搜索不因时间耗尽而停止，跑满最大深度或状态收敛为止")
+        param_grid.addWidget(self.no_time_limit, 8, 0, 1, 2)
         right_layout.addWidget(param_box)
 
         run_row = QHBoxLayout()
@@ -843,7 +846,7 @@ class MainWindow(QWidget):
             "depth": self.beam_depth.value(),
             "max_paths": self.max_paths.value(),
             "threads": 4,
-            "time_budget_sec": self.time_budget.value(),
+            "time_budget_sec": 0 if self.no_time_limit.isChecked() else self.time_budget.value(),
             "etc_band": band,
             "beam_width": self.beam_width.value(),
         }
