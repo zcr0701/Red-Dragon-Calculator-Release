@@ -822,8 +822,13 @@ class MainWindow(QWidget):
         self.mini_window.activateWindow()
 
     def _sync_mini_window(self, *_args) -> None:
-        if self.mini_window is not None:
+        if self.mini_window is None or not self.mini_window.isVisible():
+            return
+
+        try:
             self.mini_window.sync_from_main()
+        except Exception as exc:  # noqa: BLE001 - 小窗同步失败不影响主窗口
+            print(f"小窗同步失败：{type(exc).__name__}: {exc}")
 
     def _sync_mini_result(self, data: Dict[str, object]) -> None:
         if self.mini_window is not None:
@@ -1163,6 +1168,10 @@ class MainWindow(QWidget):
         self.engine_label.setText("")
         self.worker = None
         self.calc_button.setText("开始计算")
+
+        if self.mini_window is not None:
+            self.mini_window.on_main_worker_done()
+
         self._update_calc_enabled()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
@@ -1201,7 +1210,6 @@ class MiniWindow(QWidget):
         self.setWindowTitle("红龙小窗")
         self.resize(210, 560)  # 高:宽 ≈ 2.7:1（2~4:1）
         self._drag_offset: Optional[QPoint] = None
-        self.mini_worker: Optional[CalculationWorker] = None
         self._build_ui()
         self.sync_from_main()
 
@@ -1349,14 +1357,29 @@ class MiniWindow(QWidget):
         if not in_game:
             text += "（未在对局）"
 
-        self.state_label.setText(text)
-        self.hand_label.setText(self._mini_hand_text())
-        self.board_label.setText(self._mini_board_text())
+        if self.state_label.text() != text:
+            self.state_label.setText(text)
+
+        hand_text = self._mini_hand_text()
+
+        if self.hand_label.text() != hand_text:
+            self.hand_label.setText(hand_text)
+
+        board_text = self._mini_board_text()
+
+        if self.board_label.text() != board_text:
+            self.board_label.setText(board_text)
 
     def _mini_hand_text(self) -> str:
         snap = self.main.snapshot
         hand = snap.get("hand") or []
-        deadly = set(self.main._merged_deadly_indexes())
+        deadly = set(int(i) for i in (snap.get("deadly_shadow_hand_indexes") or []))
+
+        if self.main.deadly_check.isChecked():
+            for part in re.split(r"[,，、\s]+", self.main.deadly_input.text().strip()):
+                if part.isdigit():
+                    deadly.add(int(part))
+
         parts: List[str] = []
 
         for index, item in enumerate(hand, start=1):
@@ -1419,35 +1442,10 @@ class MiniWindow(QWidget):
 
     # ---- 计算 ----
 
-    def _mini_deadly_indexes(self) -> List[int]:
-        if not self.mini_deadly_check.isChecked():
-            return []
-
-        text = self.mini_deadly_input.text().strip()
-
-        if not text:
-            return []
-
-        indexes: List[int] = []
-
-        for part in text.replace("，", ",").replace("、", ",").replace(" ", ",").split(","):
-            part = part.strip()
-
-            if part.isdigit():
-                indexes.append(int(part))
-
-        hand_count = len(self.main.snapshot.get("hand") or [])
-
-        for index in indexes:
-            if index <= 0 or index > hand_count:
-                raise ValueError(
-                    f"殒命暗影位置第 {index} 张超出当前手牌数量 {hand_count}。"
-                )
-
-        return indexes
-
     def start_calc(self) -> None:
-        if self.mini_worker is not None:
+        """小窗只负责触发主界面计算，路径解析显示在主窗口结果上。"""
+        if self.main.worker is not None:
+            # 主界面正在计算：避免误触发中止
             return
 
         if not self.main.snapshot.get("in_game") and not self.main.snapshot.get("hand"):
@@ -1455,46 +1453,26 @@ class MiniWindow(QWidget):
             return
 
         try:
-            deadly_indexes = self._mini_deadly_indexes()
+            self.main._merged_deadly_indexes()
         except ValueError as exc:
             self.mini_result.setPlainText(f"殒命标记错误：{exc}")
             return
 
-        snapshot = dict(self.main.snapshot)
-        snapshot["deadly_shadow_hand_indexes"] = deadly_indexes
-        options = self.main._options()
-        options["etc_band"] = [name for name, box in self.mini_etc_checks if box.isChecked()]
-
         self.mini_calc_button.setEnabled(False)
         self.mini_calc_button.setText("计算中…")
         self.mini_result.setPlainText("正在计算…")
-        self.mini_worker = CalculationWorker(snapshot, options, self)
-        self.mini_worker.finished_ok.connect(self._on_mini_result)
-        self.mini_worker.failed.connect(self._on_mini_error)
-        self.mini_worker.finished.connect(self._on_mini_worker_done)
-        self.mini_worker.start()
+        self.main.on_calc_toggle()
 
-    def _on_mini_result(self, data: Dict[str, object]) -> None:
-        self.mini_result.setPlainText(format_mini_results(data))
-
-    def _on_mini_error(self, message: str) -> None:
-        self.mini_result.setPlainText(f"计算失败：\n{message}")
-
-    def _on_mini_worker_done(self) -> None:
-        self.mini_worker = None
+    def on_main_worker_done(self) -> None:
+        """主窗口计算完成/中止后恢复按钮。"""
         self.mini_calc_button.setEnabled(True)
         self.mini_calc_button.setText("计算")
 
     def show_result(self, data: Dict[str, object]) -> None:
-        """主窗口计算结果同步显示（小窗未在独立计算时）。"""
-        if self.mini_worker is None:
-            self.mini_result.setPlainText(format_mini_results(data))
+        """解析并显示主窗口计算结果（小窗只负责解析主界面路径）。"""
+        self.mini_result.setPlainText(format_mini_results(data))
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
-        if self.mini_worker is not None:
-            self.mini_worker.stop()
-            self.mini_worker.wait(3000)
-
         event.accept()
 
 
