@@ -490,16 +490,13 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
         s.next_spell += 2;
     } else if (e == "foxy_fraud") {
         if (s.cards_played_this_turn > 0) {
-            // 连击：本回合已出过牌才触发；幸运彗星令连击触发两次
-            int stacks = s.next_combo_twice ? 4 : 2;
-            s.next_combo += stacks;
-            s.next_combo_twice = false;
+            // 连击：本回合已出过牌才触发（幸运彗星双触发由倍率=2 处理）
+            s.next_combo += 2;
         }
     } else if (e == "scabbs_cutterbutter") {
         if (s.cards_played_this_turn > 0) {
-            int stacks = s.next_combo_twice ? 4 : 2;  // 幸运彗星：连击触发两次
-            s.oil_stacks.push_back({stacks, 2});
-            s.next_combo_twice = false;
+            // 连击：接下来两张牌各减 2（幸运彗星双触发 = 两次各推 {2,2}）
+            s.oil_stacks.push_back({2, 2});
         }
     } else if (e == "strategic_transfer") {
         // 战略转移：所有友方随从移回手牌，一律还原为原始版本
@@ -600,9 +597,7 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
         bool quick_draw = card.entered_hand_this_turn;
         bool triggered = s.cards_played_this_turn > 0 || quick_draw;
         if (triggered) {
-            int coins = s.next_combo_twice ? 2 : 1;  // 幸运彗星：连击触发两次
-            s.next_combo_twice = false;
-            for (int i = 0; i < coins; i++) add_card_to_hand_or_burn(s, make_card("幸运币"));
+            add_card_to_hand_or_burn(s, make_card("幸运币"));
         }
     } else if (e == "cultist_map") {
         Card unknown = make_card("未知发现物");
@@ -618,6 +613,12 @@ static vector<State> apply_search_effect(State base, const Card& card,
                                          bool enemy_target) {
     (void)enemy_target;
     int multiplier = minion_trigger_multiplier(base, card);
+    if (base.next_combo_twice && card.combo) {
+        // 幸运彗星：下一张连击随从的连击触发两次（总额外触发一次，
+        // 不与鲨鱼倍率叠加）；标志在打出时消耗，只作用于这一张。
+        multiplier = 2;
+        base.next_combo_twice = false;
+    }
     const string& e = card.effect_id;
     bool branching = (e == "elite_tauren_champion" || e == "lucky_comet");
     if (!branching) {
@@ -645,27 +646,39 @@ static vector<State> apply_search_effect(State base, const Card& card,
         vector<State> next_states;
         for (const State& current : states) {
             if (e == "lucky_comet") {
-                // 幸运彗星：发现一张连击随从牌；下一张连击随从的连击触发两次
-                vector<string> options;
+                // 幸运彗星：不关心发现池，视作获得一张连击随从牌
+                // （牌库已知取其中最优连击随从：刀油 > 狐人老千 > 押注猎手；
+                // 未知默认刀油）；下一张连击随从的连击触发两次。
+                string best;
                 if (current.deck_is_known) {
-                    for (const auto& c : current.deck) {
-                        if (c.card_type == "minion" && c.combo) options.push_back(c.name());
+                    static const char* PRIORITY[] = {
+                        "斯卡布斯·刀油", "狐人老千", "押注猎手",
+                    };
+                    for (const char* cand : PRIORITY) {
+                        for (const auto& c : current.deck) {
+                            if (c.card_type == "minion" && c.combo && c.name() == cand) {
+                                best = cand;
+                                break;
+                            }
+                        }
+                        if (!best.empty()) break;
                     }
-                    std::sort(options.begin(), options.end());
-                    options.erase(std::unique(options.begin(), options.end()), options.end());
-                } else {
-                    options = {"斯卡布斯·刀油", "押注猎手", "狐人老千"};
+                    if (best.empty()) {
+                        for (const auto& c : current.deck)
+                            if (c.card_type == "minion" && c.combo) {
+                                best = c.name();
+                                break;
+                            }
+                    }
                 }
-                if (options.empty()) options = {"斯卡布斯·刀油"};
-                for (const string& opt : options) {
-                    State ns = current.clone_reserved();
-                    Card nc = make_card(opt);
-                    nc.entered_hand_this_turn = true;  // 发现入手：快枪判定
-                    add_card_to_hand_or_burn(ns, nc);
-                    append_choice_to_last_path(ns, opt);  // 路径显示：幸运彗星（选择）
-                    ns.next_combo_twice = true;
-                    next_states.push_back(ns);
-                }
+                if (best.empty()) best = "斯卡布斯·刀油";
+                State ns = current.clone_reserved();
+                Card nc = make_card(best);
+                nc.entered_hand_this_turn = true;  // 获得入手：快枪判定
+                add_card_to_hand_or_burn(ns, nc);
+                append_choice_to_last_path(ns, best);  // 路径显示：幸运彗星（牌）
+                ns.next_combo_twice = true;
+                next_states.push_back(ns);
             } else if (e == "elite_tauren_champion") {
                 vector<State> disc = discover_fixed_choices(current);
                 for (auto& d : disc) next_states.push_back(d);
