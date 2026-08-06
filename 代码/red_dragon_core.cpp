@@ -532,10 +532,17 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
             Card target = s.board[target_friendly_index];
             s.board.erase(s.board.begin() + target_friendly_index);
             if (target.locked_one_cost) {
-                target.temp_cost = 1;
+                target.temp_cost = 1;  // 腾武锁定 1 费：不变化
+            } else if (target.is_mini_copy) {
+                // 暗施/药水的 1/1 复制：其原始版本就是自身，费用 1-2=0
+                target.temp_cost = 0;
+                target.health = 1;
             } else {
-                int base_cost = target.current_cost() >= 0 ? target.current_cost() : 0;
-                target.temp_cost = std::max(0, base_cost - 2);
+                // 普通随从：还原为原始版本（原始身材），费用 = 原始费用 - 2
+                Card orig = make_card(target.name());
+                orig.is_deadly_shadow = target.is_deadly_shadow;
+                orig.temp_cost = std::max(0, (orig.current_cost() >= 0 ? orig.current_cost() : 0) - 2);
+                target = orig;
             }
             add_card_to_hand_or_burn(s, target);
         }
