@@ -92,6 +92,9 @@ ETC_BAND_CARD_IDS = {
     "DMF_071": "赤烟·腾武",
 }
 
+# 殒命暗影（巫妖王的进军 0 费法术）：进入手牌即自动标记为殒命暗影
+DEADLY_SHADOW_CARD_IDS = {"RLK_567", "CORE_RLK_567"}
+
 
 def _load_card_map() -> Dict[str, dict]:
     global _CARD_MAP
@@ -222,6 +225,7 @@ class PowerLogParser:
         self.seen_play_events = False
         self._etc_chosen: Set[str] = set()  # 已通过牛头人酋长选走的乐队卡
         self._etc_pending_choice = False    # 刚打出牛头人酋长，等待手牌中出现选中的乐队卡
+        self._deadly_entities: Set[int] = set()  # 进入手牌后被判定为殒命暗影的实体（随变形持续追踪）
 
     # ---- 行入口 ----
 
@@ -316,6 +320,11 @@ class PowerLogParser:
 
         if tag_name == "ZONE":
             ent["zone"] = val
+            # 殒命暗影进入手牌即开始追踪；离开手牌（打出/变形离场）停止
+            if val == ZONE_HAND and ent.get("card_id") in DEADLY_SHADOW_CARD_IDS:
+                self._deadly_entities.add(entity_id)
+            elif val != ZONE_HAND:
+                self._deadly_entities.discard(entity_id)
         elif tag_name == "CONTROLLER":
             ent["controller"] = val if isinstance(val, int) else None
         elif tag_name == "COST":
@@ -417,6 +426,12 @@ class PowerLogParser:
 
             if packet.card_id:
                 ent["card_id"] = packet.card_id
+                # 兜底：ZONE 标签先于 card_id 到达时，补记殒命暗影
+                if (
+                    ent.get("zone") == ZONE_HAND
+                    and packet.card_id in DEADLY_SHADOW_CARD_IDS
+                ):
+                    self._deadly_entities.add(entity_id)
 
             for tag, value in getattr(packet, "tags", []):
                 self._apply_tag(entity_id, tag, value)
@@ -535,6 +550,7 @@ class PowerLogParser:
         self.local_entity_id = self.player_entity_by_player_id.get(local_controller)
 
         hand: List[dict] = []
+        hand_entity_ids: List[int] = []
         board: List[dict] = []
         enemy_board: List[dict] = []
         deck: List[dict] = []
@@ -553,7 +569,7 @@ class PowerLogParser:
         if raw_band:
             etc_band = [n for n in raw_band if n not in self._etc_chosen]
 
-        for ent in self.entities.values():
+        for entity_id, ent in self.entities.items():
             card_id = ent.get("card_id")
 
             if not card_id:
@@ -575,6 +591,7 @@ class PowerLogParser:
 
             if zone == ZONE_HAND:
                 hand.append(item)
+                hand_entity_ids.append(entity_id)
             elif zone == ZONE_PLAY:
                 if card_type == "MINION":
                     board.append(item)
@@ -585,7 +602,12 @@ class PowerLogParser:
             elif zone == ZONE_SECRET:
                 secrets.append(item)
 
-        hand.sort(key=lambda item: (item["zone_position"] is None, item["zone_position"] or 0))
+        hand_pairs = sorted(
+            zip(hand, hand_entity_ids),
+            key=lambda pair: (pair[0]["zone_position"] is None, pair[0]["zone_position"] or 0),
+        )
+        hand = [pair[0] for pair in hand_pairs]
+        hand_entity_ids = [pair[1] for pair in hand_pairs]
         board.sort(key=lambda item: (item["zone_position"] is None, item["zone_position"] or 0))
         enemy_board.sort(key=lambda item: (item["zone_position"] is None, item["zone_position"] or 0))
 
@@ -613,8 +635,8 @@ class PowerLogParser:
 
         deadly_shadow_hand_indexes = [
             index
-            for index, item in enumerate(hand, start=1)
-            if item["ghostly"]
+            for index, (item, entity_id) in enumerate(zip(hand, hand_entity_ids), start=1)
+            if item["ghostly"] or entity_id in self._deadly_entities
         ]
 
         crystals: Optional[int] = None
