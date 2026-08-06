@@ -224,7 +224,7 @@ class PowerLogParser:
         self.pending_effects: Dict[str, int] = {}
         self.seen_play_events = False
         self._etc_chosen: Set[str] = set()  # 已通过牛头人酋长选走的乐队卡
-        self._etc_pending_choice = False    # 刚打出牛头人酋长，等待手牌中出现选中的乐队卡
+        self._etc_pending_choices = 0       # 刚打出牛头人酋长，还差几张乐队卡进手（鲨鱼双战吼=2）
         self._deadly_entities: Set[int] = set()  # 进入手牌后被判定为殒命暗影的实体（随变形持续追踪）
 
     # ---- 行入口 ----
@@ -363,8 +363,14 @@ class PowerLogParser:
             self.pending_effects[name] = self.pending_effects.get(name, 0) + 1
 
         if ent["card_id"] == "ETC_080":
-            # 乐队经理精英牛头人酋长：打出后等待手牌出现选中的乐队卡
-            self._etc_pending_choice = True
+            # 乐队经理精英牛头人酋长：鲨鱼之灵在场时战吼触发两次 → 连选两张乐队卡
+            shark_on_board = any(
+                e.get("card_id") == "TRL_092"
+                and e.get("zone") == ZONE_PLAY
+                and e.get("controller") == self.local_controller
+                for e in self.entities.values()
+            )
+            self._etc_pending_choices = 2 if shark_on_board else 1
 
     def _consume_effects(self, name: str, ent: dict) -> None:
         card_type = ent.get("card_type")
@@ -619,14 +625,21 @@ class PowerLogParser:
         board.sort(key=lambda item: (item["zone_position"] is None, item["zone_position"] or 0))
         enemy_board.sort(key=lambda item: (item["zone_position"] is None, item["zone_position"] or 0))
 
-        # 打出牛头人酋长后，手牌中出现的乐队卡 = 本次选中的牌（持久记录）
-        if self._etc_pending_choice:
+        # 打出牛头人酋长后，手牌中出现的乐队卡 = 本次选中的牌（持久记录；
+        # 鲨鱼双倍战吼会连选两张，计数到 0 为止）
+        if self._etc_pending_choices > 0:
             for item in hand:
+                if self._etc_pending_choices <= 0:
+                    break
                 name = item["name"]
                 if name in ETC_BAND_CARD_IDS.values() and name not in self._etc_chosen:
                     self._etc_chosen.add(name)
-                    self._etc_pending_choice = False
-                    break
+                    self._etc_pending_choices -= 1
+            # 牛池已空仍没等齐（如只剩 1 张时被双选）：清空等待
+            if self._etc_pending_choices > 0 and raw_band:
+                remaining = [n for n in raw_band if n not in self._etc_chosen]
+                if not remaining:
+                    self._etc_pending_choices = 0
         if raw_band:
             etc_band = [n for n in raw_band if n not in self._etc_chosen]
 
