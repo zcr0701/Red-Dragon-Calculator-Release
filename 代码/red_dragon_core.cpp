@@ -156,6 +156,10 @@ static Card make_card(const string& name, int cost_override = -1) {
     Card c;
     string normalized = name;
     if (name == "“赤烟”腾武") normalized = "赤烟·腾武";  // 统一规范名
+    if (normalized == "阿莱克斯塔萨" || normalized == "阿莱克丝塔萨" ||
+        normalized == "生命的缚誓者阿莱克斯塔萨") {
+        normalized = "生命的缚誓者阿莱克丝塔萨";  // 红龙常用误写（斯/丝）
+    }
     auto it = DB.find(normalized);
     if (it == DB.end()) {
         c.name_ = intern_name(normalized);
