@@ -1200,7 +1200,9 @@ static int discrete_path_score(const State& s) {
 // 能被发现；与 MCTS 游戏并行，共享时间预算。
 static void wide_beam_pass(const State& start_in, const SearchParams& p,
                            const Budget& budget, ThreadOut& out) {
-    int beam_width = std::max(1500, std::min(3000, p.beam_width * 200));
+    // 宽束通道宽度：默认至少 2400（经验值：1600 会漏掉 3 龙/48 伤这类深线，
+    // 旧 beam 3000 稳定挖出 10 龙/160 伤），束宽参数调大时随之上限 3000。
+    int beam_width = std::max(2400, std::min(3000, p.beam_width * 200));
     State start = start_in.clone();
     struct Cand {
         State s;
