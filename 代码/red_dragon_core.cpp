@@ -1663,7 +1663,9 @@ static BeamResult run_beam_search(const State& start, const SearchParams& p, Pro
         a.ww = p.wide_width > 0 ? p.wide_width
               : (p.wide_widths.empty() ? DEFAULT_WIDE_WIDTHS[std::min(w, 1)] : p.wide_widths[w]);
         a.heur = p.heuristics.empty() ? DEFAULT_HEURISTICS[std::min(w, 1)] : p.heuristics[w];
-        if (a.ww >= 2500) ch_budgets[w].budget_sec = std::min(ch_budgets[w].budget_sec, 2.0);
+        // 仅默认四通道的 H2/3000（紧 48 线）给 2s 上限；用户自设的大束宽（H6 等）不限额
+        if (a.heur == 2 && a.ww >= 2500)
+            ch_budgets[w].budget_sec = std::min(ch_budgets[w].budget_sec, 2.0);
         a.budget = &ch_budgets[w];
         a.inner = 1;  // 多通道并行，各通道单线程即可（分配瘦身后跨线程可缩放）
         a.tid = 90 + w;
