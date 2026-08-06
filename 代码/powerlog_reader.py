@@ -319,7 +319,19 @@ class PowerLogParser:
         ent[tag_name] = val
 
         if tag_name == "ZONE":
+            prev_zone = ent.get("zone")
             ent["zone"] = val
+            # 牛头人乐队卡被选中：实体离开 SETASIDE（进手牌/打出）即记录，
+            # 不依赖事后扫手牌——选牌后立刻打出也不会漏记
+            if (
+                prev_zone == ZONE_SETASIDE
+                and val != ZONE_SETASIDE
+                and ent.get("controller") in (None, self.local_controller)
+            ):
+                card_id = ent.get("card_id") or ""
+                name = ETC_BAND_CARD_IDS.get(card_id)
+                if name:
+                    self._record_etc_pick(name)
             # 殒命暗影进入手牌即开始追踪；离开手牌（打出/变形离场）停止
             if val == ZONE_HAND and ent.get("card_id") in DEADLY_SHADOW_CARD_IDS:
                 self._deadly_entities.add(entity_id)
@@ -371,6 +383,14 @@ class PowerLogParser:
                 for e in self.entities.values()
             )
             self._etc_pending_choices = 2 if shark_on_board else 1
+
+    def _record_etc_pick(self, name: str) -> None:
+        """牛头人乐队卡被选中：加入已选集合，等待计数减一。"""
+        if name not in self._etc_chosen:
+            self._etc_chosen.add(name)
+
+        if self._etc_pending_choices > 0:
+            self._etc_pending_choices -= 1
 
     def _consume_effects(self, name: str, ent: dict) -> None:
         card_type = ent.get("card_type")
@@ -572,12 +592,21 @@ class PowerLogParser:
         weapon: Optional[dict] = None
         etc_band: Optional[List[str]] = None
 
-        # 牛头人乐队：SETASIDE 区的乐队卡即本局牛池；被选走后从池中移除
+        # 牛头人乐队：SETASIDE 区的原始乐队卡即本局牛池。
+        # 排除发现选项的临时复制体（WAS_DISCOVER_OPTION）并按名去重，
+        # 避免双战吼生成的选项复制体把牛池撑成重复多张；被选走的牌由
+        # SETASIDE 离场事件实时记入 _etc_chosen，从池中移除。
         raw_band: List[str] = []
         for ent in self.entities.values():
             card_id = ent.get("card_id") or ""
             name = ETC_BAND_CARD_IDS.get(card_id)
-            if name and ent.get("zone") == ZONE_SETASIDE:
+            if (
+                name
+                and ent.get("zone") == ZONE_SETASIDE
+                and not ent.get("WAS_DISCOVER_OPTION")
+                and ent.get("controller") in (None, self.local_controller)
+                and name not in raw_band
+            ):
                 raw_band.append(name)
 
         if raw_band:
@@ -625,21 +654,6 @@ class PowerLogParser:
         board.sort(key=lambda item: (item["zone_position"] is None, item["zone_position"] or 0))
         enemy_board.sort(key=lambda item: (item["zone_position"] is None, item["zone_position"] or 0))
 
-        # 打出牛头人酋长后，手牌中出现的乐队卡 = 本次选中的牌（持久记录；
-        # 鲨鱼双倍战吼会连选两张，计数到 0 为止）
-        if self._etc_pending_choices > 0:
-            for item in hand:
-                if self._etc_pending_choices <= 0:
-                    break
-                name = item["name"]
-                if name in ETC_BAND_CARD_IDS.values() and name not in self._etc_chosen:
-                    self._etc_chosen.add(name)
-                    self._etc_pending_choices -= 1
-            # 牛池已空仍没等齐（如只剩 1 张时被双选）：清空等待
-            if self._etc_pending_choices > 0 and raw_band:
-                remaining = [n for n in raw_band if n not in self._etc_chosen]
-                if not remaining:
-                    self._etc_pending_choices = 0
         if raw_band:
             etc_band = [n for n in raw_band if n not in self._etc_chosen]
 
