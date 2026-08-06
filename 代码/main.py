@@ -874,6 +874,7 @@ class MainWindow(QWidget):
         snapshot = dict(self.snapshot)
         snapshot["deadly_shadow_hand_indexes"] = deadly_indexes
         options = self._options()
+        self._last_input = {"snapshot": snapshot, "options": options}
         self.result_text.setPlainText("正在运行纯束宽搜索 …")
         self.progress_bar.setVisible(True)
         self.calc_button.setText("中止计算")
@@ -893,6 +894,91 @@ class MainWindow(QWidget):
     def _on_found(self, dragons: int, damage: int) -> None:
         self.engine_label.setText(f"已找到 {dragons} 龙 {damage} 伤")
 
+    def _input_log_block(self) -> str:
+        """把本次计算的输入局面与参数写成可复现的文本块（含完整 JSON）。"""
+        last = getattr(self, "_last_input", None)
+
+        if not last:
+            return ""
+
+        snapshot = last.get("snapshot") or {}
+        options = last.get("options") or {}
+        lines = ["输入局面："]
+        lines.append(
+            f"  水晶：{snapshot.get('crystals', '?')} / 法力：{snapshot.get('mana', '?')}"
+        )
+
+        deadly = set(int(i) for i in (snapshot.get("deadly_shadow_hand_indexes") or []))
+        hand_parts = []
+
+        for index, item in enumerate(snapshot.get("hand") or [], start=1):
+            cost = item.get("cost")
+            cost_text = f"{cost}费" if cost is not None else "?费"
+            ghost = "（殒命）" if index in deadly else ""
+            hand_parts.append(f"{index}. [{cost_text}] {item['name']}{ghost}")
+
+        lines.append("  手牌：" + ("  ".join(hand_parts) if hand_parts else "（空）"))
+
+        def _hp(item: dict) -> str:
+            health = item.get("health")
+            health_max = item.get("health_max")
+            if health is None:
+                return "生命?"
+            if health_max not in (None, health):
+                return f"生命{health}/{health_max}"
+            return f"生命{health}"
+
+        board_parts = []
+
+        for index, item in enumerate(snapshot.get("board") or [], start=1):
+            cost = item.get("cost")
+            cost_text = f"{cost}费" if cost is not None else "?费"
+            board_parts.append(f"{index}. [{cost_text}] {item['name']}（{_hp(item)}）")
+
+        if board_parts:
+            lines.append("  战场：" + "  ".join(board_parts))
+
+        enemy_parts = []
+
+        for index, item in enumerate(snapshot.get("enemy_board") or [], start=1):
+            enemy_parts.append(f"{index}. {item.get('name') or '敌方随从'}（{_hp(item)}）")
+
+        if enemy_parts:
+            lines.append("  敌方战场：" + "  ".join(enemy_parts))
+
+        band = snapshot.get("etc_band")
+        lines.append("  牛池：" + ("、".join(band) if band else "（未知/未检测）"))
+
+        effects = snapshot.get("current_effects") or []
+        lines.append(
+            "  当前效果："
+            + ("、".join(f"{e['name']}×{e.get('count', 1)}" for e in effects) if effects else "无")
+        )
+
+        deadly_text = "、".join(str(i) for i in sorted(deadly)) if deadly else "无"
+        lines.append(f"  殒命暗影手牌序号：{deadly_text}")
+
+        beam = int(options.get("beam_width") or 0)
+        beam_text = (
+            f"{beam}"
+            if beam > 0
+            else "0（自动四通道：H6/1100 H1/1500 H2/1100 H2/3000）"
+        )
+        budget = options.get("time_budget_sec")
+        budget_text = "不限时" if budget in (None, 0) else f"{budget}秒"
+        lines.append(
+            f"  搜索参数：束宽={beam_text} 深度={options.get('depth')} "
+            f"时间={budget_text} 龙数={options.get('min_alex')}..{options.get('max_alex')} "
+            f"路径上限={options.get('max_paths')}"
+        )
+
+        json_snapshot = dict(snapshot)
+        for key in ("log_path", "session_dir", "parser"):
+            json_snapshot.pop(key, None)
+
+        lines.append("  输入JSON：" + json.dumps(json_snapshot, ensure_ascii=False))
+        return "\n".join(lines)
+
     def _on_result(self, data: Dict[str, object]) -> None:
         results = data.get("results") or []
         lines = [
@@ -901,6 +987,12 @@ class MainWindow(QWidget):
             f"展开节点：{data.get('expansions', 0)}，路径数：{len(results)}",
             "",
         ]
+
+        input_block = self._input_log_block()
+
+        if input_block:
+            lines.append(input_block)
+            lines.append("")
 
         stats = data.get("stats")
 
