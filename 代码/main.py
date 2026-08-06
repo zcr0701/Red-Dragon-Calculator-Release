@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import QEventLoop, QThread, QTimer, Qt, pyqtSignal
+from PyQt5.QtCore import QEventLoop, QPoint, QThread, QTimer, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -35,6 +35,7 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSizeGrip,
     QSpinBox,
     QSplitter,
     QVBoxLayout,
@@ -80,6 +81,110 @@ DEMO_SNAPSHOT = {
     "deadly_shadow_hand_indexes": [10],
     "log_path": None,
 }
+
+# ===================== 小窗：卡牌缩写与轮次分割 =====================
+
+CARD_ABBREVIATIONS = {
+    "幸运币": "币",
+    "伪造的幸运币": "币",
+    "伺机待发": "伺",
+    "暗影步": "步",
+    "殒命暗影": "殒",
+    "狐人老千": "狐",
+    "锯齿骨刺": "骨",
+    "晦鳞巢母": "晦",
+    "乐队经理精英牛头人酋长": "牛",
+    "舞动全场（ft.迦罗娜）": "舞",
+    "幻觉药水": "幻",
+    "生命的缚誓者阿莱克丝塔萨": "龙",
+    "斯卡布斯·刀油": "刀",
+    "鲨鱼之灵": "鱼",
+    "暗影施法者": "暗",
+    "赤烟·腾武": "腾",
+    "“赤烟”腾武": "腾",
+    "幸运彗星": "彗",
+    "战略转移": "转",
+}
+
+ROUND_SPLIT_NAMES = ("战略转移", "舞动全场（ft.迦罗娜）")
+
+
+def abbreviate_card_name(name: str) -> str:
+    """单卡缩写；未定义缩写的卡保留全名。"""
+    name = (name or "").strip()
+
+    if not name:
+        return name
+
+    if name in CARD_ABBREVIATIONS:
+        return CARD_ABBREVIATIONS[name]
+
+    resolved = engine.resolve_card_name(name)
+    return CARD_ABBREVIATIONS.get(resolved, name)
+
+
+def abbreviate_step(step: str) -> str:
+    """把引擎路径一步（如 赤烟·腾武（斯卡布斯·刀油））转成缩写格式。"""
+    step = step.strip()
+    deadly = ""
+
+    if "[殒命暗影]" in step:
+        deadly = "[殒]"
+        step = step.replace("[殒命暗影]", "")
+
+    target = ""
+
+    if "（" in step and step.endswith("）"):
+        name, inner = step.split("（", 1)
+        inner = inner[:-1]
+        parts = [abbreviate_card_name(p.strip()) for p in inner.split("->") if p.strip()]
+        target = "(" + ";".join(parts) + ")"
+    else:
+        name = step
+
+    return abbreviate_card_name(name) + target + deadly
+
+
+def split_path_rounds(path: List[str]) -> List[List[str]]:
+    """按 战略转移/舞动全场 把路径分割为多轮；分割动作归属当前轮末尾。"""
+    rounds: List[List[str]] = []
+    current: List[str] = []
+
+    for step in path:
+        base = step.split("（", 1)[0].replace("[殒命暗影]", "").strip()
+        current.append(step)
+
+        if base in ROUND_SPLIT_NAMES:
+            rounds.append(current)
+            current = []
+
+    if current:
+        rounds.append(current)
+
+    return rounds
+
+
+def format_mini_results(data: Dict[str, object]) -> str:
+    """小窗结果：最高伤害路径按轮次分割，只显示缩写。"""
+    results = data.get("results") or []
+    lines = [
+        f"最大伤害：{data.get('max_damage', 0)}，最大龙数：{data.get('max_dragons', 0)}"
+    ]
+
+    if not results:
+        lines.append("（无路径）")
+        return "\n".join(lines)
+
+    path = (results[0].get("path") or []) if results else []
+    rounds = split_path_rounds(path)
+
+    for index, rnd in enumerate(rounds, start=1):
+        abbr = "-".join(abbreviate_step(step) for step in rnd)
+        lines.append(f"标题[第{index}轮]")
+        lines.append(abbr if abbr else "（空）")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 class CalculationWorker(QThread):
@@ -285,6 +390,7 @@ class MainWindow(QWidget):
         self.watcher = LogWatcher()
         self.snapshot: Dict[str, object] = {}
         self.worker: Optional[CalculationWorker] = None
+        self.mini_window: Optional[MiniWindow] = None
         self._last_state_key = ""
         self._manual_mode = False
         self.etc_checks: List[Tuple[str, QCheckBox]] = []
@@ -312,6 +418,9 @@ class MainWindow(QWidget):
         self.refresh_button.clicked.connect(self.refresh_log)
         self.demo_button = QPushButton("载入示例局面")
         self.demo_button.clicked.connect(lambda: self._apply_snapshot(DEMO_SNAPSHOT))
+        self.mini_button = QPushButton("小窗")
+        self.mini_button.setToolTip("弹出始终置顶的小窗（状态/手牌/场面/牛池/殒命/分轮计算）")
+        self.mini_button.clicked.connect(self.toggle_mini_window)
         self.manual_button = QPushButton("▸ 手动输入")
         self.manual_button.setCheckable(True)
         self.manual_button.setChecked(True)
@@ -319,6 +428,7 @@ class MainWindow(QWidget):
         status.addWidget(self.manual_button)
         status.addWidget(self.refresh_button)
         status.addWidget(self.demo_button)
+        status.addWidget(self.mini_button)
         root.addLayout(status)
 
         main_splitter = QSplitter(Qt.Vertical)
@@ -356,6 +466,8 @@ class MainWindow(QWidget):
         self.deadly_input.setPlaceholderText("手牌序号，如 3,7（不填则只保留日志/手动自动识别）")
         self.deadly_input.setEnabled(False)
         self.deadly_check.toggled.connect(self.deadly_input.setEnabled)
+        self.deadly_check.toggled.connect(self._sync_mini_window)
+        self.deadly_input.textChanged.connect(self._sync_mini_window)
         deadly_row.addWidget(self.deadly_check)
         deadly_row.addWidget(self.deadly_input, 1)
         state_grid.addLayout(deadly_row, 4, 0, 1, 2)
@@ -566,6 +678,7 @@ class MainWindow(QWidget):
     def _update_etc_summary(self) -> None:
         selected = [name for name, box in self.etc_checks if box.isChecked()]
         self.etc_summary_label.setText("牛池：" + ("、".join(selected) if selected else "空"))
+        self._sync_mini_window()
 
     # ---------- 日志读取 ----------
 
@@ -695,6 +808,26 @@ class MainWindow(QWidget):
 
         self._update_etc_summary()
         self._update_calc_enabled()
+
+    # ---------- 小窗 ----------
+
+    def toggle_mini_window(self) -> None:
+        """点击“小窗”按钮：弹出/置前小窗。"""
+        if self.mini_window is None:
+            self.mini_window = MiniWindow(self)
+
+        self.mini_window.sync_from_main()
+        self.mini_window.show()
+        self.mini_window.raise_()
+        self.mini_window.activateWindow()
+
+    def _sync_mini_window(self, *_args) -> None:
+        if self.mini_window is not None:
+            self.mini_window.sync_from_main()
+
+    def _sync_mini_result(self, data: Dict[str, object]) -> None:
+        if self.mini_window is not None:
+            self.mini_window.show_result(data)
 
     # ---------- 殒命暗影 ----------
 
@@ -1020,6 +1153,8 @@ class MainWindow(QWidget):
         except OSError as exc:
             self.engine_label.setText(f"结果保存失败：{exc}")
 
+        self._sync_mini_result(data)
+
     def _on_error(self, message: str) -> None:
         self.result_text.setPlainText(f"计算失败：\n{message}")
 
@@ -1034,6 +1169,332 @@ class MainWindow(QWidget):
         if self.worker is not None:
             self.worker.stop()
             self.worker.wait(3000)
+
+        if self.mini_window is not None:
+            self.mini_window.close()
+
+        event.accept()
+
+
+SNAP_DISTANCE = 14  # 吸附屏幕边缘的阈值（像素）
+
+# 小窗牛池勾选的短标签（对应卡牌缩写，节省竖条宽度）
+MINI_ETC_LABELS = {
+    "舞动全场（ft.迦罗娜）": "舞",
+    "幻觉药水": "幻",
+    "生命的缚誓者阿莱克丝塔萨": "龙",
+    "战略转移": "转",
+    "赤烟·腾武": "腾",
+}
+
+
+class MiniWindow(QWidget):
+    """始终置顶的小窗：竖条长方框（长宽比 2~4:1），可拖动/拖长，吸附屏幕边界。
+
+    从上到下：对局状态/手牌/场面（简化）→ 牛池勾选与殒命标记 → 计算按钮 →
+    分轮次显示最高伤害的计算结果（按 战略转移/舞动 分割，只显示缩写）。
+    """
+
+    def __init__(self, main: "MainWindow"):
+        super().__init__(None, Qt.Window | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
+        self.main = main
+        self.setWindowTitle("红龙小窗")
+        self.resize(210, 560)  # 高:宽 ≈ 2.7:1（2~4:1）
+        self._drag_offset: Optional[QPoint] = None
+        self.mini_worker: Optional[CalculationWorker] = None
+        self._build_ui()
+        self.sync_from_main()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(6, 4, 6, 4)
+        root.setSpacing(4)
+
+        title = QHBoxLayout()
+        self.title_label = QLabel("红龙小窗")
+        min_btn = QPushButton("─")
+        min_btn.setFixedSize(24, 18)
+        min_btn.setToolTip("最小化")
+        min_btn.clicked.connect(self.showMinimized)
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(24, 18)
+        close_btn.setToolTip("关闭")
+        close_btn.clicked.connect(self.hide)
+        title.addWidget(self.title_label, 1)
+        title.addWidget(min_btn)
+        title.addWidget(close_btn)
+        root.addLayout(title)
+
+        self.state_label = QLabel("未在对局中")
+        self.state_label.setStyleSheet("font-weight:bold;")
+        self.state_label.setWordWrap(True)
+        root.addWidget(self.state_label)
+
+        self.hand_label = QLabel("手牌：")
+        self.hand_label.setWordWrap(True)
+        root.addWidget(self.hand_label)
+
+        self.board_label = QLabel("场面：")
+        self.board_label.setWordWrap(True)
+        root.addWidget(self.board_label)
+
+        band_row = QHBoxLayout()
+        self.mini_etc_checks: List[Tuple[str, QCheckBox]] = []
+        default_checked = {"舞动全场（ft.迦罗娜）", "幻觉药水", "生命的缚誓者阿莱克丝塔萨"}
+
+        for card_name, _label in engine.ETC_OPTIONS:
+            label = MINI_ETC_LABELS.get(card_name, _label)
+            box = QCheckBox(label)
+            box.setChecked(card_name in default_checked)
+            box.toggled.connect(self._on_mini_etc_toggled)
+            self.mini_etc_checks.append((card_name, box))
+            band_row.addWidget(box)
+
+        band_row.addStretch(1)
+        root.addLayout(band_row)
+
+        deadly_row = QHBoxLayout()
+        self.mini_deadly_check = QCheckBox("殒命序号：")
+        self.mini_deadly_input = QLineEdit()
+        self.mini_deadly_input.setPlaceholderText("如 3,7")
+        self.mini_deadly_input.setEnabled(False)
+        self.mini_deadly_check.toggled.connect(self.mini_deadly_input.setEnabled)
+        self.mini_deadly_check.toggled.connect(self._on_mini_deadly_changed)
+        self.mini_deadly_input.textChanged.connect(self._on_mini_deadly_changed)
+        deadly_row.addWidget(self.mini_deadly_check)
+        deadly_row.addWidget(self.mini_deadly_input, 1)
+        root.addLayout(deadly_row)
+
+        self.mini_calc_button = QPushButton("计算")
+        self.mini_calc_button.clicked.connect(self.start_calc)
+        root.addWidget(self.mini_calc_button)
+
+        self.mini_result = QPlainTextEdit()
+        self.mini_result.setReadOnly(True)
+        self.mini_result.setMaximumBlockCount(3000)
+        root.addWidget(self.mini_result, 1)
+
+        grip = QSizeGrip(self)
+        root.addWidget(grip, 0, Qt.AlignRight)
+
+    # ---- 拖动 / 吸附 / 调整大小 ----
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if event.button() == Qt.LeftButton:
+            self._drag_offset = event.globalPos() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
+            target = event.globalPos() - self._drag_offset
+            screen = QApplication.primaryScreen().availableGeometry()
+            x, y = target.x(), target.y()
+
+            # 吸附屏幕边界
+            if abs(x - screen.left()) < SNAP_DISTANCE:
+                x = screen.left()
+            elif abs(screen.right() - (x + self.width())) < SNAP_DISTANCE:
+                x = screen.right() - self.width()
+
+            if abs(y - screen.top()) < SNAP_DISTANCE:
+                y = screen.top()
+            elif abs(screen.bottom() - (y + self.height())) < SNAP_DISTANCE:
+                y = screen.bottom() - self.height()
+
+            self.move(x, y)
+            event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        self._drag_offset = None
+        event.accept()
+
+    # ---- 与主窗口双向同步 ----
+
+    def sync_from_main(self) -> None:
+        main = self.main
+
+        for (_, mbox), (_, sbox) in zip(main.etc_checks, self.mini_etc_checks):
+            if sbox.isChecked() != mbox.isChecked():
+                sbox.blockSignals(True)
+                sbox.setChecked(mbox.isChecked())
+                sbox.blockSignals(False)
+
+        if self.mini_deadly_check.isChecked() != main.deadly_check.isChecked():
+            self.mini_deadly_check.blockSignals(True)
+            self.mini_deadly_check.setChecked(main.deadly_check.isChecked())
+            self.mini_deadly_check.blockSignals(False)
+
+        if self.mini_deadly_input.text() != main.deadly_input.text():
+            self.mini_deadly_input.blockSignals(True)
+            self.mini_deadly_input.setText(main.deadly_input.text())
+            self.mini_deadly_input.blockSignals(False)
+
+        self.update_state()
+
+    def update_state(self) -> None:
+        snap = self.main.snapshot
+        in_game = bool(snap.get("in_game"))
+        player = snap.get("player_name") or "?"
+        opponent = snap.get("opponent_name") or "?"
+        crystals = snap.get("crystals")
+        mana = snap.get("mana")
+        text = f"{player} vs {opponent}"
+
+        if crystals is not None or mana is not None:
+            text += (
+                f" | 水晶{crystals if crystals is not None else '-'}"
+                f"/法力{mana if mana is not None else '-'}"
+            )
+
+        if not in_game:
+            text += "（未在对局）"
+
+        self.state_label.setText(text)
+        self.hand_label.setText(self._mini_hand_text())
+        self.board_label.setText(self._mini_board_text())
+
+    def _mini_hand_text(self) -> str:
+        snap = self.main.snapshot
+        hand = snap.get("hand") or []
+        deadly = set(self.main._merged_deadly_indexes())
+        parts: List[str] = []
+
+        for index, item in enumerate(hand, start=1):
+            abbr = abbreviate_card_name(item.get("name") or "?")
+
+            if item.get("ghostly") or index in deadly:
+                abbr += "[殒]"
+
+            parts.append(abbr)
+
+        return "手牌：" + (" ".join(parts) if parts else "（空）")
+
+    def _mini_board_text(self) -> str:
+        snap = self.main.snapshot
+        board = snap.get("board") or []
+        enemy = snap.get("enemy_board") or []
+        parts = [abbreviate_card_name(item.get("name") or "?") for item in board]
+        enemy_parts = [
+            abbreviate_card_name(item.get("name") or "敌方随从") for item in enemy
+        ]
+        text = "场面：" + (" ".join(parts) if parts else "（空）")
+
+        if enemy_parts:
+            text += " | 敌：" + " ".join(enemy_parts)
+
+        return text
+
+    def _on_mini_etc_toggled(self, _checked: bool) -> None:
+        count = sum(1 for _name, box in self.mini_etc_checks if box.isChecked())
+
+        if count > 3:
+            sender = self.sender()
+
+            if isinstance(sender, QCheckBox):
+                sender.blockSignals(True)
+                sender.setChecked(False)
+                sender.blockSignals(False)
+            return
+
+        for (_, mbox), (_, sbox) in zip(self.main.etc_checks, self.mini_etc_checks):
+            if mbox.isChecked() != sbox.isChecked():
+                mbox.blockSignals(True)
+                mbox.setChecked(sbox.isChecked())
+                mbox.blockSignals(False)
+
+        self.main._update_etc_summary()
+
+    def _on_mini_deadly_changed(self, *_args) -> None:
+        main = self.main
+
+        if main.deadly_check.isChecked() != self.mini_deadly_check.isChecked():
+            main.deadly_check.blockSignals(True)
+            main.deadly_check.setChecked(self.mini_deadly_check.isChecked())
+            main.deadly_check.blockSignals(False)
+
+        if main.deadly_input.text() != self.mini_deadly_input.text():
+            main.deadly_input.blockSignals(True)
+            main.deadly_input.setText(self.mini_deadly_input.text())
+            main.deadly_input.blockSignals(False)
+
+    # ---- 计算 ----
+
+    def _mini_deadly_indexes(self) -> List[int]:
+        if not self.mini_deadly_check.isChecked():
+            return []
+
+        text = self.mini_deadly_input.text().strip()
+
+        if not text:
+            return []
+
+        indexes: List[int] = []
+
+        for part in text.replace("，", ",").replace("、", ",").replace(" ", ",").split(","):
+            part = part.strip()
+
+            if part.isdigit():
+                indexes.append(int(part))
+
+        hand_count = len(self.main.snapshot.get("hand") or [])
+
+        for index in indexes:
+            if index <= 0 or index > hand_count:
+                raise ValueError(
+                    f"殒命暗影位置第 {index} 张超出当前手牌数量 {hand_count}。"
+                )
+
+        return indexes
+
+    def start_calc(self) -> None:
+        if self.mini_worker is not None:
+            return
+
+        if not self.main.snapshot.get("in_game") and not self.main.snapshot.get("hand"):
+            self.mini_result.setPlainText("（无可用局面：请先进入对局或手动输入）")
+            return
+
+        try:
+            deadly_indexes = self._mini_deadly_indexes()
+        except ValueError as exc:
+            self.mini_result.setPlainText(f"殒命标记错误：{exc}")
+            return
+
+        snapshot = dict(self.main.snapshot)
+        snapshot["deadly_shadow_hand_indexes"] = deadly_indexes
+        options = self.main._options()
+        options["etc_band"] = [name for name, box in self.mini_etc_checks if box.isChecked()]
+
+        self.mini_calc_button.setEnabled(False)
+        self.mini_calc_button.setText("计算中…")
+        self.mini_result.setPlainText("正在计算…")
+        self.mini_worker = CalculationWorker(snapshot, options, self)
+        self.mini_worker.finished_ok.connect(self._on_mini_result)
+        self.mini_worker.failed.connect(self._on_mini_error)
+        self.mini_worker.finished.connect(self._on_mini_worker_done)
+        self.mini_worker.start()
+
+    def _on_mini_result(self, data: Dict[str, object]) -> None:
+        self.mini_result.setPlainText(format_mini_results(data))
+
+    def _on_mini_error(self, message: str) -> None:
+        self.mini_result.setPlainText(f"计算失败：\n{message}")
+
+    def _on_mini_worker_done(self) -> None:
+        self.mini_worker = None
+        self.mini_calc_button.setEnabled(True)
+        self.mini_calc_button.setText("计算")
+
+    def show_result(self, data: Dict[str, object]) -> None:
+        """主窗口计算结果同步显示（小窗未在独立计算时）。"""
+        if self.mini_worker is None:
+            self.mini_result.setPlainText(format_mini_results(data))
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if self.mini_worker is not None:
+            self.mini_worker.stop()
+            self.mini_worker.wait(3000)
+
         event.accept()
 
 
