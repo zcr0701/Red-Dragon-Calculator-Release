@@ -736,7 +736,13 @@ static vector<State> generate_successors(const State& st) {
         vector<int> friendly_targets;
         if (card.effect_id == "shadowstep" || card.effect_id == "shadowcaster" ||
             card.effect_id == "serrated_bone_spike" || card.effect_id == "tenwu") {
-            for (int i = 0; i < (int)st.board.size(); i++) friendly_targets.push_back(i);
+            for (int i = 0; i < (int)st.board.size(); i++) {
+                // 赤烟·腾武不能以赤烟·腾武为目标：战吼选目标时自己尚未进场，
+                // 若场上另一张腾武被弹回，路径会显示成“腾武（腾武）”的非法自回环。
+                if (card.effect_id == "tenwu" && st.board[i].name() == "赤烟·腾武")
+                    continue;
+                friendly_targets.push_back(i);
+            }
         } else {
             friendly_targets.push_back(-1);
         }
