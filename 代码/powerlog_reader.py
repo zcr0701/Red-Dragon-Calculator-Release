@@ -56,6 +56,14 @@ ZONE_GRAVEYARD = "GRAVEYARD"
 ZONE_SECRET = "SECRET"
 ZONE_SETASIDE = "SETASIDE"
 
+# hslog 只解析 GameState.DebugPrintPower 顶层行，PowerTaskList 前缀与
+# SubSpell 内嵌套的重复 TAG_CHANGE 行会被丢弃（其中含法力/资源等关键标签）。
+# 这里自行补抓：实体引用格式与玩家名格式。
+ENTITY_REF_TAG_RE = re.compile(
+    r"TAG_CHANGE Entity=\[.*?\bid=(\d+).*?\] tag=(\w+) value=(\w+)"
+)
+PLAYER_NAME_TAG_RE = re.compile(r"TAG_CHANGE Entity=([^ \[]+) tag=(\w+) value=(\w+)")
+
 # 附加效果（enchantment）CardID -> 项目“当前效果”名称。
 # 这些实体挂在玩家实体上（ATTACHED=玩家实体ID），用于中途启动时兜底补种。
 EFFECT_ENCHANTMENTS = {
@@ -202,6 +210,7 @@ class PowerLogParser:
     ):
         self.local_accounts = set(local_accounts or [])
         self.forced_player_id = player_id
+        self._pending_direct_tags: List[tuple] = []  # (tree_id, entity, tag, value)
         self.reset()
 
     def reset(self) -> None:
@@ -235,6 +244,69 @@ class PowerLogParser:
         except Exception:
             # 单行解析失败（未知枚举/新 opcode/脏行）不中断整体解析
             self.line_errors += 1
+        self._collect_direct_tags(line)
+
+    def _collect_direct_tags(self, line: str) -> None:
+        """收集 hslog 漏掉的 TAG_CHANGE（PowerTaskList/嵌套重复行），按行序补应用。"""
+        m = ENTITY_REF_TAG_RE.search(line)
+        entity: Optional[int] = None
+
+        if m:
+            entity = int(m.group(1))
+            tag, value = m.group(2), m.group(3)
+        else:
+            m = PLAYER_NAME_TAG_RE.search(line)
+
+            if not m:
+                return
+
+            entity = self._resolve_direct_entity(m.group(1))
+            tag, value = m.group(2), m.group(3)
+
+        if entity is None:
+            return
+
+        try:
+            value = int(value)
+        except ValueError:
+            pass
+
+        tree_id = id(self._hslog.games[-1]) if self._hslog.games else None
+        self._pending_direct_tags.append((tree_id, entity, tag, value))
+
+    def _resolve_direct_entity(self, name: str) -> Optional[int]:
+        """玩家名 → 玩家实体 id（GameEntity/实体引用格式已在正则中处理）。"""
+        if name == "GameEntity":
+            return self.game_entity_id or 1
+
+        player = self._hslog.player_manager._players_by_name.get(name)
+
+        if player is not None:
+            return getattr(player, "entity_id", None)
+
+        if self.local_controller is not None:
+            local_name = self._player_name(self.local_controller)
+
+            if local_name == name:
+                return self.local_entity_id
+
+        return None
+
+    def _flush_direct_tags(self) -> None:
+        """快照前把漏掉的 TAG_CHANGE 按行序应用到实体表（幂等，最后值生效）。
+
+        只应用属于当前对局（tree_id 匹配）的条目，避免换局后把上一局的行级
+        标签误套到新局；也兼容中途启动（整段日志先喂入再首次快照）。
+        """
+        current_tree_id = id(self._hslog.games[-1]) if self._hslog.games else None
+
+        for tree_id, entity, tag, value in self._pending_direct_tags:
+            if tree_id != current_tree_id:
+                continue
+
+            self._apply_tag(entity, tag, value)
+
+        self._pending_direct_tags.clear()
 
     def sync(self) -> None:
         """处理自上次 sync 之后新出现的 packets（对局开始时全量处理）。"""
@@ -561,6 +633,7 @@ class PowerLogParser:
 
     def snapshot(self) -> dict:
         self.sync()
+        self._flush_direct_tags()
         local_controller = self._detect_local_controller()
 
         if local_controller is None:
