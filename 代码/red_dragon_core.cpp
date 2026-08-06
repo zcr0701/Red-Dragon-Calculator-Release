@@ -497,32 +497,25 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
             s.next_combo_twice = false;
         }
     } else if (e == "strategic_transfer") {
-        // 战略转移：所有友方随从移回手牌，并还原为原始版本
-        // （费用恢复原始消耗、身材恢复原始身材；暗施/药水 1/1 复制保持 1/1；腾武锁 1 费保留）
+        // 战略转移：所有友方随从移回手牌，一律还原为原始版本
+        // （费用恢复原始消耗、身材恢复原始身材；暗施/药水 1/1 复制、腾武锁 1 费同样还原）
         vector<Card> returning = s.board;
         s.board.clear();
         int free_slots = std::max(0, MAX_HAND - (int)s.hand.size());
+        auto revert_to_original = [](Card& m) {
+            Card orig = make_card(m.name());
+            orig.is_deadly_shadow = m.is_deadly_shadow;
+            m = orig;
+        };
         if ((int)returning.size() <= free_slots) {
             for (Card& m : returning) {
-                if (!m.is_mini_copy) {
-                    Card orig = make_card(m.name());
-                    orig.locked_one_cost = m.locked_one_cost;   // 腾武锁定不还原
-                    orig.is_deadly_shadow = m.is_deadly_shadow;
-                    orig.entered_hand_this_turn = true;
-                    m = orig;
-                }
+                revert_to_original(m);
                 add_card_to_hand_or_burn(s, m);
             }
         } else {
             for (int i = 0; i < free_slots; i++) {
                 Card& m = returning[i];
-                if (!m.is_mini_copy) {
-                    Card orig = make_card(m.name());
-                    orig.locked_one_cost = m.locked_one_cost;
-                    orig.is_deadly_shadow = m.is_deadly_shadow;
-                    orig.entered_hand_this_turn = true;
-                    m = orig;
-                }
+                revert_to_original(m);
                 add_card_to_hand_or_burn(s, m);
             }
             s.burned_cards += (int)returning.size() - free_slots;
@@ -531,19 +524,12 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
         if (target_friendly_index >= 0 && target_friendly_index < (int)s.board.size()) {
             Card target = s.board[target_friendly_index];
             s.board.erase(s.board.begin() + target_friendly_index);
-            if (target.locked_one_cost) {
-                target.temp_cost = 1;  // 腾武锁定 1 费：不变化
-            } else if (target.is_mini_copy) {
-                // 暗施/药水的 1/1 复制：其原始版本就是自身，费用 1-2=0
-                target.temp_cost = 0;
-                target.health = 1;
-            } else {
-                // 普通随从：还原为原始版本（原始身材），费用 = 原始费用 - 2
-                Card orig = make_card(target.name());
-                orig.is_deadly_shadow = target.is_deadly_shadow;
-                orig.temp_cost = std::max(0, (orig.current_cost() >= 0 ? orig.current_cost() : 0) - 2);
-                target = orig;
-            }
+            // 暗影步：无论此前受何影响（舞动 1 费 / 暗施·药水 1/1 复制 / 腾武锁 1 费），
+            // 一律还原为原始版本（原始身材），再按原始费用减 2
+            Card orig = make_card(target.name());
+            orig.is_deadly_shadow = target.is_deadly_shadow;
+            orig.temp_cost = std::max(0, (orig.current_cost() >= 0 ? orig.current_cost() : 0) - 2);
+            target = orig;
             add_card_to_hand_or_burn(s, target);
         }
     } else if (e == "shadowcaster") {
@@ -1108,19 +1094,19 @@ static double bottleneck_dragons(const State& s) {
 // 启发函数分发（实现见"启发函数库"，此处前向声明供 beam_simulate 使用）
 static double heuristic_value(const State& s, int h);
 
-// 时间预算：跨线程共享的原子停止标志 + 起始时间
+// 时间预算：每通道独立（宽束通道可给不同时限），原子停止标志 + 起始时间
 struct Budget {
-    std::atomic<bool>* stop = nullptr;
-    std::chrono::steady_clock::time_point* t0 = nullptr;
+    mutable std::atomic<bool> stop{false};
+    std::chrono::steady_clock::time_point t0{};
     double budget_sec = 0.0;
 
     bool over() const {
-        if (!stop || budget_sec <= 0.0) return false;
-        if (stop->load()) return true;
+        if (budget_sec <= 0.0) return false;
+        if (stop.load()) return true;
         double sec = std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - *t0).count();
+            std::chrono::steady_clock::now() - t0).count();
         if (sec >= budget_sec) {
-            stop->store(true);
+            stop.store(true);
             return true;
         }
         return false;
@@ -1650,18 +1636,20 @@ static void* wide_worker_entry(void* param) {
 static BeamResult run_beam_search(const State& start, const SearchParams& p, Progress* prog) {
     BeamResult res;
     auto t0 = std::chrono::steady_clock::now();
-    // 默认四通道：H6/1100（8水晶十龙深线）、H1/1100（4水晶十龙/紧线）、
+    // 默认四通道：H6/1100（8水晶十龙深线）、H1/1500（4水晶十龙/紧线）、
     // H2/1100（96 伤线）、H2/3000（6水晶紧 48 伤线）
-    static const int DEFAULT_WIDE_WIDTHS[] = {1100, 1100, 1100, 3000};
+    static const int DEFAULT_WIDE_WIDTHS[] = {1100, 1500, 1100, 3000};
     static const int DEFAULT_HEURISTICS[] = {6, 1, 2, 2};
     int wide_count = p.wide_width > 0 ? 1 : (int)std::max(p.wide_widths.size(), p.heuristics.size());
     if (p.wide_width <= 0 && p.wide_widths.empty() && p.heuristics.empty()) wide_count = 2;
     wide_count = std::max(1, std::min(wide_count, std::max(1, p.threads)));
-    std::atomic<bool> stop{false};
-    Budget budget;
-    budget.stop = &stop;
-    budget.t0 = &t0;
-    budget.budget_sec = p.time_budget_sec;
+    // 每通道独立预算：默认四通道里最宽的 H2/3000（紧 48 线）提前停，
+    // 把最后一段 CPU 让给 H1/1500（4 水晶十龙线，余量最紧）
+    vector<Budget> ch_budgets(wide_count);
+    for (int w = 0; w < wide_count; w++) {
+        ch_budgets[w].t0 = t0;
+        ch_budgets[w].budget_sec = p.time_budget_sec;
+    }
 
     vector<ThreadOut> outs(wide_count);
     vector<WorkerArgs> wide_args;
@@ -1672,10 +1660,11 @@ static BeamResult run_beam_search(const State& start, const SearchParams& p, Pro
         a.p = &p;
         a.out = &outs[w];
         a.prog = prog;
-        a.budget = &budget;
         a.ww = p.wide_width > 0 ? p.wide_width
               : (p.wide_widths.empty() ? DEFAULT_WIDE_WIDTHS[std::min(w, 1)] : p.wide_widths[w]);
         a.heur = p.heuristics.empty() ? DEFAULT_HEURISTICS[std::min(w, 1)] : p.heuristics[w];
+        if (a.ww >= 2500) ch_budgets[w].budget_sec = std::min(ch_budgets[w].budget_sec, 2.0);
+        a.budget = &ch_budgets[w];
         a.inner = 1;  // 多通道并行，各通道单线程即可（分配瘦身后跨线程可缩放）
         a.tid = 90 + w;
         wide_args.push_back(a);

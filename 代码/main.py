@@ -948,7 +948,7 @@ def main() -> int:
                 options.update(
                     threads=4,
                     time_budget_sec=3.0,
-                    depth=25,
+                    depth=40,
                     max_paths=200000,
                 )
                 worker = CalculationWorker(DEMO_SNAPSHOT, options)
