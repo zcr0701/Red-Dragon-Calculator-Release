@@ -215,8 +215,11 @@ class CalculationWorker(QThread):
             wide_widths = None
             heuristics = None
             if beam > 0:
-                wide_widths = [beam]
-                heuristics = [6]
+                # 用户自设束宽：每个通道宽度 = 用户值，多启发互补（H6/H1/H2/H2）。
+                # 单启发（尤其 H6 组合加权）存在盲区，部分紧场面会漏掉最优
+                # （如 6 水晶 48 伤线只搜出 32）；多通道并行保证都能到达最优解。
+                wide_widths = [beam, beam, beam, beam]
+                heuristics = [6, 1, 2, 2]
             result = engine.compute(
                 self.snapshot,
                 min_alex=int(self.options["min_alex"]),
