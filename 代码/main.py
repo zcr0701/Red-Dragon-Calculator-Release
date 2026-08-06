@@ -132,15 +132,30 @@ def abbreviate_step(step: str) -> str:
         deadly = "[殒]"
         step = step.replace("[殒命暗影]", "")
 
+    # 卡名本身可能带括号（如 舞动全场（ft.迦罗娜））：先做最长前缀匹配，
+    # 剩余部分才是目标括号，避免把卡名内括号误当成目标。
+    name = ""
+    rest = ""
+
+    for cand in sorted(CARD_ABBREVIATIONS, key=len, reverse=True):
+        if step.startswith(cand):
+            name = cand
+            rest = step[len(cand):]
+            break
+
+    if not name:
+        if "（" in step:
+            name, rest = step.split("（", 1)
+            rest = "（" + rest
+        else:
+            name, rest = step, ""
+
     target = ""
 
-    if "（" in step and step.endswith("）"):
-        name, inner = step.split("（", 1)
-        inner = inner[:-1]
+    if rest.startswith("（") and rest.endswith("）"):
+        inner = rest[1:-1]
         parts = [abbreviate_card_name(p.strip()) for p in inner.split("->") if p.strip()]
         target = "(" + ";".join(parts) + ")"
-    else:
-        name = step
 
     return abbreviate_card_name(name) + target + deadly
 
