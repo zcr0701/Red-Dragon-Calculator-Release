@@ -292,7 +292,6 @@ struct State {
 static int effective_cost(const State& s, const Card& card) {
     int base = card.current_cost();
     if (base < 0) return -1;
-    if (card.locked_one_cost) return 1;  // 腾武回手：永远固定 1 费
     int discount = 0;
     if (s.next_card > 0) discount += s.next_card;
     if (s.next_two_cards_count > 0) discount += s.next_two_cards;
@@ -546,8 +545,8 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
         if (target_friendly_index >= 0 && target_friendly_index < (int)s.board.size()) {
             Card target = s.board[target_friendly_index];
             s.board.erase(s.board.begin() + target_friendly_index);
+            // 腾武回手：费用变为 1，但不再强制锁定——可再被刀油/骨刺/伺机等减费
             target.temp_cost = 1;
-            target.locked_one_cost = true;
             add_card_to_hand_or_burn(s, target);
         }
     } else if (e == "breakdance") {
