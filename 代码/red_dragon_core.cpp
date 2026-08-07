@@ -397,7 +397,11 @@ static bool play_card_base(State& s, int hand_index, int target_friendly_index,
     if (cost < 0 || s.mana < cost) return false;
     // 杂牌（unknown）可能是随从：打出会占格子，按随从处理
     if ((card.card_type == "minion" || card.card_type == "unknown") && s.board_full()) return false;
-    if (card.card_type == "secret" && (int)s.secrets.size() >= MAX_SECRET) return false;
+        if (card.card_type == "secret") {
+            if ((int)s.secrets.size() >= MAX_SECRET) return false;
+            for (const auto& sec : s.secrets)
+                if (sec.name() == card.name()) return false;  // 每种奥秘只能装备一个
+        }
 
     s.mana -= cost;
     s.hand.erase(s.hand.begin() + hand_index);
@@ -733,7 +737,13 @@ static vector<State> generate_successors(const State& st) {
         if (st.mana < cost) continue;
         // 杂牌（unknown）可能是随从：打出占格子
         if ((card.card_type == "minion" || card.card_type == "unknown") && st.board_full()) continue;
-        if (card.card_type == "secret" && (int)st.secrets.size() >= MAX_SECRET) continue;
+        if (card.card_type == "secret") {
+            if ((int)st.secrets.size() >= MAX_SECRET) continue;
+            bool dup_secret = false;
+            for (const auto& sec : st.secrets)
+                if (sec.name() == card.name()) { dup_secret = true; break; }
+            if (dup_secret) continue;  // 每种奥秘只能装备一个
+        }
         if (cards_drawn_if_played(st, card) > 0) continue;
 
         vector<int> friendly_targets;
