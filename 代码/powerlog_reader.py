@@ -958,6 +958,14 @@ class PowerLogParser:
 class LogWatcher:
     """跟随最新会话的 Power.log，增量喂给 hslog 解析器。"""
 
+    # 只解析最新一局（GameState 的 CREATE_GAME 才是一局起点；
+    # PowerTaskList 的重复 CREATE_GAME 行不算）
+    _GAME_START_MARKER = b"GameState.DebugPrintPower() - CREATE_GAME"
+
+    # 单次刷新最多解析的行数：Power.log 爆发（对局开始/复杂回合）时限制主线程
+    # 单次工作量，避免计算器自身卡顿与 CPU 尖峰；剩余行下个 tick 继续。
+    MAX_LINES_PER_TICK = 20000
+
     def __init__(
         self,
         game_dir: Optional[str] = None,
@@ -973,37 +981,91 @@ class LogWatcher:
         self.log_file: Optional[Path] = None
         self._pos = 0
 
+    def _last_game_offset(self) -> Optional[int]:
+        """从文件尾部找最后一个 GameState CREATE_GAME 的行首字节偏移。"""
+        if self.log_file is None or not self.log_file.exists():
+            return None
+
+        size = self.log_file.stat().st_size
+
+        if size <= 0:
+            return None
+
+        marker = self._GAME_START_MARKER
+        chunk = 1 << 20  # 1 MiB
+        pos = size
+
+        while pos > 0:
+            start = max(0, pos - chunk - len(marker))
+
+            with open(self.log_file, "rb") as f:
+                f.seek(start)
+                data = f.read(pos - start)
+
+            idx = data.rfind(marker)
+
+            if idx >= 0:
+                line_start = data.rfind(b"\n", 0, idx) + 1
+                return start + line_start
+
+            pos = start
+
+            if start == 0:
+                break
+
+        return None
+
+    def _restart_at_latest_game(self) -> None:
+        """只解析最新一局：重置解析器，游标定位到最后一个 GameState CREATE_GAME。"""
+        self.parser.reset()
+        offset = self._last_game_offset()
+        self._pos = offset if offset is not None else 0
+
     def _refresh(self) -> None:
         session = find_latest_session(self.game_dir)
 
         if session != self.session_dir:
             self.session_dir = session
             self.log_file = session / "Power.log" if session is not None else None
-            self.parser.reset()
-            self._pos = 0
+            self._restart_at_latest_game()
+            return
 
         if self.log_file is not None and self.log_file.exists():
             size = self.log_file.stat().st_size
 
             if size < self._pos:
-                # 文件被重写/截断：从头重读
-                self.parser.reset()
-                self._pos = 0
+                # 文件被重写/截断：重新定位到最新一局
+                self._restart_at_latest_game()
 
     def read_new(self) -> int:
         if self.log_file is None or not self.log_file.exists():
             return 0
 
         count = 0
+        new_game_offset: Optional[int] = None
 
-        with open(self.log_file, "r", encoding="utf-8", errors="ignore") as f:
+        with open(self.log_file, "rb") as f:
             f.seek(self._pos)
+            first = True
 
-            for line in f:
-                self.parser.feed_line(line)
+            for raw in f:
+                if not first and self._GAME_START_MARKER in raw:
+                    # 新一局开始：只保留最新一局
+                    new_game_offset = f.tell() - len(raw)
+                    break
+
+                first = False
+                self.parser.feed_line(raw.decode("utf-8", errors="ignore"))
                 count += 1
+                self._pos = f.tell()
 
-            self._pos = f.tell()
+                if count >= self.MAX_LINES_PER_TICK:
+                    break
+
+        if new_game_offset is not None:
+            self.parser.reset()
+            self._pos = new_game_offset
+            return 0
 
         return count
 
