@@ -682,14 +682,39 @@ static const std::set<string> DRAW_CARD_EFFECTS = {
 
 static bool combo_active(const State& s) { return s.cards_played_this_turn > 0; }
 
+// 随从表：红龙 OTK 的核心随从组（手牌+战场视为已抽到）。
+// ① {刀油, 鲨鱼之灵, 腾武, 牛头人酋长, 晦鳞巢母}
+// ② {刀油, 鲨鱼之灵, 狐人老千, 暗影施法者, 牛头人酋长, 晦鳞巢母}
+// 任一组集齐后，牌库视作已无随从：抽随从的法术按“不抽牌”处理，
+// 可打出腾格子（避免虚构抽牌后继）。
+static bool combo_minion_set_complete(const State& s) {
+    bool scabbs = false, shark = false, tenwu = false, etc = false, mother = false;
+    bool foxy = false, caster = false;
+    auto mark = [&](const string& n) {
+        if (n == "斯卡布斯·刀油") scabbs = true;
+        else if (n == "鲨鱼之灵") shark = true;
+        else if (n == "赤烟·腾武") tenwu = true;
+        else if (n == "乐队经理精英牛头人酋长") etc = true;
+        else if (n == "晦鳞巢母") mother = true;
+        else if (n == "狐人老千") foxy = true;
+        else if (n == "暗影施法者") caster = true;
+    };
+    for (const auto& c : s.hand) mark(c.name());
+    for (const auto& c : s.board) mark(c.name());
+    if (scabbs && shark && tenwu && etc && mother) return true;              // ①
+    if (scabbs && shark && foxy && caster && etc && mother) return true;     // ②
+    return false;
+}
+
 static int cards_drawn_if_played(const State& s, const Card& card) {
     const string& e = card.effect_id;
     if (DRAW_CARD_EFFECTS.find(e) == DRAW_CARD_EFFECTS.end()) return 0;
     if (e == "gone_fishin" && !combo_active(s)) return 0;
+    bool no_minions_left = combo_minion_set_complete(s);  // 随从组已集齐 → 牌库视作无随从
     if (!s.deck_is_known) {
+        if (e == "dig_for_treasure" || e == "shroud_of_concealment")
+            return no_minions_left ? 0 : (e == "shroud_of_concealment" ? 2 : 1);
         if (e == "dubious_purchase") return 3;
-        if (e == "dig_for_treasure") return 1;
-        if (e == "shroud_of_concealment") return 2;
         if (e == "swindle") return combo_active(s) ? 2 : 1;
         if (e == "gone_fishin") return 1;
         if (e == "quick_pick") return 1;
@@ -700,6 +725,7 @@ static int cards_drawn_if_played(const State& s, const Card& card) {
         if (c.card_type == "minion") deck_minions++;
         if (c.is_spell_like()) deck_spells++;
     }
+    if (no_minions_left) deck_minions = 0;  // 随从组已集齐：即使牌库已知含随从也按无随从处理
     int deck_total = (int)s.deck.size();
     if (e == "dubious_purchase") return std::min(3, deck_total);
     if (e == "gone_fishin") return std::min(1, deck_total);
