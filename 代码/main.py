@@ -171,7 +171,22 @@ def abbreviate_step(step: str) -> str:
 
     if rest.startswith("（") and rest.endswith("）"):
         inner = rest[1:-1]
-        parts = [abbreviate_card_name(p.strip()) for p in inner.split("->") if p.strip()]
+        parts = []
+
+        for p in inner.split("->"):
+            p = p.strip()
+
+            if not p:
+                continue
+
+            # 腾武回手目标带 board 顺序标注，如 斯卡布斯·刀油(3nd)
+            m = re.match(r"^(.*?)\((\d+)nd\)$", p)
+
+            if m:
+                parts.append(f"{abbreviate_card_name(m.group(1).strip())}({m.group(2)}nd)")
+            else:
+                parts.append(abbreviate_card_name(p))
+
         target = "(" + ";".join(parts) + ")"
 
     return abbreviate_card_name(name) + target + deadly

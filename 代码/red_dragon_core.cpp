@@ -406,7 +406,13 @@ static bool play_card_base(State& s, int hand_index, int target_friendly_index,
     string item = display_card_name(card);
     if (target_friendly_index >= 0) {
         if (target_friendly_index < (int)s.board.size()) {
-            item += "（" + s.board[target_friendly_index].name() + "）";
+            if (card.effect_id == "tenwu") {
+                // 腾武回手：标注目标在 board 上的顺序（1~7），避免同名实例歧义
+                item += "（" + s.board[target_friendly_index].name()
+                      + "(" + std::to_string(target_friendly_index + 1) + "nd)）";
+            } else {
+                item += "（" + s.board[target_friendly_index].name() + "）";
+            }
         } else {
             item += "（无效目标）";
         }
@@ -757,28 +763,11 @@ static vector<State> generate_successors(const State& st) {
         if (card.effect_id == "shadowstep" || card.effect_id == "shadowcaster" ||
             card.effect_id == "serrated_bone_spike" || card.effect_id == "tenwu") {
             if (card.effect_id == "tenwu") {
-                // 腾武回手目标：同名多实例时优先回手 1/1 复制（is_mini_copy），
-                // 其次最低血量——与玩家理性选择一致（保留本体），并减少分支；
-                // 腾武不能以腾武为目标（自回环非法）。
-                unordered_map<string, int> best_idx;
+                // 腾武不能以腾武为目标（自回环非法）；目标顺序由路径标注
                 for (int i = 0; i < (int)st.board.size(); i++) {
-                    const string& nm = st.board[i].name();
-                    if (nm == "赤烟·腾武") continue;
-                    auto it = best_idx.find(nm);
-                    if (it == best_idx.end()) {
-                        best_idx[nm] = i;
-                    } else {
-                        const Card& cur = st.board[it->second];
-                        const Card& cand = st.board[i];
-                        bool better = cand.is_mini_copy && !cur.is_mini_copy;
-                        if (!better && cand.is_mini_copy == cur.is_mini_copy &&
-                            cand.health < cur.health) {
-                            better = true;
-                        }
-                        if (better) best_idx[nm] = i;
-                    }
+                    if (st.board[i].name() == "赤烟·腾武") continue;
+                    friendly_targets.push_back(i);
                 }
-                for (const auto& kv : best_idx) friendly_targets.push_back(kv.second);
             } else {
                 for (int i = 0; i < (int)st.board.size(); i++) friendly_targets.push_back(i);
             }
