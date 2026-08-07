@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import QEventLoop, QPoint, QThread, QTimer, Qt, pyqtSignal
+from PyQt5.QtCore import QEventLoop, QPoint, QSettings, QThread, QTimer, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -472,6 +472,13 @@ class MainWindow(QWidget):
         self.mini_button = QPushButton("小窗")
         self.mini_button.setToolTip("弹出始终置顶的小窗（状态/手牌/场面/牛池/殒命/分轮计算）")
         self.mini_button.clicked.connect(self.toggle_mini_window)
+        self.mini_font_label = QLabel("小窗字号:")
+        self.mini_font_spin = QSpinBox()
+        self.mini_font_spin.setRange(8, 36)
+        self.mini_font_spin.setValue(self.mini_font_size())
+        self.mini_font_spin.setSuffix("px")
+        self.mini_font_spin.setToolTip("小窗公式字号（默认 18px，可记忆）")
+        self.mini_font_spin.valueChanged.connect(self.apply_mini_font)
         self.manual_button = QPushButton("▸ 手动输入")
         self.manual_button.setCheckable(True)
         self.manual_button.setChecked(True)
@@ -480,6 +487,8 @@ class MainWindow(QWidget):
         status.addWidget(self.refresh_button)
         status.addWidget(self.demo_button)
         status.addWidget(self.mini_button)
+        status.addWidget(self.mini_font_label)
+        status.addWidget(self.mini_font_spin)
         root.addLayout(status)
 
         main_splitter = QSplitter(Qt.Vertical)
@@ -884,6 +893,19 @@ class MainWindow(QWidget):
         self.mini_window.show()
         self.mini_window.raise_()
         self.mini_window.activateWindow()
+
+    @staticmethod
+    def mini_font_size() -> int:
+        """小窗公式字号（QSettings 记忆，默认 18px）。"""
+        value = QSettings("RedDragonCalculator", "main").value("mini_font_px", 18)
+        return int(value or 18)
+
+    def apply_mini_font(self, size: int) -> None:
+        """保存小窗公式字号并即时生效。"""
+        QSettings("RedDragonCalculator", "main").setValue("mini_font_px", int(size))
+
+        if self.mini_window is not None:
+            self.mini_window.set_formula_font(int(size))
 
     def _sync_mini_window(self, *_args) -> None:
         if self.mini_window is None or not self.mini_window.isVisible():
@@ -1345,9 +1367,16 @@ class MiniWindow(QWidget):
         self.mini_result.setReadOnly(True)
         self.mini_result.setMaximumBlockCount(3000)
         root.addWidget(self.mini_result, 1)
+        self.set_formula_font(self.main.mini_font_size())
 
         grip = QSizeGrip(self)
         root.addWidget(grip, 0, Qt.AlignRight)
+
+    def set_formula_font(self, size: int) -> None:
+        """设置公式（分轮结果）字号。"""
+        font = self.mini_result.font()
+        font.setPixelSize(int(size))
+        self.mini_result.setFont(font)
 
     # ---- 拖动 / 吸附 / 调整大小 ----
 
