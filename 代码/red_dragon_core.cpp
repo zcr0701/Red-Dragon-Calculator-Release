@@ -764,7 +764,9 @@ static vector<State> generate_successors(const State& st) {
                 if (sec.name() == card.name()) { dup_secret = true; break; }
             if (dup_secret) continue;  // 每种奥秘只能装备一个
         }
-        if (cards_drawn_if_played(st, card) > 0) continue;
+        // 抽牌类法术不再彻底禁止展开：按“不抽牌”打出（触发连击/腾手牌格），
+        // 避免虚构抽牌后继；随从表判空后更可直接作为普通法术使用。
+        // （draw 效果本身不模拟，见 apply_effect_inplace）
 
         vector<int> friendly_targets;
         if (card.effect_id == "shadowstep" || card.effect_id == "shadowcaster" ||
@@ -1596,7 +1598,9 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
         // 分桶：按当前龙数，避免高龙数分支挤掉正在蓄力的低龙数高分分支
         map<int, vector<const Cand*>> buckets;
         for (const Cand& c : cands) buckets[c.count].push_back(&c);
-        int per_bucket = std::max(1, (int)(beam_width * 1.25 / std::max(1, (int)buckets.size())));
+        // 每桶配额放宽（1.8×），并多保留启发值冠军，避免深线（如 102558 的 112 伤
+        // 法力农场线）被“总分高但同质”的分支挤掉。
+        int per_bucket = std::max(1, (int)(beam_width * 1.8 / std::max(1, (int)buckets.size())));
         vector<State> next_level;
         next_level.reserve(std::min((size_t)beam_width, cands.size()));
         for (auto it = buckets.rbegin(); it != buckets.rend(); ++it) {
@@ -1609,19 +1613,23 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
             vector<const Cand*> selected;
             for (int i = 0; i < per_bucket && i < (int)bstates.size(); i++) selected.push_back(bstates[i]);
             if (!bstates.empty()) {
-                // 冠军：启发值优先，其次总分，其次法力
-                const Cand* champ = bstates[0];
-                for (const Cand* bs : bstates) {
-                    if (std::tie(bs->hval, bs->total, bs->mana) >
-                        std::tie(champ->hval, champ->total, champ->mana)) {
-                        champ = bs;
+                // 冠军（最多 3 个去重）：启发值优先，其次总分，其次法力——
+                // 让“启发值高但当前伤害低”的深线分支有机会保留。
+                vector<const Cand*> champs(bstates);
+                std::stable_sort(champs.begin(), champs.end(),
+                                 [](const Cand* a, const Cand* b) {
+                                     if (a->hval != b->hval) return a->hval > b->hval;
+                                     if (a->total != b->total) return a->total > b->total;
+                                     return a->mana > b->mana;
+                                 });
+                for (int i = 0; i < 3 && i < (int)champs.size(); i++) {
+                    const Cand* champ = champs[i];
+                    bool found = false;
+                    for (const Cand* sel : selected) {
+                        if (sel->key == champ->key) { found = true; break; }
                     }
+                    if (!found) selected.push_back(champ);
                 }
-                bool found = false;
-                for (const Cand* sel : selected) {
-                    if (sel->key == champ->key) { found = true; break; }
-                }
-                if (!found) selected.push_back(champ);
             }
             for (const Cand* s : selected) next_level.push_back(s->s);
         }
