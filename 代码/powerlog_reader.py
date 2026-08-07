@@ -63,6 +63,9 @@ ENTITY_REF_TAG_RE = re.compile(
     r"TAG_CHANGE Entity=\[.*?\bid=(\d+).*?\] tag=(\w+) value=(\w+)"
 )
 PLAYER_NAME_TAG_RE = re.compile(r"TAG_CHANGE Entity=([^ \[]+) tag=(\w+) value=(\w+)")
+# DebugPrintGame 提供权威 PlayerID/PlayerName 映射（hslog 的名字推断在 CN 日志
+# 里会与实体互换，导致玩家名与法力标签落错实体）
+DEBUGGAME_PLAYER_RE = re.compile(r"PlayerID=(\d+),\s*PlayerName=([^\r\n]+)")
 
 # Power.log 对部分随从（尤其敌方）不打印 BLOCK_START PLAY 与 ZONE=PLAY 更新，
 # 只有 PowerProcessor 的 "unhandled BlockType PLAY for sourceEntity [...]" 行，
@@ -220,6 +223,8 @@ class PowerLogParser:
         self.local_accounts = set(local_accounts or [])
         self.forced_player_id = player_id
         self._pending_direct_tags: List[tuple] = []  # (tree_id, entity, tag, value)
+        # DebugPrintGame 权威 玩家ID→名字（按对局树分桶，重置/换局不丢失已喂入数据）
+        self._player_name_by_tree: Dict[int, Dict[int, str]] = {}
         self.reset()
 
     def reset(self) -> None:
@@ -227,6 +232,7 @@ class PowerLogParser:
         self._current_tree = None
         self._last_packet_id = 0
         self.line_errors = 0
+        self._player_name_by_tree.clear()
         self._reset_game()
 
     def _reset_game(self) -> None:
@@ -246,7 +252,6 @@ class PowerLogParser:
         self._deadly_entities: Set[int] = set()  # 进入手牌后被判定为殒命暗影的实体（随变形持续追踪）
         self._local_cards_played_this_turn = 0   # 本方本回合出牌数（连击/快枪判定）
         self._last_turn_seen: Optional[int] = None
-
     # ---- 行入口 ----
 
     def feed_line(self, line: str) -> None:
@@ -255,8 +260,28 @@ class PowerLogParser:
         except Exception:
             # 单行解析失败（未知枚举/新 opcode/脏行）不中断整体解析
             self.line_errors += 1
+        self._collect_player_name(line)
         self._collect_direct_tags(line)
         self._infer_play_zone(line)
+
+    def _collect_player_name(self, line: str) -> None:
+        """抓取 DebugPrintGame 的权威 玩家ID→名字（跳过 UNKNOWN）。"""
+        m = DEBUGGAME_PLAYER_RE.search(line)
+
+        if not m:
+            return
+
+        player_id = int(m.group(1))
+        name = m.group(2).strip()
+
+        if name and name != "UNKNOWN HUMAN PLAYER":
+            tree_id = id(self._hslog.games[-1]) if self._hslog.games else None
+            self._player_name_by_tree.setdefault(tree_id, {})[player_id] = name
+
+    def _current_player_names(self) -> Dict[int, str]:
+        """当前对局树的权威 玩家ID→名字（无树/换局时为空）。"""
+        tree_id = id(self._hslog.games[-1]) if self._hslog.games else None
+        return self._player_name_by_tree.get(tree_id, {})
 
     def _infer_play_zone(self, line: str) -> None:
         """从 unhandled BlockType PLAY 行推断随从已进场（补 ZONE=PLAY 缺失）。"""
@@ -310,6 +335,11 @@ class PowerLogParser:
         """玩家名 → 玩家实体 id（GameEntity/实体引用格式已在正则中处理）。"""
         if name == "GameEntity":
             return self.game_entity_id or 1
+
+        resolved = self._name_to_entity_id(name)
+
+        if resolved is not None:
+            return resolved
 
         player = self._hslog.player_manager._players_by_name.get(name)
 
@@ -401,12 +431,52 @@ class PowerLogParser:
 
     # ---- 实体引用 ----
 
-    @staticmethod
-    def _resolve_entity(entity) -> Optional[int]:
+    def _player_entity_id(self, player_id: int) -> Optional[int]:
+        """玩家 ID → 玩家实体 ID（CreateGame 绑定优先，hslog 映射兜底）。"""
+        entity_id = self.player_entity_by_player_id.get(player_id)
+
+        if entity_id is not None:
+            return entity_id
+
+        ref = self._hslog.player_manager.get_player_by_player_id(player_id)
+
+        if ref is not None:
+            return getattr(ref, "entity_id", None)
+
+        return None
+
+    def _name_to_entity_id(self, name: str) -> Optional[int]:
+        """玩家名 → 玩家实体 ID。
+
+        DebugPrintGame 是权威映射（hslog 的名字推断在 CN 日志里会互换，
+        导致玩家名与法力标签落错实体）；权威名未知的玩家（对手）接受
+        未被权威名占用的玩家名。
+        """
+        for player_id, player_name in self._current_player_names().items():
+            if player_name == name:
+                return self._player_entity_id(player_id)
+
+        known = set(self._current_player_names())
+
+        for player_id in (1, 2):
+            if player_id not in known:
+                return self._player_entity_id(player_id)
+
+        return None
+
+    def _resolve_entity(self, entity) -> Optional[int]:
         if isinstance(entity, int):
             return entity
 
         if isinstance(entity, PlayerReference):
+            name = getattr(entity, "name", None)
+
+            if name:
+                resolved = self._name_to_entity_id(name)
+
+                if resolved is not None:
+                    return resolved
+
             try:
                 return coerce_to_entity_id(entity)
             except MissingPlayerData:
@@ -478,17 +548,6 @@ class PowerLogParser:
 
         if ent.get("controller") not in (None, self.local_controller):
             return
-
-        # 只统计本机回合内的出牌：CURRENT_PLAYER 指向对方玩家时跳过，
-        # 避免把对手回合的出手计入“本回合已出牌”（连击/彗星判定依据）。
-        game_ent = self.entities.get(self.game_entity_id, {})
-        turn_entity = game_ent.get("CURRENT_PLAYER")
-
-        if turn_entity is not None:
-            turn_player = self.player_id_by_entity.get(turn_entity)
-
-            if turn_player is not None and turn_player != self.local_controller:
-                return
 
         self.seen_play_events = True
         self._local_cards_played_this_turn += 1
@@ -664,6 +723,21 @@ class PowerLogParser:
         return None
 
     def _player_name(self, player_id: int) -> Optional[str]:
+        name = self._current_player_names().get(player_id)
+
+        if name:
+            return name
+
+        # 权威名未知（对手）：hslog 里未被权威名占用的玩家名即其真名
+        used = set(self._current_player_names().values())
+        manager = self._hslog.player_manager
+
+        for ref in getattr(manager, "_players_by_player_id", {}).values():
+            ref_name = getattr(ref, "name", None)
+
+            if ref_name and ref_name not in used:
+                return ref_name
+
         player = self._hslog.player_manager.get_player_by_player_id(player_id)
         return player.name if player is not None else None
 
