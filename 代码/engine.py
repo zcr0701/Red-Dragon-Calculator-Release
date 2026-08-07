@@ -93,6 +93,36 @@ CARD_ALIASES = {
 
 EFFECT_NAMES = ("狐人老千", "伺机待发", "斯卡布斯·刀油", "锯齿骨刺", "幸运彗星")
 
+# 会改变手牌显示费用的效果（日志里的当前费用已含其折扣）：
+# 传效果给 C++ 时必须用基础费用，否则双重折扣。
+# 幸运彗星不减费（只是下一张连击随从连击双触发），不在此列。
+DISCOUNT_EFFECT_NAMES = {"狐人老千", "伺机待发", "斯卡布斯·刀油", "锯齿骨刺"}
+
+# 已知不可能上场的牌（法术/奥秘/武器）：战场解析时直接丢弃，
+# 避免把错位数据（如舞动全场出现在战场）当成随从回手/打出。
+KNOWN_NON_MINION_NAMES = {
+    "伪造的幸运币",
+    "幸运币",
+    "伺机待发",
+    "暗影步",
+    "殒命暗影",
+    "垂钓时光",
+    "挖掘宝藏",
+    "黑水弯刀",
+    "邪恶短刀",
+    "锯齿骨刺",
+    "疾速矿锄",
+    "异教地图",
+    "行骗",
+    "闪避",
+    "潜伏帷幕",
+    "舞动全场（ft.迦罗娜）",
+    "幻觉药水",
+    "幸运彗星",
+    "战略转移",
+    "可疑交易",
+}
+
 
 def resolve_card_name(name: str) -> str:
     """简称/别名/子串 → 项目卡名；找不到原样返回（视为杂牌）。"""
@@ -160,7 +190,10 @@ def build_payload(
     hand: List[dict] = []
     deadly_indexes = set(int(i) for i in (snapshot.get("deadly_shadow_hand_indexes") or []))
     effects = snapshot.get("current_effects") or []
-    use_base_cost = bool(effects)
+    effect_names = {str(effect.get("name", "")) for effect in effects}
+    # 只有“真正减费”的待生效效果才需要回退到基础费用；
+    # 幸运彗星（连击双触发）不减费，日志显示费用即真实费用。
+    use_base_cost = bool(effect_names & DISCOUNT_EFFECT_NAMES)
 
     for index, item in enumerate(snapshot.get("hand") or [], start=1):
         cost = item.get("cost")
@@ -186,6 +219,8 @@ def build_payload(
     for item in snapshot.get("board") or []:
         cost = item.get("cost")
         name = item["name"]
+        if name in KNOWN_NON_MINION_NAMES:
+            continue  # 法术/奥秘/武器不可能在场上，丢弃错位数据
         base = KNOWN_BASE_COSTS.get(name)
 
         if use_base_cost and base is not None:
@@ -223,6 +258,9 @@ def build_payload(
     payload: Dict[str, object] = {
         "crystals": int(snapshot["crystals"]) if snapshot.get("crystals") is not None else 10,
         "mana": int(snapshot["mana"]) if snapshot.get("mana") is not None else 10,
+        # 本回合已出牌数（连击判定）：阅读器实时统计；手动输入/旧日志缺省为 0
+        # ——连击不能是第一张出的牌，首张牌不凭空获得连击状态。
+        "cards_played_this_turn": int(snapshot.get("cards_played_this_turn") or 0),
         "min_alex": min_alex,
         "max_alex": max_alex,
         "depth": depth,

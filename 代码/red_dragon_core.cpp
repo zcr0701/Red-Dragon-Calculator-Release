@@ -490,13 +490,21 @@ static State breakdance_branch(const State& base) {
 }
 
 // 效果结算：单分支效果原地修改（零克隆，对应“增量状态”优化）；
-// 仅牛头人发现 / 幸运彗星等真多分支效果走克隆路径。
+// 仅牛头人发现等真多分支效果走克隆路径。
 static bool apply_effect_inplace(State& s, const string& e, const Card& card,
                                  int target_friendly_index, bool target_enemy_is_killed) {
     if (e == "coin" || e == "fake_coin") {
         s.mana += 1;  // 临时法力不封顶（与 Python gain_temporary 一致）
     } else if (e == "preparation") {
         s.next_spell += 2;
+    } else if (e == "lucky_comet") {
+        // 幸运彗星：将一张类型为随从的杂牌置入手牌；获得一次性效果——
+        // 下一张连击随从的连击触发两次（仅当连击能触发时生效并消耗，跨回合保留）。
+        Card junk = make_card("未知随从");
+        junk.card_type = "minion";
+        junk.entered_hand_this_turn = true;
+        add_card_to_hand_or_burn(s, junk);
+        s.next_combo_twice = true;
     } else if (e == "foxy_fraud") {
         if (s.cards_played_this_turn > 0) {
             // 连击：本回合已出过牌才触发（幸运彗星双触发由倍率=2 处理）
@@ -622,61 +630,47 @@ static vector<State> apply_search_effect(State base, const Card& card,
                                          bool enemy_target) {
     (void)enemy_target;
     int multiplier = minion_trigger_multiplier(base, card);
-    if (base.next_combo_twice && card.combo) {
+    if (base.next_combo_twice && card.combo && base.cards_played_this_turn > 0) {
         // 幸运彗星：下一张连击随从的连击触发两次（总额外触发一次，
-        // 不与鲨鱼倍率叠加）；标志在打出时消耗，只作用于这一张。
+        // 不与鲨鱼倍率叠加）；仅当连击真正触发时才消耗（一次性，跨回合保留）。
         multiplier = 2;
         base.next_combo_twice = false;
     }
     const string& e = card.effect_id;
-    bool branching = (e == "elite_tauren_champion" || e == "lucky_comet");
-    if (!branching) {
+    if (e == "elite_tauren_champion") {
+        // 牛头人发现：真多分支效果，克隆每个乐队选择
+        vector<State> states;
+        if (multiplier == 1) {
+            states.push_back(std::move(base));
+        } else {
+            states.push_back(base.clone_reserved());
+            states.push_back(base.clone_reserved());
+        }
         for (int m = 0; m < multiplier; m++) {
-            if (!apply_effect_inplace(base, e, card, target_friendly_index, target_enemy_is_killed)) {
-                return {};  // 无后继（如骨刺击杀无效目标）
-            }
-        }
-        if (card.is_spell_like()) transform_deadly_shadows(base, card);
-        base.cards_played_this_turn++;
-        vector<State> out;
-        out.push_back(std::move(base));
-        return out;
-    }
-
-    // 多分支效果（牛头人发现 / 幸运彗星）：克隆每个分支
-    vector<State> states;
-    if (multiplier == 1) {
-        states.push_back(std::move(base));
-    } else {
-        states.push_back(base.clone_reserved());
-        states.push_back(base.clone_reserved());
-    }
-    for (int m = 0; m < multiplier; m++) {
-        vector<State> next_states;
-        for (const State& current : states) {
-            if (e == "lucky_comet") {
-                // 幸运彗星：随机给予一张连击随从；不考虑随机性，视作把
-                // 一张“杂牌[类型为随从]”置入手牌（不可当作刀油等使用，
-                // 仅占手牌/可打出腾位）。下一张连击随从触发两次效果保留。
-                State ns = current.clone_reserved();
-                Card nc = make_card("未知随从");
-                nc.card_type = "minion";
-                nc.entered_hand_this_turn = true;
-                add_card_to_hand_or_burn(ns, nc);
-                ns.next_combo_twice = true;
-                next_states.push_back(ns);
-            } else if (e == "elite_tauren_champion") {
+            vector<State> next_states;
+            for (const State& current : states) {
                 vector<State> disc = discover_fixed_choices(current);
-                for (auto& d : disc) next_states.push_back(d);
+                for (auto& d : disc) next_states.push_back(std::move(d));
             }
+            states = std::move(next_states);
         }
-        states = std::move(next_states);
+        for (State& rs : states) {
+            if (card.is_spell_like()) transform_deadly_shadows(rs, card);
+            rs.cards_played_this_turn++;
+        }
+        return states;
     }
-    for (State& rs : states) {
-        if (card.is_spell_like()) transform_deadly_shadows(rs, card);
-        rs.cards_played_this_turn++;
+    // 普通单分支效果（幸运彗星同样走此路径：置入随从杂牌 + 一次性连击双触发标记）
+    for (int m = 0; m < multiplier; m++) {
+        if (!apply_effect_inplace(base, e, card, target_friendly_index, target_enemy_is_killed)) {
+            return {};  // 无后继（如骨刺击杀无效目标）
+        }
     }
-    return states;
+    if (card.is_spell_like()) transform_deadly_shadows(base, card);
+    base.cards_played_this_turn++;
+    vector<State> out;
+    out.push_back(std::move(base));
+    return out;
 }
 
 // ===================== 后继生成 =====================
@@ -1798,6 +1792,10 @@ static State state_from_json(const JVal& root) {
     st.mana = (int)root.get_int("mana", st.mana_crystals);
     st.initial_mana_crystals = st.mana_crystals;
     st.initial_mana = st.mana;
+    // 本回合已出牌数（连击判定）：真实对局由阅读器实时统计传入；
+    // 缺省 0 —— 连击不能是第一张出的牌（首张牌不能凭空触发连击）。
+    st.cards_played_this_turn = (int)root.get_int("cards_played_this_turn", 0);
+    if (st.cards_played_this_turn < 0) st.cards_played_this_turn = 0;
     st.deck_is_known = false;
     const JVal* dj = root.find("deck_is_known");
     if (dj && dj->type == JVal::BOOL) st.deck_is_known = dj->b;
@@ -1819,6 +1817,8 @@ static State state_from_json(const JVal& root) {
     if (board && board->type == JVal::ARR) {
         for (const auto& item : board->arr) {
             Card c = make_card(item.get_str("name"));
+            // 战场只可能是随从：法术/奥秘/武器误入（如日志/输入错位）直接丢弃
+            if (c.is_spell_like() || c.card_type == "weapon") continue;
             long long hp = item.get_int("health", -1);
             if (hp >= 0) c.health = (int)hp;
             long long tc = item.get_int("temp_cost", -1);
@@ -1867,18 +1867,23 @@ static State state_from_json(const JVal& root) {
             const string name = item.get_str("name");
             int layers = (int)item.get_int("count", 1);
             if (layers <= 0) layers = 1;
-            st.cards_played_this_turn = std::max(st.cards_played_this_turn, 1);
             if (name == "狐人老千") {
+                // 狐人老千是本回合打出的效果牌：本回合已出过牌（连击可触发）
+                st.cards_played_this_turn = std::max(st.cards_played_this_turn, 1);
                 st.next_combo = std::max(st.next_combo, 2 * layers);
             } else if (name == "伺机待发") {
+                st.cards_played_this_turn = std::max(st.cards_played_this_turn, 1);
                 st.next_spell = std::max(st.next_spell, 2 * layers);
             } else if (name == "锯齿骨刺") {
+                st.cards_played_this_turn = std::max(st.cards_played_this_turn, 1);
                 st.next_card = std::max(st.next_card, 2 * layers);
             } else if (name == "斯卡布斯·刀油") {
+                st.cards_played_this_turn = std::max(st.cards_played_this_turn, 1);
                 for (int i = 0; i < layers; i++) st.oil_stacks.push_back({2, 2});
             } else if (name == "幸运彗星") {
-                // 彗星效果跨回合存在：当前回合搜索开始时，下一张连击随从
-                // 触发两次（由 current_effects 传入，引擎内打出彗星同样设置）
+                // 彗星效果跨回合保留：下一张连击随从触发两次（由 current_effects
+                // 传入，引擎内打出彗星同样设置）。不视为本回合已出过牌——
+                // 连击不能是第一张出的牌，首张连击牌不能凭空触发连击。
                 st.next_combo_twice = true;
             }
         }

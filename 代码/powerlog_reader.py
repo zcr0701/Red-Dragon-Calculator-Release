@@ -244,6 +244,8 @@ class PowerLogParser:
         self._etc_chosen: Set[str] = set()  # 已通过牛头人酋长选走的乐队卡
         self._etc_pending_choices = 0       # 刚打出牛头人酋长，还差几张乐队卡进手（鲨鱼双战吼=2）
         self._deadly_entities: Set[int] = set()  # 进入手牌后被判定为殒命暗影的实体（随变形持续追踪）
+        self._local_cards_played_this_turn = 0   # 本方本回合出牌数（连击/快枪判定）
+        self._last_turn_seen: Optional[int] = None
 
     # ---- 行入口 ----
 
@@ -439,6 +441,14 @@ class PowerLogParser:
                 self._deadly_entities.add(entity_id)
             elif val != ZONE_HAND:
                 self._deadly_entities.discard(entity_id)
+        elif tag_name == "TURN":
+            # 新回合开始：本方本回合出牌计数清零；本回合类效果（伺机/刀油/骨刺/狐人）
+            # 到期移除；幸运彗星效果跨回合保留，直到被真正触发的连击消耗。
+            if val != self._last_turn_seen:
+                self._last_turn_seen = val
+                self._local_cards_played_this_turn = 0
+                for name in ("伺机待发", "斯卡布斯·刀油", "锯齿骨刺", "狐人老千"):
+                    self.pending_effects.pop(name, None)
         elif tag_name == "CONTROLLER":
             ent["controller"] = val if isinstance(val, int) else None
         elif tag_name == "COST":
@@ -470,6 +480,7 @@ class PowerLogParser:
             return
 
         self.seen_play_events = True
+        self._local_cards_played_this_turn += 1
         name = card_name(ent["card_id"])
         self._consume_effects(name, ent)
 
@@ -514,11 +525,13 @@ class PowerLogParser:
         ):
             self.pending_effects["狐人老千"] = 0
 
-        # 幸运彗星：下一个连击随从触发两次（效果跨回合，打出连击随从时消耗）
+        # 幸运彗星：下一个连击随从的连击触发两次。效果不随回合结束消失，
+        # 持续到被真正触发的连击消耗（本回合此前已出过牌才算连击生效）。
         if (
             name != "幸运彗星"
             and card_type == "MINION"
             and is_combo
+            and self._local_cards_played_this_turn > 1
             and self.pending_effects.get("幸运彗星", 0) > 0
         ):
             self.pending_effects["幸运彗星"] = 0
@@ -822,6 +835,7 @@ class PowerLogParser:
             "game_over": self.game_over,
             "crystals": crystals,
             "mana": mana,
+            "cards_played_this_turn": self._local_cards_played_this_turn,
             "hand": hand,
             "board": board,
             "enemy_board": enemy_board,

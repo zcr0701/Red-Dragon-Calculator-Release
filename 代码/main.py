@@ -72,7 +72,7 @@ DEMO_SNAPSHOT = {
         {"name": "殒命暗影", "cost": None},
     ],
     "board": [
-        {"name": "舞动全场（ft.迦罗娜）", "cost": 5, "health": 2},
+        {"name": "晦鳞巢母", "cost": 3, "health": 3},
     ],
     "deck": [],
     "secrets": [],
