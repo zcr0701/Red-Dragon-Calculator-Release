@@ -651,37 +651,14 @@ static vector<State> apply_search_effect(State base, const Card& card,
         vector<State> next_states;
         for (const State& current : states) {
             if (e == "lucky_comet") {
-                // 幸运彗星：不关心发现池，视作获得一张连击随从牌
-                // （牌库已知取其中最优连击随从：刀油 > 狐人老千 > 押注猎手；
-                // 未知默认刀油）；下一张连击随从的连击触发两次。
-                string best;
-                if (current.deck_is_known) {
-                    static const char* PRIORITY[] = {
-                        "斯卡布斯·刀油", "狐人老千", "押注猎手",
-                    };
-                    for (const char* cand : PRIORITY) {
-                        for (const auto& c : current.deck) {
-                            if (c.card_type == "minion" && c.combo && c.name() == cand) {
-                                best = cand;
-                                break;
-                            }
-                        }
-                        if (!best.empty()) break;
-                    }
-                    if (best.empty()) {
-                        for (const auto& c : current.deck)
-                            if (c.card_type == "minion" && c.combo) {
-                                best = c.name();
-                                break;
-                            }
-                    }
-                }
-                if (best.empty()) best = "斯卡布斯·刀油";
+                // 幸运彗星：随机给予一张连击随从；不考虑随机性，视作把
+                // 一张“杂牌[类型为随从]”置入手牌（不可当作刀油等使用，
+                // 仅占手牌/可打出腾位）。下一张连击随从触发两次效果保留。
                 State ns = current.clone_reserved();
-                Card nc = make_card(best);
-                nc.entered_hand_this_turn = true;  // 获得入手：快枪判定
+                Card nc = make_card("未知随从");
+                nc.card_type = "minion";
+                nc.entered_hand_this_turn = true;
                 add_card_to_hand_or_burn(ns, nc);
-                append_choice_to_last_path(ns, best);  // 路径显示：幸运彗星（牌）
                 ns.next_combo_twice = true;
                 next_states.push_back(ns);
             } else if (e == "elite_tauren_champion") {

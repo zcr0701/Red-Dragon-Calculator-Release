@@ -81,14 +81,15 @@ EFFECT_ENCHANTMENTS = {
     "REV_939e": "锯齿骨刺",
     "REV_939e2": "锯齿骨刺",
     "TRL_092e": "鲨鱼之灵",
+    "GDB_873e": "幸运彗星",  # 彗星连击：下一个连击随从触发两次（跨回合生效）
 }
 
 # 打出以下牌时叠加“当前效果”（事件计数，和游戏内规则一致）
-EFFECT_CARD_NAMES = {"伺机待发", "狐人老千", "斯卡布斯·刀油", "锯齿骨刺"}
+EFFECT_CARD_NAMES = {"伺机待发", "狐人老千", "斯卡布斯·刀油", "锯齿骨刺", "幸运彗星"}
 
 # 连击牌名单（日志若未打印 tag=COMBO 时兜底）
 COMBO_CARD_NAMES = {
-    "暗影步", "斯卡布斯·刀油", "行骗", "疾速矿锄", "幸运彗星",
+    "暗影步", "斯卡布斯·刀油", "行骗", "疾速矿锄",
     "赤烟·腾武", "伪造的幸运币", "可疑交易",
 }
 
@@ -512,6 +513,15 @@ class PowerLogParser:
             and self.pending_effects.get("狐人老千", 0) > 0
         ):
             self.pending_effects["狐人老千"] = 0
+
+        # 幸运彗星：下一个连击随从触发两次（效果跨回合，打出连击随从时消耗）
+        if (
+            name != "幸运彗星"
+            and card_type == "MINION"
+            and is_combo
+            and self.pending_effects.get("幸运彗星", 0) > 0
+        ):
+            self.pending_effects["幸运彗星"] = 0
 
         # 斯卡布斯·刀油：本回合接下来两张牌各减 2，逐张消耗
         if (

@@ -91,7 +91,7 @@ CARD_ALIASES = {
     "押": "押注猎手",
 }
 
-EFFECT_NAMES = ("狐人老千", "伺机待发", "斯卡布斯·刀油", "锯齿骨刺")
+EFFECT_NAMES = ("狐人老千", "伺机待发", "斯卡布斯·刀油", "锯齿骨刺", "幸运彗星")
 
 
 def resolve_card_name(name: str) -> str:
