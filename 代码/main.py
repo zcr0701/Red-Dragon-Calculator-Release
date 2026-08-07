@@ -811,7 +811,10 @@ class MainWindow(QWidget):
             ghost = "（殒命）" if item.get("ghostly") or index in deadly_display else ""
             hand_lines.append(f"{index:2d}. [{cost_text}] {item['name']}{ghost}")
 
-        self.hand_text.setPlainText("\n".join(hand_lines) or "（空）")
+        hand_text = "\n".join(hand_lines) or "（空）"
+
+        if self.hand_text.toPlainText() != hand_text:
+            self.hand_text.setPlainText(hand_text)
 
         board_lines: List[str] = []
 
@@ -842,7 +845,10 @@ class MainWindow(QWidget):
             board_lines.append("敌方随从：")
             board_lines.extend(enemy_lines)
 
-        self.board_text.setPlainText("\n".join(board_lines) or "（空）")
+        board_text = "\n".join(board_lines) or "（空）"
+
+        if self.board_text.toPlainText() != board_text:
+            self.board_text.setPlainText(board_text)
 
         # 日志检测到牛池（SETASIDE 乐队卡）时，实时同步勾选；手动画选择保持用户设置
         etc_band = snap.get("etc_band")
