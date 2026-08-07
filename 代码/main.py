@@ -474,10 +474,10 @@ class MainWindow(QWidget):
         self.mini_button.clicked.connect(self.toggle_mini_window)
         self.mini_font_label = QLabel("小窗字号:")
         self.mini_font_spin = QSpinBox()
-        self.mini_font_spin.setRange(8, 36)
+        self.mini_font_spin.setRange(12, 48)
         self.mini_font_spin.setValue(self.mini_font_size())
         self.mini_font_spin.setSuffix("px")
-        self.mini_font_spin.setToolTip("小窗公式字号（默认 18px，可记忆）")
+        self.mini_font_spin.setToolTip("小窗公式字号（默认 24px，可记忆）")
         self.mini_font_spin.valueChanged.connect(self.apply_mini_font)
         self.manual_button = QPushButton("▸ 手动输入")
         self.manual_button.setCheckable(True)
@@ -896,9 +896,9 @@ class MainWindow(QWidget):
 
     @staticmethod
     def mini_font_size() -> int:
-        """小窗公式字号（QSettings 记忆，默认 18px）。"""
-        value = QSettings("RedDragonCalculator", "main").value("mini_font_px", 18)
-        return int(value or 18)
+        """小窗公式字号（QSettings 记忆，默认 24px）。"""
+        value = QSettings("RedDragonCalculator", "main").value("mini_font_px", 24)
+        return int(value or 24)
 
     def apply_mini_font(self, size: int) -> None:
         """保存小窗公式字号并即时生效。"""
