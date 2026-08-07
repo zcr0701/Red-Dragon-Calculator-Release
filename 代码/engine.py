@@ -284,7 +284,8 @@ def build_payload(
 
     # 显式传空列表 = 牛池已空（全部被选走）；不传才是用 C++ 默认三张。
     if etc_band is not None:
-        payload["etc_band"] = list(etc_band)
+        # 牛池最多三张：防御性截断，避免错误输入把乐队撑大
+        payload["etc_band"] = list(etc_band)[:3]
 
     return payload
 

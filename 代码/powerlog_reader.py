@@ -479,6 +479,17 @@ class PowerLogParser:
         if ent.get("controller") not in (None, self.local_controller):
             return
 
+        # 只统计本机回合内的出牌：CURRENT_PLAYER 指向对方玩家时跳过，
+        # 避免把对手回合的出手计入“本回合已出牌”（连击/彗星判定依据）。
+        game_ent = self.entities.get(self.game_entity_id, {})
+        turn_entity = game_ent.get("CURRENT_PLAYER")
+
+        if turn_entity is not None:
+            turn_player = self.player_id_by_entity.get(turn_entity)
+
+            if turn_player is not None and turn_player != self.local_controller:
+                return
+
         self.seen_play_events = True
         self._local_cards_played_this_turn += 1
         name = card_name(ent["card_id"])
@@ -627,19 +638,28 @@ class PowerLogParser:
         if self.local_controller is not None:
             return self.local_controller
 
-        # 牌库已知启发：DECK 区有已知 CardID 的玩家即本机
-        counts: Dict[int, int] = {}
+        # 私密信息启发：本机的手牌/牌库卡牌 ID 在日志中可见，对手隐藏。
+        # 手牌权重更高（本机手牌恒可见，牌库可能被揭示/抽空）；
+        # 信息量最多且唯一者即本机，避免对手牌库被揭示时误判成本机。
+        scores: Dict[int, int] = {}
 
         for ent in self.entities.values():
-            if (
-                ent.get("zone") == ZONE_DECK
-                and ent.get("card_id")
-                and ent.get("controller") is not None
-            ):
-                counts[ent["controller"]] = counts.get(ent["controller"], 0) + 1
+            controller = ent.get("controller")
 
-        if counts:
-            return max(counts, key=counts.get)
+            if controller is None or not ent.get("card_id"):
+                continue
+
+            if ent.get("zone") == ZONE_HAND:
+                scores[controller] = scores.get(controller, 0) + 2
+            elif ent.get("zone") == ZONE_DECK:
+                scores[controller] = scores.get(controller, 0) + 1
+
+        if scores:
+            best = max(scores.values())
+            winners = [player for player, score in scores.items() if score == best]
+
+            if len(winners) == 1:
+                return winners[0]
 
         return None
 
@@ -715,6 +735,15 @@ class PowerLogParser:
         self.local_controller = local_controller
         self.local_entity_id = self.player_entity_by_player_id.get(local_controller)
 
+        # 兜底：hslog 玩家映射未同步到 player_entity_by_player_id 时，
+        # 直接用 hslog 的 PlayerManager 解析本机玩家实体（法力/资源标签所在实体）。
+        if self.local_entity_id is None and self._hslog is not None:
+            player_ref = self._hslog.player_manager.get_player_by_player_id(local_controller)
+
+            if player_ref is not None:
+                self.local_entity_id = getattr(player_ref, "entity_id", None)
+                self.player_entity_by_player_id[local_controller] = self.local_entity_id
+
         hand: List[dict] = []
         hand_entity_ids: List[int] = []
         board: List[dict] = []
@@ -742,7 +771,9 @@ class PowerLogParser:
                 raw_band.append(name)
 
         if raw_band:
-            etc_band = [n for n in raw_band if n not in self._etc_chosen]
+            # 牛池最多三张：乐队实体按创建顺序收集（真实乐队先于发现选项生成），
+            # 排除已选走后截断到 3，避免发现选项残留实体把牛池撑大。
+            etc_band = [n for n in raw_band if n not in self._etc_chosen][:3]
 
         for entity_id, ent in self.entities.items():
             card_id = ent.get("card_id")
@@ -787,7 +818,7 @@ class PowerLogParser:
         enemy_board.sort(key=lambda item: (item["zone_position"] is None, item["zone_position"] or 0))
 
         if raw_band:
-            etc_band = [n for n in raw_band if n not in self._etc_chosen]
+            etc_band = [n for n in raw_band if n not in self._etc_chosen][:3]
 
         if self.seen_play_events:
             effect_counts = dict(self.pending_effects)

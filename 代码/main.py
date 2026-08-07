@@ -850,11 +850,18 @@ class MainWindow(QWidget):
         if self.board_text.toPlainText() != board_text:
             self.board_text.setPlainText(board_text)
 
-        # 日志检测到牛池（SETASIDE 乐队卡）时，实时同步勾选；手动画选择保持用户设置
+        # 日志检测到牛池（SETASIDE 乐队卡）时，实时同步勾选；手动画选择保持用户设置。
+        # 牛池最多三张：检测结果超过三张时优先保留用户已勾选，再按检测顺序补足。
         etc_band = snap.get("etc_band")
         if isinstance(etc_band, list):
+            option_names = [name for name, _box in self.etc_checks]
+            detected = [n for n in etc_band if n in option_names]
+            current_checked = [name for name, box in self.etc_checks if box.isChecked()]
+            target = [n for n in current_checked if n in detected]
+            target += [n for n in detected if n not in target]
+            target = target[:3]
             for name, box in self.etc_checks:
-                checked = name in etc_band
+                checked = name in target
                 if box.isChecked() != checked:
                     box.blockSignals(True)
                     box.setChecked(checked)

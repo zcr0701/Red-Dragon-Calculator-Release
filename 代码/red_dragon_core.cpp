@@ -1888,6 +1888,8 @@ static State state_from_json(const JVal& root) {
         for (const auto& item : band->arr) {
             if (item.type == JVal::STR) st.etc_band.push_back(item.str);
         }
+        // 牛池最多三张：防御性截断，避免错误输入把乐队撑大
+        if (st.etc_band.size() > 3) st.etc_band.resize(3);
     }
     const JVal* deck = root.find("deck");
     if (deck && deck->type == JVal::ARR) {
