@@ -756,12 +756,31 @@ static vector<State> generate_successors(const State& st) {
         vector<int> friendly_targets;
         if (card.effect_id == "shadowstep" || card.effect_id == "shadowcaster" ||
             card.effect_id == "serrated_bone_spike" || card.effect_id == "tenwu") {
-            for (int i = 0; i < (int)st.board.size(); i++) {
-                // 赤烟·腾武不能以赤烟·腾武为目标：战吼选目标时自己尚未进场，
-                // 若场上另一张腾武被弹回，路径会显示成“腾武（腾武）”的非法自回环。
-                if (card.effect_id == "tenwu" && st.board[i].name() == "赤烟·腾武")
-                    continue;
-                friendly_targets.push_back(i);
+            if (card.effect_id == "tenwu") {
+                // 腾武回手目标：同名多实例时优先回手 1/1 复制（is_mini_copy），
+                // 其次最低血量——与玩家理性选择一致（保留本体），并减少分支；
+                // 腾武不能以腾武为目标（自回环非法）。
+                unordered_map<string, int> best_idx;
+                for (int i = 0; i < (int)st.board.size(); i++) {
+                    const string& nm = st.board[i].name();
+                    if (nm == "赤烟·腾武") continue;
+                    auto it = best_idx.find(nm);
+                    if (it == best_idx.end()) {
+                        best_idx[nm] = i;
+                    } else {
+                        const Card& cur = st.board[it->second];
+                        const Card& cand = st.board[i];
+                        bool better = cand.is_mini_copy && !cur.is_mini_copy;
+                        if (!better && cand.is_mini_copy == cur.is_mini_copy &&
+                            cand.health < cur.health) {
+                            better = true;
+                        }
+                        if (better) best_idx[nm] = i;
+                    }
+                }
+                for (const auto& kv : best_idx) friendly_targets.push_back(kv.second);
+            } else {
+                for (int i = 0; i < (int)st.board.size(); i++) friendly_targets.push_back(i);
             }
         } else {
             friendly_targets.push_back(-1);
@@ -781,15 +800,24 @@ static vector<State> generate_successors(const State& st) {
                 }
             }
         }
-        // 锯齿骨刺：可击杀的敌方随从（血量 <= 3）→ 击杀并抽 2（编码负目标：-2 起）
+        // 锯齿骨刺（编码负目标：-2 起）：
+        //   - 血量 <= 3：击杀分支，移除并抽 2
+        //   - 血量 > 3：不击杀分支视作杂牌（仅消耗腾手牌，不模拟伤害）
         if (card.effect_id == "serrated_bone_spike") {
             for (int ei = 0; ei < (int)st.enemy_board.size(); ei++) {
                 const Card& target = st.enemy_board[ei];
-                if (target.health < 0 || target.health > 3) continue;
                 State base = st.clone_reserved();
-                if (!play_card_base(base, hand_index, -2 - ei, true, false)) continue;
-                vector<State> succs = apply_search_effect(std::move(base), card, -2 - ei, true, false);
-                for (State& succ : succs) out.push_back(std::move(succ));
+
+                if (target.health >= 0 && target.health <= 3) {
+                    if (!play_card_base(base, hand_index, -2 - ei, true, false)) continue;
+                    vector<State> succs = apply_search_effect(std::move(base), card, -2 - ei, true, false);
+                    for (State& succ : succs) out.push_back(std::move(succ));
+                } else {
+                    // 不击杀：视作杂牌动作（仅消耗腾手牌）
+                    if (!play_card_base(base, hand_index, -2 - ei, false, false)) continue;
+                    vector<State> succs = apply_search_effect(std::move(base), card, -2 - ei, false, false);
+                    for (State& succ : succs) out.push_back(std::move(succ));
+                }
             }
         }
     }
@@ -1872,6 +1900,10 @@ static State state_from_json(const JVal& root) {
                 st.next_card = std::max(st.next_card, 2 * layers);
             } else if (name == "斯卡布斯·刀油") {
                 for (int i = 0; i < layers; i++) st.oil_stacks.push_back({2, 2});
+            } else if (name == "幸运彗星") {
+                // 彗星效果跨回合存在：当前回合搜索开始时，下一张连击随从
+                // 触发两次（由 current_effects 传入，引擎内打出彗星同样设置）
+                st.next_combo_twice = true;
             }
         }
     }

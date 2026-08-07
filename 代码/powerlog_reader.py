@@ -64,6 +64,14 @@ ENTITY_REF_TAG_RE = re.compile(
 )
 PLAYER_NAME_TAG_RE = re.compile(r"TAG_CHANGE Entity=([^ \[]+) tag=(\w+) value=(\w+)")
 
+# Power.log 对部分随从（尤其敌方）不打印 BLOCK_START PLAY 与 ZONE=PLAY 更新，
+# 只有 PowerProcessor 的 "unhandled BlockType PLAY for sourceEntity [...]" 行，
+# 用它推断实体已进场。
+UNHANDLED_PLAY_RE = re.compile(
+    r"unhandled BlockType PLAY for sourceEntity \[entityName=.*? id=(\d+)"
+)
+ZONEPOS_RE = re.compile(r"zonePos=(\d+)")
+
 # 附加效果（enchantment）CardID -> 项目“当前效果”名称。
 # 这些实体挂在玩家实体上（ATTACHED=玩家实体ID），用于中途启动时兜底补种。
 EFFECT_ENCHANTMENTS = {
@@ -245,6 +253,27 @@ class PowerLogParser:
             # 单行解析失败（未知枚举/新 opcode/脏行）不中断整体解析
             self.line_errors += 1
         self._collect_direct_tags(line)
+        self._infer_play_zone(line)
+
+    def _infer_play_zone(self, line: str) -> None:
+        """从 unhandled BlockType PLAY 行推断随从已进场（补 ZONE=PLAY 缺失）。"""
+        m = UNHANDLED_PLAY_RE.search(line)
+
+        if not m:
+            return
+
+        ent = self.entities.get(int(m.group(1)))
+
+        if ent is None:
+            return
+
+        if ent.get("zone") != ZONE_PLAY:
+            ent["zone"] = ZONE_PLAY
+
+        zp = ZONEPOS_RE.search(line)
+
+        if zp:
+            ent["ZONE_POSITION"] = int(zp.group(1))
 
     def _collect_direct_tags(self, line: str) -> None:
         """收集 hslog 漏掉的 TAG_CHANGE（PowerTaskList/嵌套重复行），按行序补应用。"""
@@ -558,6 +587,13 @@ class PowerLogParser:
 
             if entity_id is not None:
                 self._on_play_entity(entity_id)
+
+                ent = self.entities.get(entity_id)
+
+                if ent is not None and ent.get("zone") != ZONE_PLAY:
+                    # Power.log 偶尔不打印随从进场的 ZONE 更新（如敌方淡水鳄
+                    # HAND→PLAY），用 PLAY block 推断实体已进场
+                    ent["zone"] = ZONE_PLAY
 
     # ---- 快照 ----
 
