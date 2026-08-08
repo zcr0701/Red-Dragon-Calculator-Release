@@ -91,12 +91,46 @@ CARD_ALIASES = {
     "押": "押注猎手",
 }
 
-EFFECT_NAMES = ("狐人老千", "伺机待发", "斯卡布斯·刀油", "锯齿骨刺", "幸运彗星")
+EFFECT_NAMES = (
+    "狐人老千",
+    "伺机待发",
+    "斯卡布斯·刀油",
+    "锯齿骨刺",
+    "幸运彗星",
+    "[spcost+1]",
+    "[spcost+2]",
+)
 
 # 会改变手牌显示费用的效果（日志里的当前费用已含其折扣）：
 # 传效果给 C++ 时必须用基础费用，否则双重折扣。
 # 幸运彗星不减费（只是下一张连击随从连击双触发），不在此列。
 DISCOUNT_EFFECT_NAMES = {"狐人老千", "伺机待发", "斯卡布斯·刀油", "锯齿骨刺"}
+
+# 敌方随从战吼造成的“我方法术增费”（异教低阶牧师 +1 / 音箱践踏者 +2）：
+# 日志显示费用已含该增幅，传给 C++ 前需把已知法术回退到基础费用，
+# 由 C++ 按 sp_cost_inc 重新加回，避免双重计算；手动输入同理。
+SP_COST_EFFECT_NAMES = {"[spcost+1]", "[spcost+2]"}
+
+# 项目里已知的法术/奥秘（spcost 增费只作用于这些；武器/随从不受影响）
+KNOWN_SPELL_NAMES = {
+    "伪造的幸运币",
+    "幸运币",
+    "伺机待发",
+    "暗影步",
+    "殒命暗影",
+    "垂钓时光",
+    "挖掘宝藏",
+    "锯齿骨刺",
+    "异教地图",
+    "行骗",
+    "闪避",
+    "潜伏帷幕",
+    "舞动全场（ft.迦罗娜）",
+    "幻觉药水",
+    "幸运彗星",
+    "战略转移",
+    "可疑交易",
+}
 
 # 已知不可能上场的牌（法术/奥秘/武器）：战场解析时直接丢弃，
 # 避免把错位数据（如舞动全场出现在战场）当成随从回手/打出。
@@ -194,6 +228,15 @@ def build_payload(
     # 只有“真正减费”的待生效效果才需要回退到基础费用；
     # 幸运彗星（连击双触发）不减费，日志显示费用即真实费用。
     use_base_cost = bool(effect_names & DISCOUNT_EFFECT_NAMES)
+    # 敌方法术增费总额：日志显示费用已含该增幅，需回退基础费后由 C++ 加回
+    sp_cost_total = 0
+
+    for effect in effects:
+        name = str(effect.get("name", ""))
+        count = int(effect.get("count", 1) or 1)
+
+        if name in SP_COST_EFFECT_NAMES:
+            sp_cost_total += (1 if name == "[spcost+1]" else 2) * count
 
     for index, item in enumerate(snapshot.get("hand") or [], start=1):
         cost = item.get("cost")
@@ -201,6 +244,9 @@ def build_payload(
         base = KNOWN_BASE_COSTS.get(name)
 
         if use_base_cost and base is not None:
+            temp_cost = int(base)
+        elif sp_cost_total > 0 and name in KNOWN_SPELL_NAMES and base is not None:
+            # 法术显示费用已含 spcost 增幅，回退基础费；C++ 按 sp_cost_inc 加回
             temp_cost = int(base)
         else:
             temp_cost = int(cost) if cost is not None else -1
@@ -272,7 +318,10 @@ def build_payload(
         # H2/1100（96 伤线）、H2/3000（6水晶紧 48 伤线）
         "wide_widths": wide_widths or [1100, 1500, 1100, 3000],
         "heuristics": heuristics or [6, 1, 2, 2],
-        "deck_is_known": bool(snapshot.get("deck")),
+        # 牌库是否“完全已知”：只要还有未揭示的牌库实体就不算完整牌库。
+        # （Power.log 只揭示抽到/探明的牌，先前用 bool(deck) 会把残缺牌库当完整，
+        #   导致行骗等按“无随从/无法术”误判。）
+        "deck_is_known": int(snapshot.get("deck_unknown_cards") or 0) == 0,
         "deck": [{"name": item["name"]} for item in snapshot.get("deck") or []],
         "hand": hand,
         "board": board,

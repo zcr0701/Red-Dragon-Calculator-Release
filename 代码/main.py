@@ -106,6 +106,8 @@ CARD_ABBREVIATIONS = {
     "战略转移": "转",
 }
 
+# 指向性操作统一标准：卡名（目标名Nnd），N 为目标随从在 board 上的顺序（1 起），
+# 由 C++ 核心在路径里直接输出；缩写显示为 卡(目标缩写Nnd)，如 暗影施法者（斯卡布斯·刀油3nd）-> 暗(刀3nd)。
 ROUND_SPLIT_NAMES = ("战略转移", "舞动全场")  # 与 split_path_rounds 提取的基础名匹配
 
 _CN_DIGITS = "零一二三四五六七八九"
@@ -179,15 +181,17 @@ def abbreviate_step(step: str) -> str:
             if not p:
                 continue
 
-            # 腾武回手目标带 board 顺序标注，如 斯卡布斯·刀油(3nd)
-            m = re.match(r"^(.*?)\((\d+)nd\)$", p)
+            # 指向性目标带 board 序号，如 斯卡布斯·刀油3nd -> 刀3nd
+            m = re.match(r"^(.*?)(\d+)nd$", p)
 
             if m:
-                parts.append(f"{abbreviate_card_name(m.group(1).strip())}({m.group(2)}nd)")
+                parts.append(abbreviate_card_name(m.group(1).strip()) + m.group(2) + "nd")
             else:
+                # 牛头人乐队选择（-> 连接）或无效目标等：无序号，保持原名
                 parts.append(abbreviate_card_name(p))
 
-        target = "(" + ";".join(parts) + ")"
+        # 牛头人乐队多个选择直接连写（如 牛(舞龙)），不加分隔符
+        target = "(" + "".join(parts) + ")"
 
     return abbreviate_card_name(name) + target + deadly
 

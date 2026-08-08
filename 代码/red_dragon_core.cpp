@@ -146,7 +146,7 @@ static const unordered_map<string, CardDef> DB = {
     {"赤烟·腾武", {2, "minion", "tenwu", true, false, false, 2}},
     {"“赤烟”腾武", {2, "minion", "tenwu", true, false, false, 2}},  // 官方名（日志/卡图）别名
     {"押注猎手", {3, "minion", "gambler_hunter", false, true, false, 4}},  // 快枪或连击：获取一张幸运币
-    {"狐人老千", {2, "minion", "foxy_fraud", false, true, false, 2}},
+    {"狐人老千", {2, "minion", "foxy_fraud", true, false, false, 2}},  // 战吼：下一张连击牌减 2 费（非连击牌）
 };
 
 static uint64_t str_hash(const string& s);
@@ -213,6 +213,7 @@ struct State {
     int next_card = 0;
     int next_two_cards = 0;
     int next_two_cards_count = 0;
+    int sp_cost_inc = 0;  // 敌方法术增费（[spcost+1]/[spcost+2]），只作用于法术
     vector<pair<int, int>> oil_stacks;  // (剩余次数, 减费)
     int burned_cards = 0;
     int alex_play_count = 0;
@@ -268,6 +269,7 @@ struct State {
         c.next_card = next_card;
         c.next_two_cards = next_two_cards;
         c.next_two_cards_count = next_two_cards_count;
+        c.sp_cost_inc = sp_cost_inc;
         c.burned_cards = burned_cards;
         c.alex_play_count = alex_play_count;
         c.alex_damage = alex_damage;
@@ -300,6 +302,7 @@ static int effective_cost(const State& s, const Card& card) {
     if (card.is_spell_like() && s.next_spell > 0) discount += s.next_spell;
     if (card.combo && s.next_combo > 0) discount += s.next_combo;
     int cost = base - discount;
+    if (card.is_spell_like() && s.sp_cost_inc > 0) cost += s.sp_cost_inc;
     return cost < 0 ? 0 : cost;
 }
 
@@ -410,21 +413,19 @@ static bool play_card_base(State& s, int hand_index, int target_friendly_index,
     string item = display_card_name(card);
     if (target_friendly_index >= 0) {
         if (target_friendly_index < (int)s.board.size()) {
-            if (card.effect_id == "tenwu") {
-                // 腾武回手：标注目标在 board 上的顺序（1~7），避免同名实例歧义
-                item += "（" + s.board[target_friendly_index].name()
-                      + "(" + std::to_string(target_friendly_index + 1) + "nd)）";
-            } else {
-                item += "（" + s.board[target_friendly_index].name() + "）";
-            }
+            // 指向性操作统一标注目标在 board 上的顺序（1 起）：
+            // 卡名（目标名Nnd），如 暗影步（斯卡布斯·刀油3nd）
+            item += "（" + s.board[target_friendly_index].name()
+                  + std::to_string(target_friendly_index + 1) + "nd）";
         } else {
             item += "（无效目标）";
         }
     } else if (target_friendly_index < -1) {
-        // 敌方随从目标（编码：-2 = 第0个敌方随从）
+        // 敌方随从目标（编码：-2 = 第0个敌方随从）：同样带敌方 board 序号
         int eidx = -target_friendly_index - 2;
         if (eidx >= 0 && eidx < (int)s.enemy_board.size()) {
-            item += "（" + s.enemy_board[eidx].name() + "）";
+            item += "（" + s.enemy_board[eidx].name()
+                  + std::to_string(eidx + 1) + "nd）";
         } else {
             item += "（敌方随从）";
         }
@@ -506,10 +507,9 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
         add_card_to_hand_or_burn(s, junk);
         s.next_combo_twice = true;
     } else if (e == "foxy_fraud") {
-        if (s.cards_played_this_turn > 0) {
-            // 连击：本回合已出过牌才触发（幸运彗星双触发由倍率=2 处理）
-            s.next_combo += 2;
-        }
+        // 战吼：下一张连击牌减 2 费。不需要本回合先出牌触发——
+        // 即使作为本回合第一张牌打出也生效（鲨鱼双战吼 → 下一张连击牌 -4）。
+        s.next_combo += 2;
     } else if (e == "scabbs_cutterbutter") {
         if (s.cards_played_this_turn > 0) {
             // 连击：接下来两张牌各减 2（幸运彗星双触发 = 两次各推 {2,2}）
@@ -586,6 +586,32 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
             if (c.dragon) { dragon_in_hand = true; break; }
         if (dragon_in_hand) {
             s.mana = std::min(s.mana_crystals, s.mana + 2);
+        }
+    } else if (e == "swindle") {
+        // 行骗：不连击抽 1 张法术；连击再抽 1 张随从（即连击共抽法术+随从 2 张）。
+        // 牌库已知时按实际牌库精确模拟（移出牌库进手牌/满手烧毁）：
+        // 牌库里还有随从（如红龙）就抽得到，不受“随从组集齐=随从已抽完”启发影响
+        // （该启发只用于牌库未知的兜底，见 cards_drawn_if_played）；
+        // 牌库未知时不模拟，保持“不抽牌”可打出触发连击（避免虚构抽牌后继）。
+        if (s.deck_is_known) {
+            bool combo = s.cards_played_this_turn > 0;  // 本张行骗的连击状态
+            for (auto it = s.deck.begin(); it != s.deck.end(); ++it) {
+                if (!it->is_spell_like()) continue;
+                Card drawn = *it;
+                s.deck.erase(it);
+                add_card_to_hand_or_burn(s, drawn);
+                break;
+            }
+            if (combo) {
+                for (auto it = s.deck.begin(); it != s.deck.end(); ++it) {
+                    bool minion = it->card_type == "minion" || it->card_type == "unknown";
+                    if (!minion) continue;
+                    Card drawn = *it;
+                    s.deck.erase(it);
+                    add_card_to_hand_or_burn(s, drawn);
+                    break;
+                }
+            }
         }
     } else if (e == "serrated_bone_spike") {
         if (target_enemy_is_killed) {
@@ -715,7 +741,9 @@ static int cards_drawn_if_played(const State& s, const Card& card) {
         if (e == "dig_for_treasure" || e == "shroud_of_concealment")
             return no_minions_left ? 0 : (e == "shroud_of_concealment" ? 2 : 1);
         if (e == "dubious_purchase") return 3;
-        if (e == "swindle") return combo_active(s) ? 2 : 1;
+        // 行骗：不连击抽 1 张法术；连击再抽 1 张随从（共 2 张）。
+        // 随从组已集齐（随从已抽完）时，随从部分按 0 处理。
+        if (e == "swindle") return combo_active(s) ? (no_minions_left ? 1 : 2) : 1;
         if (e == "gone_fishin") return 1;
         if (e == "quick_pick") return 1;
         return 1;
@@ -725,12 +753,15 @@ static int cards_drawn_if_played(const State& s, const Card& card) {
         if (c.card_type == "minion") deck_minions++;
         if (c.is_spell_like()) deck_spells++;
     }
-    if (no_minions_left) deck_minions = 0;  // 随从组已集齐：即使牌库已知含随从也按无随从处理
+    // 牌库已知时以实际牌库为准：牌库里还有随从（如红龙）就还能抽到。
+    // “随从组集齐=随从已抽完”的启发只用于牌库未知的兜底（上方分支），
+    // 否则会出现“牌库有红龙却抽不到”的自相矛盾。
     int deck_total = (int)s.deck.size();
     if (e == "dubious_purchase") return std::min(3, deck_total);
     if (e == "gone_fishin") return std::min(1, deck_total);
     if (e == "dig_for_treasure") return std::min(1, deck_minions);
     if (e == "swindle") {
+        // 行骗：不连击抽 1 张法术；连击再抽 1 张随从（共 2 张）
         int n = std::min(1, deck_spells);
         if (combo_active(s)) n += std::min(1, deck_minions);
         return n;
@@ -879,6 +910,7 @@ static uint64_t state_hash(const State& s) {
     h = mix_hash(h, (uint64_t)s.next_card);
     h = mix_hash(h, (uint64_t)s.next_two_cards);
     h = mix_hash(h, (uint64_t)s.next_two_cards_count);
+    h = mix_hash(h, (uint64_t)s.sp_cost_inc);
     for (const auto& p : s.oil_stacks) h = mix_hash(h, (uint64_t)p.first * 31 + (uint64_t)p.second);
     return h;
 }
@@ -1904,7 +1936,9 @@ static State state_from_json(const JVal& root) {
             int layers = (int)item.get_int("count", 1);
             if (layers <= 0) layers = 1;
             if (name == "狐人老千") {
-                // 狐人老千是本回合打出的效果牌：本回合已出过牌（连击可触发）
+                // 狐人老千是战吼：下一张连击牌减 2 费，不需要本回合先出牌。
+                // 该效果是本回合打出狐后留下的（阅读器回合切换即过期），
+                // 本回合已出牌数置 1 仅作一致性兜底。
                 st.cards_played_this_turn = std::max(st.cards_played_this_turn, 1);
                 st.next_combo = std::max(st.next_combo, 2 * layers);
             } else if (name == "伺机待发") {
@@ -1921,6 +1955,11 @@ static State state_from_json(const JVal& root) {
                 // 传入，引擎内打出彗星同样设置）。不视为本回合已出过牌——
                 // 连击不能是第一张出的牌，首张连击牌不能凭空触发连击。
                 st.next_combo_twice = true;
+            } else if (name == "[spcost+1]") {
+                // 敌方法术增费：异教低阶牧师（+1）/音箱践踏者（+2），叠加生效
+                st.sp_cost_inc += layers;
+            } else if (name == "[spcost+2]") {
+                st.sp_cost_inc += layers * 2;
             }
         }
     }
@@ -1940,6 +1979,16 @@ static bool verify_rec(const State& st, const vector<string>& replay, size_t i,
     for (State& succ : succs) {
         if (succ.path().empty()) continue;
         if (canonical_action(succ.path().back()) != want) continue;
+        fprintf(stderr, "TRACE step %d: %s | mana=%d hand=%d board=%d burned=%d dragons=%d dmg=%d\n",
+                (int)i, succ.path().back().c_str(), succ.mana, succ.hand_size(),
+                succ.board_size(), succ.burned_cards, succ.alex_play_count, succ.alex_damage);
+        fprintf(stderr, "  HAND:");
+        for (const auto& hc : succ.hand)
+            fprintf(stderr, " [%s cost=%d hp=%d]", hc.name().c_str(), hc.current_cost(), hc.health);
+        fprintf(stderr, "\n  BOARD:");
+        for (const auto& bc : succ.board)
+            fprintf(stderr, " [%s cost=%d hp=%d]", bc.name().c_str(), bc.current_cost(), bc.health);
+        fprintf(stderr, "\n");
         if (verify_rec(succ, replay, i + 1, final_state, attempts)) return true;
         if (attempts && ++(*attempts) > 500000) return false;  // 回溯预算保护
     }
