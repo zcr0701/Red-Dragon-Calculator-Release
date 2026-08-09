@@ -301,17 +301,39 @@ def split_path_rounds(path: List[str]) -> List[List[str]]:
     return rounds
 
 
-def format_mini_results(data: Dict[str, object], colors: bool = False) -> str:
+def _format_exchange_line(exchanges: List[Tuple[int, int]]) -> str:
+    """场面交换处理行：[我方随从X]->[敌方随从X]，……。X 为 board 序号。"""
+    if not exchanges:
+        return ""
+
+    plan = "，".join(f"[我方随从{fi}]->[敌方随从{ei}]" for fi, ei in exchanges)
+    return f"场面交换处理：{plan}。其中X为随从在board中的序号"
+
+
+def format_mini_results(
+    data: Dict[str, object],
+    colors: bool = False,
+    exchanges: Optional[List[Tuple[int, int]]] = None,
+) -> str:
     """小窗结果：最高伤害路径按轮次分割，只显示缩写。
 
-    colors=True 时返回 HTML（缩写字上色），否则返回纯文本。
+    colors=True 时返回 HTML（缩写字上色），否则返回纯文本；
+    exchanges 非空时在标题后插入“场面交换处理”行。
     """
     results = data.get("results") or []
-    title = f"最大伤害：{data.get('max_damage', 0)}，最大龙数：{data.get('max_dragons', 0)}"
+    best_mana = (results[0].get("mana") if results else 0) or 0
+    exchange_line = _format_exchange_line(list(exchanges or []))
+    title = (
+        f"最大伤害：{data.get('max_damage', 0)}，"
+        f"龙数：{data.get('max_dragons', 0)}，余：{best_mana}费"
+    )
 
     if colors:
         esc = html.escape
         lines = [esc(title)]
+
+        if exchange_line:
+            lines.extend(["", esc(exchange_line), ""])
 
         if not results:
             lines.append(esc("（无路径）"))
@@ -329,6 +351,9 @@ def format_mini_results(data: Dict[str, object], colors: bool = False) -> str:
         return "<br>".join(lines)
 
     lines = [title]
+
+    if exchange_line:
+        lines.extend(["", exchange_line, ""])
 
     if not results:
         lines.append("（无路径）")
@@ -391,6 +416,7 @@ class CalculationWorker(QThread):
                 wide_widths=wide_widths,
                 heuristics=heuristics,
                 etc_band=list(self.options.get("etc_band") or []),
+                exchanges=list(self.options.get("exchanges") or []),
                 progress_callback=self.progress.emit,
                 found_callback=self.found.emit,
                 should_stop=lambda: self._stop,
@@ -410,18 +436,21 @@ _STAR_COST_RE = re.compile(r"^[*★☆＊]+\s*(.+)$")
 _COMMA_ZONE_RE = re.compile(r"^\s*(\d+)\s*[,，、]\s*(\d+)\s*血?\s*(.+)$")
 
 
-def parse_manual_zone_lines(text: str) -> Tuple[List[Tuple[Optional[int], str, Optional[int]]], List[str]]:
-    """手牌/随从栏一行行解析成 [(费用, 卡名, 血量)]。
+def parse_manual_zone_lines(
+    text: str,
+) -> Tuple[List[Tuple[Optional[int], str, Optional[int], Optional[int]]], List[str]]:
+    """手牌/随从栏一行行解析成 [(费用, 卡名, 血量, 攻击)]。
 
     支持格式：
     - “4 鲨鱼之灵”（费用 卡名）；
     - “4 鲨鱼之灵 3”（费用 卡名 血量，随从栏）；
+    - “4 鲨鱼之灵 0/3”（费用 卡名 攻击/血量，随从栏，用于场面交换）；
     - “4,3 鲨鱼之灵”（费用,血量 卡名，兼容旧写法）；
     - “* 殒命暗影”（* 表示无费用特殊卡，自动标记殒命）；
     - 纯卡名（自动取基础费用，支持简称，如 刀油 -> 斯卡布斯·刀油）；
     - 单独一行费用作为下一行卡名的费用（OCR 式两行一组）。
     """
-    entries: List[Tuple[Optional[int], str, Optional[int]]] = []
+    entries: List[Tuple[Optional[int], str, Optional[int], Optional[int]]] = []
     pending_cost: Optional[int] = None
     warnings: List[str] = []
 
@@ -443,7 +472,7 @@ def parse_manual_zone_lines(text: str) -> Tuple[List[Tuple[Optional[int], str, O
         star_cost = _STAR_COST_RE.match(line)
 
         if star_cost:
-            entries.append((None, engine.resolve_card_name(star_cost.group(1)), None))
+            entries.append((None, engine.resolve_card_name(star_cost.group(1)), None, None))
             pending_cost = None
             continue
 
@@ -455,6 +484,7 @@ def parse_manual_zone_lines(text: str) -> Tuple[List[Tuple[Optional[int], str, O
                     int(comma_match.group(1)),
                     engine.resolve_card_name(comma_match.group(3)),
                     int(comma_match.group(2)),
+                    None,
                 )
             )
             pending_cost = None
@@ -465,13 +495,24 @@ def parse_manual_zone_lines(text: str) -> Tuple[List[Tuple[Optional[int], str, O
         if tokens and tokens[0].isdigit() and len(tokens) >= 2:
             cost = int(tokens[0])
             health = None
+            attack = None
             name_parts = tokens[1:]
 
-            if len(tokens) >= 3 and tokens[-1].isdigit():
+            if len(tokens) >= 3 and "/" in tokens[-1]:
+                ab = tokens[-1].split("/", 1)
+
+                if ab[0].isdigit() and ab[1].isdigit():
+                    attack, health = int(ab[0]), int(ab[1])
+                    name_parts = tokens[1:-1]
+                else:
+                    warnings.append(f"忽略无法识别的攻击/血量：{line}")
+            elif len(tokens) >= 3 and tokens[-1].isdigit():
                 health = int(tokens[-1])
                 name_parts = tokens[1:-1]
 
-            entries.append((cost, engine.resolve_card_name(" ".join(name_parts)), health))
+            entries.append(
+                (cost, engine.resolve_card_name(" ".join(name_parts)), health, attack)
+            )
             pending_cost = None
             continue
 
@@ -479,13 +520,13 @@ def parse_manual_zone_lines(text: str) -> Tuple[List[Tuple[Optional[int], str, O
         base = engine.KNOWN_BASE_COSTS.get(name)
 
         if pending_cost is not None:
-            entries.append((pending_cost, name, None))
+            entries.append((pending_cost, name, None, None))
             pending_cost = None
         elif base is not None:
-            entries.append((int(base), name, None))
+            entries.append((int(base), name, None, None))
         else:
             warnings.append(f"未知卡名（按杂牌处理）：{line}")
-            entries.append((None, name, None))
+            entries.append((None, name, None, None))
 
     return entries, warnings
 
@@ -519,9 +560,9 @@ def parse_manual_effect_lines(text: str) -> Tuple[List[Tuple[str, int]], List[st
     return entries, warnings
 
 
-def parse_manual_enemy_lines(text: str) -> Tuple[List[Tuple[str, int]], List[str]]:
-    """敌方随从栏：每行“血量”或“血量 名字”；只需血量即可参与计算。"""
-    entries: List[Tuple[str, int]] = []
+def parse_manual_enemy_lines(text: str) -> Tuple[List[Tuple[str, int, Optional[int]]], List[str]]:
+    """敌方随从栏：每行“攻击/血量 名字”或“血量 名字”（攻击可省略，用于场面交换）。"""
+    entries: List[Tuple[str, int, Optional[int]]] = []
     warnings: List[str] = []
 
     for raw in text.splitlines():
@@ -531,17 +572,69 @@ def parse_manual_enemy_lines(text: str) -> Tuple[List[Tuple[str, int]], List[str
         tokens = line.split()
         if not tokens:
             continue
-        if not tokens[0].isdigit():
+        first = tokens[0]
+
+        if "/" in first:
+            ab = first.split("/", 1)
+
+            if not (ab[0].isdigit() and ab[1].isdigit()):
+                warnings.append(f"忽略无法识别的敌方随从行：{line}")
+                continue
+
+            attack, health = int(ab[0]), int(ab[1])
+        elif first.isdigit():
+            attack, health = None, int(first)
+        else:
             warnings.append(f"忽略无法识别的敌方随从行：{line}")
             continue
-        health = int(tokens[0])
+
         if len(tokens) >= 2:
             name = engine.resolve_card_name(" ".join(tokens[1:]))
         else:
             name = "敌方随从"
-        entries.append((name, health))
+
+        entries.append((name, health, attack))
 
     return entries, warnings
+
+
+def parse_exchange_text(
+    text: str,
+    board_len: int,
+    enemy_len: int,
+) -> Tuple[List[Tuple[int, int]], List[str]]:
+    """场面交换输入：如 “1->1, 2->3”（我方随从序号->敌方随从序号，1 起）。"""
+    pairs: List[Tuple[int, int]] = []
+    warnings: List[str] = []
+
+    for raw in text.replace("，", ",").replace("→", "->").split(","):
+        item = raw.strip()
+
+        if not item:
+            continue
+
+        m = re.match(r"^(\d+)\s*[-–]\s*>?\s*(\d+)$", item)
+
+        if not m:
+            warnings.append(f"忽略无法识别的场面交换：{raw}")
+            continue
+
+        friend_index, enemy_index = int(m.group(1)), int(m.group(2))
+
+        if (
+            friend_index < 1
+            or friend_index > board_len
+            or enemy_index < 1
+            or enemy_index > enemy_len
+        ):
+            warnings.append(
+                f"交换序号越界：{raw}（我方 1~{board_len}，敌方 1~{enemy_len}）"
+            )
+            continue
+
+        pairs.append((friend_index, enemy_index))
+
+    return pairs, warnings
 
 
 class MainWindow(QWidget):
@@ -781,8 +874,8 @@ class MainWindow(QWidget):
         manual_row.addLayout(board_panel, 1)
 
         enemy_panel = QVBoxLayout()
-        enemy_panel.addWidget(QLabel("敌方随从（只需血量）"))
-        self.manual_enemy_edit = make_manual_edit("例：\n3\n5\n4 敌方随从")
+        enemy_panel.addWidget(QLabel("敌方随从（攻击/血量，攻击可省）"))
+        self.manual_enemy_edit = make_manual_edit("例：\n2/2 寒光智者\n3\n6/5 指挥官碧阿崔克丝")
         enemy_panel.addWidget(self.manual_enemy_edit)
         manual_row.addLayout(enemy_panel, 1)
 
@@ -822,6 +915,13 @@ class MainWindow(QWidget):
         manual_buttons.addWidget(self.resume_log_button)
         manual_buttons.addStretch(1)
         manual_layout.addLayout(manual_buttons)
+
+        exchange_row = QHBoxLayout()
+        exchange_row.addWidget(QLabel("场面交换（我方序号->敌方序号，逗号分隔）："))
+        self.exchange_edit = QLineEdit()
+        self.exchange_edit.setPlaceholderText("如 1->1, 2->2；按攻击/血量结算，B≤0 死亡移除")
+        exchange_row.addWidget(self.exchange_edit, 1)
+        manual_layout.addLayout(exchange_row)
 
         main_splitter.addWidget(self.manual_panel)
         main_splitter.setSizes([560, 220])
@@ -944,27 +1044,25 @@ class MainWindow(QWidget):
 
         board_lines: List[str] = []
 
-        def _hp_text(item: Dict[str, object]) -> str:
+        def _ab_text(item: Dict[str, object]) -> str:
+            attack = item.get("attack")
             health = item.get("health")
-            health_max = item.get("health_max")
-            if health is None:
-                return "生命?"
-            if health_max not in (None, health):
-                return f"生命{health}/{health_max}"
-            return f"生命{health}"
+            a = attack if attack is not None else "?"
+            b = health if health is not None else "?"
+            return f"{a}/{b}"
 
         for index, item in enumerate(snap.get("board") or [], start=1):
             cost = item.get("cost")
             cost_text = f"{cost}费" if cost is not None else "?费"
             board_lines.append(
-                f"{index:2d}. [{cost_text}] {item['name']}（{_hp_text(item)}）"
+                f"{index:2d}. [{cost_text}] {item['name']}（{_ab_text(item)}）"
             )
 
         enemy_lines: List[str] = []
 
         for index, item in enumerate(snap.get("enemy_board") or [], start=1):
             enemy_lines.append(
-                f"{index:2d}. {item.get('name') or '敌方随从'}（{_hp_text(item)}）"
+                f"{index:2d}. {item.get('name') or '敌方随从'}（{_ab_text(item)}）"
             )
 
         if enemy_lines:
@@ -1134,16 +1232,20 @@ class MainWindow(QWidget):
         )
 
         hand = [
-            {"name": name, "cost": cost, "ghostly": cost is None and name == "殒命暗影"}
-            for cost, name, _health in hand_entries
+            {
+                "name": name,
+                "cost": cost,
+                "ghostly": cost is None and name == "殒命暗影",
+            }
+            for cost, name, _health, _attack in hand_entries
         ]
         board = [
-            {"name": name, "cost": cost, "health": health}
-            for cost, name, health in board_entries
+            {"name": name, "cost": cost, "health": health, "attack": attack}
+            for cost, name, health, attack in board_entries
         ]
         enemy_board = [
-            {"name": name, "health": health}
-            for name, health in enemy_entries
+            {"name": name, "health": health, "attack": attack}
+            for name, health, attack in enemy_entries
         ]
 
         deadly_auto = [
@@ -1205,7 +1307,17 @@ class MainWindow(QWidget):
             "time_budget_sec": 0 if self.no_time_limit.isChecked() else self.time_budget.value(),
             "etc_band": band,
             "beam_width": self.beam_width.value(),
+            "exchanges": self.current_exchange_pairs(),
         }
+
+    def current_exchange_pairs(self) -> List[Tuple[int, int]]:
+        """按当前场面解析“场面交换”输入（忽略越界/非法项，非法项有告警时由调用方展示）。"""
+        board_len = len(self.snapshot.get("board") or [])
+        enemy_len = len(self.snapshot.get("enemy_board") or [])
+        pairs, _warnings = parse_exchange_text(
+            self.exchange_edit.text(), board_len, enemy_len
+        )
+        return pairs
 
     def _update_calc_enabled(self) -> None:
         has_state = bool(self.snapshot.get("hand")) or bool(self.snapshot.get("board"))
@@ -1230,6 +1342,15 @@ class MainWindow(QWidget):
         snapshot = dict(self.snapshot)
         snapshot["deadly_shadow_hand_indexes"] = deadly_indexes
         options = self._options()
+        _pairs, exchange_warnings = parse_exchange_text(
+            self.exchange_edit.text(),
+            len(snapshot.get("board") or []),
+            len(snapshot.get("enemy_board") or []),
+        )
+
+        if exchange_warnings:
+            self.engine_label.setText("；".join(exchange_warnings[:3]))
+
         self._last_input = {"snapshot": snapshot, "options": options}
         self.result_text.setPlainText("正在运行纯束宽搜索 …")
         self.progress_bar.setVisible(True)
@@ -1275,21 +1396,19 @@ class MainWindow(QWidget):
 
         lines.append("  手牌：" + ("  ".join(hand_parts) if hand_parts else "（空）"))
 
-        def _hp(item: dict) -> str:
+        def _ab(item: dict) -> str:
+            attack = item.get("attack")
             health = item.get("health")
-            health_max = item.get("health_max")
-            if health is None:
-                return "生命?"
-            if health_max not in (None, health):
-                return f"生命{health}/{health_max}"
-            return f"生命{health}"
+            a = attack if attack is not None else "?"
+            b = health if health is not None else "?"
+            return f"{a}/{b}"
 
         board_parts = []
 
         for index, item in enumerate(snapshot.get("board") or [], start=1):
             cost = item.get("cost")
             cost_text = f"{cost}费" if cost is not None else "?费"
-            board_parts.append(f"{index}. [{cost_text}] {item['name']}（{_hp(item)}）")
+            board_parts.append(f"{index}. [{cost_text}] {item['name']}（{_ab(item)}）")
 
         if board_parts:
             lines.append("  战场：" + "  ".join(board_parts))
@@ -1297,7 +1416,7 @@ class MainWindow(QWidget):
         enemy_parts = []
 
         for index, item in enumerate(snapshot.get("enemy_board") or [], start=1):
-            enemy_parts.append(f"{index}. {item.get('name') or '敌方随从'}（{_hp(item)}）")
+            enemy_parts.append(f"{index}. {item.get('name') or '敌方随从'}（{_ab(item)}）")
 
         if enemy_parts:
             lines.append("  敌方战场：" + "  ".join(enemy_parts))
@@ -1623,9 +1742,21 @@ class MiniWindow(QWidget):
         snap = self.main.snapshot
         board = snap.get("board") or []
         enemy = snap.get("enemy_board") or []
-        parts = [abbreviate_card_name(item.get("name") or "?") for item in board]
+
+        def _ab(item: dict) -> str:
+            attack = item.get("attack")
+            health = item.get("health")
+            a = attack if attack is not None else "?"
+            b = health if health is not None else "?"
+            return f"({a}/{b})"
+
+        parts = [
+            abbreviate_card_name(item.get("name") or "?") + _ab(item)
+            for item in board
+        ]
         enemy_parts = [
-            abbreviate_card_name(item.get("name") or "敌方随从") for item in enemy
+            abbreviate_card_name(item.get("name") or "敌方随从") + _ab(item)
+            for item in enemy
         ]
         text = "场面：" + (" ".join(parts) if parts else "（空）")
 
@@ -1705,10 +1836,16 @@ class MiniWindow(QWidget):
         if self._last_data is None:
             return
 
+        exchanges = self.main.current_exchange_pairs()
+
         if self.main.mini_color_enabled():
-            self.mini_result.setHtml(format_mini_results(self._last_data, colors=True))
+            self.mini_result.setHtml(
+                format_mini_results(self._last_data, colors=True, exchanges=exchanges)
+            )
         else:
-            self.mini_result.setPlainText(format_mini_results(self._last_data))
+            self.mini_result.setPlainText(
+                format_mini_results(self._last_data, exchanges=exchanges)
+            )
 
     def refresh_result(self) -> None:
         """小窗颜色开关切换后重绘已显示的结果。"""

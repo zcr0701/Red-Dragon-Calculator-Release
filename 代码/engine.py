@@ -198,6 +198,49 @@ def resolve_card_name(name: str) -> str:
     return name
 
 
+def apply_board_exchanges(
+    board: List[dict],
+    enemy_board: List[dict],
+    exchanges: Optional[List[tuple]] = None,
+) -> Tuple[List[dict], List[dict]]:
+    """场面交换结算：我方随从B -= 敌方随从A，敌方随从B -= 我方随从A；
+    B <= 0 的随从死亡并从 board 移除。索引按初始 board 顺序（1 起），
+    全部交换先按原始攻击力结算，再统一移除死亡随从。"""
+    if not exchanges:
+        return board, enemy_board
+
+    board = [dict(item) for item in board]
+    enemy_board = [dict(item) for item in enemy_board]
+    friend_by_index = {i: item for i, item in enumerate(board, start=1)}
+    enemy_by_index = {i: item for i, item in enumerate(enemy_board, start=1)}
+
+    for friend_index, enemy_index in exchanges:
+        friend = friend_by_index.get(friend_index)
+        enemy = enemy_by_index.get(enemy_index)
+
+        if friend is None or enemy is None:
+            continue
+
+        friend_attack = int(friend.get("attack") or 0)
+        enemy_attack = int(enemy.get("attack") or 0)
+
+        if friend.get("health") is not None:
+            friend["health"] = friend["health"] - enemy_attack
+
+        if enemy.get("health") is not None:
+            enemy["health"] = enemy["health"] - friend_attack
+
+    board = [
+        item for item in board
+        if item.get("health") is None or item["health"] > 0
+    ]
+    enemy_board = [
+        item for item in enemy_board
+        if item.get("health") is None or item["health"] > 0
+    ]
+    return board, enemy_board
+
+
 def find_engine(exe_path: Optional[str] = None) -> Optional[str]:
     """定位 C++ 计算核心 exe（优先 red_dragon_engine.exe）。"""
     if exe_path:
@@ -232,6 +275,7 @@ def build_payload(
     wide_widths: Optional[List[int]] = None,
     heuristics: Optional[List[int]] = None,
     etc_band: Optional[List[str]] = None,
+    exchanges: Optional[List[tuple]] = None,
 ) -> Dict[str, object]:
     """把日志快照转成 C++ JSON 局面（纯束宽搜索）。
 
@@ -277,9 +321,19 @@ def build_payload(
             }
         )
 
+    board_source = list(snapshot.get("board") or [])
+    enemy_source = list(snapshot.get("enemy_board") or [])
+
+    if exchanges:
+        # 场面交换：先按 A/B 结算（我方B-=敌方A、敌方B-=我方A，B<=0 死亡移除），
+        # 再把结算后的场面交给 C++ 搜索。
+        board_source, enemy_source = apply_board_exchanges(
+            board_source, enemy_source, exchanges=exchanges
+        )
+
     board: List[dict] = []
 
-    for item in snapshot.get("board") or []:
+    for item in board_source:
         cost = item.get("cost")
         name = item["name"]
         if name in KNOWN_NON_MINION_NAMES:
@@ -301,7 +355,7 @@ def build_payload(
 
     enemy_board: List[dict] = []
 
-    for item in snapshot.get("enemy_board") or []:
+    for item in enemy_source:
         if isinstance(item, dict):
             enemy_board.append(
                 {
@@ -461,6 +515,7 @@ def compute(
     wide_widths: Optional[List[int]] = None,
     heuristics: Optional[List[int]] = None,
     etc_band: Optional[List[str]] = None,
+    exchanges: Optional[List[tuple]] = None,
     exe_path: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
     found_callback: Optional[Callable[[int, int], None]] = None,
@@ -479,6 +534,7 @@ def compute(
         wide_widths=wide_widths,
         heuristics=heuristics,
         etc_band=etc_band,
+        exchanges=exchanges,
     )
     return run_engine(
         payload,
