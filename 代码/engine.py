@@ -18,6 +18,9 @@ from typing import Callable, Dict, List, Optional
 
 BASE_DIR = Path(__file__).resolve().parent
 
+# 随从栏容量（与 C++ MAX_BOARD 一致）
+MAX_BOARD_SLOTS = 7
+
 DEFAULT_ETC_BAND = ["舞动全场（ft.迦罗娜）", "幻觉药水", "生命的缚誓者阿莱克丝塔萨"]
 
 # 牛头人酋长卡池勾选选项：(卡名, 界面显示名)
@@ -224,6 +227,10 @@ def apply_board_exchanges(
         friend_attack = int(friend.get("attack") or 0)
         enemy_attack = int(enemy.get("attack") or 0)
 
+        if friend_attack < 1:
+            # 0 攻随从无法主动攻击（以场面当前攻击为准），该交换不生效
+            continue
+
         if friend.get("health") is not None:
             friend["health"] = friend["health"] - enemy_attack
 
@@ -239,6 +246,150 @@ def apply_board_exchanges(
         if item.get("health") is None or item["health"] > 0
     ]
     return board, enemy_board
+
+
+def _keep_value(
+    name: str,
+    in_hand: bool,
+    etc_band: Optional[List[str]],
+) -> float:
+    """随从保留分：结合手牌与牛池动态判断（场面上的随从价值随持有情况变化）。
+
+    - 手上有的卡，场上的同名牌价值降低；手上没有的卡，场上的价值增高；
+    - 手上有鱼 → 场上鱼无价值；手上有牛 → 场上牛无需保留；
+    - 牛内无卡 → 牛 0 价值；牛内有卡且手上无牛、场上有牛 → 牛巨大价值；
+    - 狐人老千：0 价值（无论手上有没有，场上狐不值得保留）。
+    """
+    if name == "鲨鱼之灵":
+        return 0.0 if in_hand else 35.0
+
+    if name == "斯卡布斯·刀油":
+        return 20.0 if in_hand else 50.0
+
+    if name == "乐队经理精英牛头人酋长":
+        if in_hand:
+            return 0.0
+
+        if etc_band is not None and len(etc_band) == 0:
+            return 0.0  # 牛内无卡 → 0 价值
+
+        return 50.0  # 牛内有卡且手上无牛 → 巨大价值
+
+    if name == "暗影施法者":
+        return 12.0 if in_hand else 30.0
+
+    if name == "晦鳞巢母":
+        return 8.0 if in_hand else 20.0
+
+    if name == "狐人老千":
+        return 0.0
+
+    return 0.0
+
+
+def exchange_heuristic(
+    board: List[dict],
+    hand: Optional[List[dict]] = None,
+    etc_band: Optional[List[str]] = None,
+) -> Tuple[float, int, int]:
+    """场面交换阶段的启发函数：只看我方随从栏（敌方场面完全不参与）。
+
+    - 空位数越多越好（后续连招可用格子越多）；
+    - 关键随从保留加分，随手牌/牛池动态调整（见 _keep_value）；
+    - 位置影响：序号越靠后，整场回手溢出时越先被烧（舞动全场按进场顺序回手、
+      装不下时从后往前烧），因此靠前的关键随从小有加分。
+    返回 (综合分, 空位数, 场上随从数)。
+    """
+    hand = hand or []
+    hand_names = {item.get("name") for item in hand}
+    free_slots = max(0, MAX_BOARD_SLOTS - len(board))
+    keep_score = 0.0
+    position_bonus = 0.0
+
+    for index, item in enumerate(board, start=1):
+        name = item.get("name") or ""
+        keep = _keep_value(name, name in hand_names, etc_band)
+        keep_score += keep
+
+        if keep:
+            position_bonus += max(0, MAX_BOARD_SLOTS - index) * 0.5
+
+    total = free_slots * 100.0 + keep_score + position_bonus
+    return (total, free_slots, len(board))
+
+
+def plan_exchanges(
+    board: List[dict],
+    enemy_board: List[dict],
+    hand: Optional[List[dict]] = None,
+    etc_band: Optional[List[str]] = None,
+    max_trades: int = 2,
+    max_plans: int = 4000,
+) -> Tuple[List[Tuple[int, int]], List[dict], Tuple[float, int, int]]:
+    """场面交换搜索（独立于路径搜索，单独的启发函数）。
+
+    枚举候选交换方案（每个我方随从最多主动攻击一次；敌方随从只要没死，
+    可被多个我方随从选为目标；最多 max_trades 个交换；枚举量受 max_plans
+    硬上限保护，不影响性能），
+    按 exchange_heuristic（只看我方随从栏）选最优，返回
+    (最优交换计划, 交换后的我方随从栏, 启发分数)。
+    """
+    # 只有攻击力 >= 1 的我方随从能主动发起交换（0 攻随从不能攻击）
+    friend_indices = [
+        index
+        for index, item in enumerate(board, start=1)
+        if int(item.get("attack") or 0) >= 1
+    ]
+    enemy_indices = list(range(1, len(enemy_board) + 1))
+    base_score = exchange_heuristic(board, hand=hand, etc_band=etc_band)
+    best_plan: List[Tuple[int, int]] = []
+    best_board = list(board)
+    best_score = base_score
+
+    if not friend_indices or not enemy_indices:
+        return best_plan, best_board, best_score
+
+    plans: List[tuple] = [()]
+
+    # 单交换
+    plans.extend((fi, ei) for fi in friend_indices for ei in enemy_indices)
+
+    # 双交换（两个我方随从；敌方目标可重复——只要没死就能被多次选为目标）
+    if max_trades >= 2:
+        for i, fi1 in enumerate(friend_indices):
+            for fi2 in friend_indices[i + 1:]:
+                for ei1 in enemy_indices:
+                    for ei2 in enemy_indices:
+                        plans.append((fi1, ei1, fi2, ei2))
+
+    if len(plans) > max_plans:
+        plans = plans[:max_plans]
+
+    score_cache: Dict[tuple, Tuple[float, int, int]] = {}
+
+    for plan in plans:
+        pairs = [(plan[k], plan[k + 1]) for k in range(0, len(plan), 2)]
+        traded_board, _traded_enemy = apply_board_exchanges(
+            board, enemy_board, exchanges=pairs
+        )
+        board_key = tuple(
+            (item.get("name"), item.get("health"), item.get("attack"))
+            for item in traded_board
+        )
+        score = score_cache.get(board_key)
+
+        if score is None:
+            # 大量候选交换会得到相同的我方随从栏，按结果指纹缓存启发分数，
+            # 减少复杂交换情况下的重复计算
+            score = exchange_heuristic(traded_board, hand=hand, etc_band=etc_band)
+            score_cache[board_key] = score
+
+        if score[0] > best_score[0]:
+            best_score = score
+            best_plan = pairs
+            best_board = traded_board
+
+    return best_plan, best_board, best_score
 
 
 def find_engine(exe_path: Optional[str] = None) -> Optional[str]:

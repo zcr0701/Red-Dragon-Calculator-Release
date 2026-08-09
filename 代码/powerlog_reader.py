@@ -38,10 +38,20 @@ from hslog.player import coerce_to_entity_id
 BASE_DIR = Path(__file__).resolve().parent
 CARD_ID_MAP_PATH = BASE_DIR / "card_id_map.json"
 
+# 常见炉石安装位置（跨电脑兼容：直接安装 / Battle.net 游戏目录 / 各盘符）
 DEFAULT_GAME_DIRS = [
     r"F:\Hearthstone",
+    r"C:\Hearthstone",
+    r"D:\Hearthstone",
+    r"E:\Hearthstone",
     r"C:\Program Files (x86)\Hearthstone",
     r"C:\Program Files\Hearthstone",
+    r"C:\Battle.net\Games\Hearthstone",
+    r"D:\Battle.net\Games\Hearthstone",
+    r"E:\Battle.net\Games\Hearthstone",
+    r"F:\Battle.net\Games\Hearthstone",
+    r"C:\Games\Hearthstone",
+    r"D:\Games\Hearthstone",
 ]
 
 # 打出以下牌时叠加“当前效果”（事件计数，和游戏内规则一致）
@@ -131,17 +141,92 @@ def find_local_accounts() -> Set[Tuple[int, int]]:
     return accounts
 
 
+def _registry_game_dir() -> Optional[str]:
+    """从 Windows 卸载信息注册表读炉石安装位置（跨电脑通用）。"""
+    try:
+        import winreg
+    except ImportError:
+        return None
+
+    subkeys = (
+        r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Hearthstone",
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Hearthstone",
+    )
+
+    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        for subkey in subkeys:
+            try:
+                with winreg.OpenKey(root, subkey) as key:
+                    value, _ = winreg.QueryValueEx(key, "InstallLocation")
+
+                    if value and Path(value).is_dir():
+                        return str(value)
+            except OSError:
+                continue
+
+    return None
+
+
+def _probe_drives() -> Optional[str]:
+    """常见盘符下的直接安装目录 / Battle.net 游戏目录兜底探测。"""
+    rels = (
+        "Hearthstone",
+        r"Battle.net\Games\Hearthstone",
+        r"Games\Hearthstone",
+    )
+
+    for drive in "CDEFGH":
+        for rel in rels:
+            candidate = Path(f"{drive}:\\") / rel
+
+            if candidate.is_dir():
+                return str(candidate)
+
+    return None
+
+
+def _scan_top_level() -> Optional[str]:
+    """顶层目录名含 hearthstone 且带 Logs 的浅层扫描（兼容任意盘符安装）。"""
+    for drive in "CDEFGH":
+        root = Path(f"{drive}:\\")
+
+        if not root.exists():
+            continue
+
+        try:
+            for child in root.iterdir():
+                if (
+                    child.name.lower() == "hearthstone"
+                    and (child / "Logs").is_dir()
+                ):
+                    return str(child)
+        except OSError:
+            continue
+
+    return None
+
+
 def detect_game_dir() -> Optional[str]:
     env_dir = os.environ.get("HS_GAME_DIR")
 
     if env_dir and Path(env_dir).is_dir():
         return env_dir
 
+    registry_dir = _registry_game_dir()
+
+    if registry_dir:
+        return registry_dir
+
     for candidate in DEFAULT_GAME_DIRS:
         if Path(candidate).is_dir():
             return candidate
 
-    return None
+    probed = _probe_drives()
+
+    if probed:
+        return probed
+
+    return _scan_top_level()
 
 
 def find_latest_session(game_dir: Optional[str]) -> Optional[Path]:
@@ -233,6 +318,8 @@ class PowerLogParser:
     def reset(self) -> None:
         self._hslog = LogParser()
         self._last_packet_id = 0
+        self._exporter = None
+        self._last_export_id = 0
         self.line_errors = 0
         self.pending_effects: Dict[str, int] = {}
         self._last_turn_seen: Optional[int] = None
@@ -246,7 +333,7 @@ class PowerLogParser:
             # 单行解析失败（未知枚举/新 opcode/脏行）不中断整体解析
             self.line_errors += 1
 
-    # ---- 事件：当前效果 / 出牌计数 / spcost 到期 ----
+    # ---- 事件：当前效果 / 出牌计数 / spcost 到期（增量，按 packet_id 水位） ----
 
     def _process_events(self, tree, game) -> None:
         for packet in _deep_packets(tree):
@@ -266,6 +353,41 @@ class PowerLogParser:
                 self._on_play_entity(entity_id, game)
             elif isinstance(packet, TagChange) and packet.tag == GameTag.TURN:
                 self._on_turn_change(packet.value)
+
+    def _export_new(self, tree):
+        """把新增包增量喂给缓存的 hslog 导出器（旧实现每次全量 exporter.export()）。
+
+        按 packet_id 水位只导出新增包；块/子法术的递归子包在被导出时一并处理，
+        水位直接推到子树最大 id，避免 DFS 再遇到它们时二次处理。
+        """
+        if self._exporter is None or self._exporter.packet_tree is not tree:
+            self._exporter = _TolerantExporter(
+                tree, player_manager=self._hslog.player_manager
+            )
+            self._last_export_id = 0
+
+        for packet in _deep_packets(tree):
+            packet_id = getattr(packet, "packet_id", 0)
+
+            if packet_id <= self._last_export_id:
+                continue
+
+            self._exporter.export_packet(packet)
+
+            if getattr(packet, "packets", None):
+                max_child = packet_id
+
+                for child in _deep_packets(packet):
+                    child_id = getattr(child, "packet_id", 0)
+
+                    if child_id > max_child:
+                        max_child = child_id
+
+                self._last_export_id = max_child
+            else:
+                self._last_export_id = packet_id
+
+        return self._exporter.game
 
     def _on_play_entity(self, entity_id: int, game) -> None:
         ent = game.find_entity_by_id(entity_id)
@@ -378,9 +500,7 @@ class PowerLogParser:
             }
 
         tree = games[-1]
-        exporter = _TolerantExporter(tree, player_manager=self._hslog.player_manager)
-        exporter.export()
-        game = exporter.game
+        game = self._export_new(tree)
 
         local_controller = self.forced_player_id
         local_player: Optional[object] = None
@@ -613,6 +733,9 @@ class LogWatcher:
         self.session_dir: Optional[Path] = None
         self.log_file: Optional[Path] = None
         self._pos = 0
+        self._parser_generation = 0  # parser.reset() 时 +1，用于快照缓存失效
+        self._cached_snapshot: Optional[dict] = None
+        self._cache_generation = -1
 
     def _last_game_offset(self) -> Optional[int]:
         """从文件尾部找最后一个 GameState CREATE_GAME 的行首字节偏移。"""
@@ -651,6 +774,7 @@ class LogWatcher:
     def _restart_at_latest_game(self) -> None:
         """只解析最新一局：重置解析器，游标定位到最后一个 GameState CREATE_GAME。"""
         self.parser.reset()
+        self._parser_generation += 1
         offset = self._last_game_offset()
         self._pos = offset if offset is not None else 0
 
@@ -697,6 +821,7 @@ class LogWatcher:
 
         if new_game_offset is not None:
             self.parser.reset()
+            self._parser_generation += 1
             self._pos = new_game_offset
             return 0
 
@@ -704,10 +829,21 @@ class LogWatcher:
 
     def snapshot(self) -> dict:
         self._refresh()
-        self.read_new()
+        count = self.read_new()
+
+        # 无新行且解析器未被重置：直接返回上次快照，避免每 tick 全量重建
+        if (
+            count == 0
+            and self._cached_snapshot is not None
+            and self._cache_generation == self._parser_generation
+        ):
+            return self._cached_snapshot
+
         snap = self.parser.snapshot()
         snap["log_path"] = str(self.log_file) if self.log_file else None
         snap["session_dir"] = str(self.session_dir) if self.session_dir else None
+        self._cached_snapshot = snap
+        self._cache_generation = self._parser_generation
         return snap
 
 

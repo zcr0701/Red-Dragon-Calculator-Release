@@ -267,11 +267,24 @@ def abbreviate_step_html(step: str) -> str:
     else:
         parts.append(html.escape(main))
 
-    for ch in target:
+    index = 0
+
+    while index < len(target):
+        ch = target[index]
+
         if ch in CARD_ABBREV_COLORS:
-            parts.append(_abbr_square(ch, CARD_ABBREV_COLORS[ch]))
+            # 颜色方块连同随后的序号一起（[刀3] 而不是 [刀]3）
+            end = index + 1
+
+            while end < len(target) and target[end].isdigit():
+                end += 1
+
+            segment = target[index:end]
+            parts.append(_abbr_square(html.escape(segment), CARD_ABBREV_COLORS[ch]))
+            index = end
         else:
             parts.append(html.escape(ch))
+            index += 1
 
     if deadly:
         if main_color:
@@ -650,6 +663,7 @@ class MainWindow(QWidget):
         self._last_state_key = ""
         self._manual_mode = False
         self.etc_checks: List[Tuple[str, QCheckBox]] = []
+        self._auto_exchange_cache: Optional[Tuple[str, List[Tuple[int, int]]]] = None
 
         self._build_ui()
 
@@ -810,7 +824,7 @@ class MainWindow(QWidget):
         param_grid.addWidget(self.beam_depth, 5, 1)
         param_grid.addWidget(QLabel("最大路径数："), 6, 0)
         param_grid.addWidget(self.max_paths, 6, 1)
-        self.beam_width = self._spin(0, 0, 9999, step=100)
+        self.beam_width = self._spin(0, 0, 1000000, step=100)                   
         param_grid.addWidget(QLabel("束宽（0=自动四通道）："), 7, 0)
         param_grid.addWidget(self.beam_width, 7, 1)
         self.no_time_limit = QCheckBox("不限时：按束宽×最大深度跑完（时间预算失效，大束宽可能很慢）")
@@ -1311,13 +1325,60 @@ class MainWindow(QWidget):
         }
 
     def current_exchange_pairs(self) -> List[Tuple[int, int]]:
-        """按当前场面解析“场面交换”输入（忽略越界/非法项，非法项有告警时由调用方展示）。"""
+        """场面交换方案：手动输入优先；留空时用独立的场面交换搜索自动选。
+
+        场面交换搜索与路径搜索分离——它只看我方随从栏（空位数/序号位置），
+        由 engine.plan_exchanges 按 exchange_heuristic 选最优，结果按场面指纹缓存。
+        """
         board_len = len(self.snapshot.get("board") or [])
         enemy_len = len(self.snapshot.get("enemy_board") or [])
-        pairs, _warnings = parse_exchange_text(
-            self.exchange_edit.text(), board_len, enemy_len
+        text = self.exchange_edit.text().strip()
+
+        if text:
+            pairs, _warnings = parse_exchange_text(text, board_len, enemy_len)
+            board = self.snapshot.get("board") or []
+
+            # 0 攻随从无法主动攻击（以场面当前攻击为准），交换不生效
+            return [
+                (friend_index, enemy_index)
+                for friend_index, enemy_index in pairs
+                if int(board[friend_index - 1].get("attack") or 0) >= 1
+            ]
+
+        board = self.snapshot.get("board") or []
+        enemy = self.snapshot.get("enemy_board") or []
+        hand = self.snapshot.get("hand") or []
+        etc_band = self.snapshot.get("etc_band")
+        fingerprint = (
+            json.dumps(
+                [(b.get("name"), b.get("health"), b.get("attack")) for b in board],
+                ensure_ascii=False,
+            )
+            + "|"
+            + json.dumps(
+                [
+                    (e.get("name"), e.get("health"), e.get("attack"))
+                    for e in enemy
+                ],
+                ensure_ascii=False,
+            )
+            + "|"
+            + json.dumps(
+                [(h.get("name"), h.get("cost")) for h in hand],
+                ensure_ascii=False,
+            )
+            + "|"
+            + json.dumps(etc_band, ensure_ascii=False)
         )
-        return pairs
+
+        if self._auto_exchange_cache is not None and self._auto_exchange_cache[0] == fingerprint:
+            return list(self._auto_exchange_cache[1])
+
+        plan, _result_board, _score = engine.plan_exchanges(
+            board, enemy, hand=hand, etc_band=etc_band
+        )
+        self._auto_exchange_cache = (fingerprint, list(plan))
+        return list(plan)
 
     def _update_calc_enabled(self) -> None:
         has_state = bool(self.snapshot.get("hand")) or bool(self.snapshot.get("board"))
@@ -1347,6 +1408,16 @@ class MainWindow(QWidget):
             len(snapshot.get("board") or []),
             len(snapshot.get("enemy_board") or []),
         )
+        board_items = snapshot.get("board") or []
+
+        for friend_index, _enemy_index in _pairs:
+            if (
+                friend_index <= len(board_items)
+                and int(board_items[friend_index - 1].get("attack") or 0) < 1
+            ):
+                exchange_warnings.append(
+                    f"我方随从{friend_index} 为 0 攻，无法主动攻击，已忽略"
+                )
 
         if exchange_warnings:
             self.engine_label.setText("；".join(exchange_warnings[:3]))
