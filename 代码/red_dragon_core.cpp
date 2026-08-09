@@ -147,6 +147,33 @@ static const unordered_map<string, CardDef> DB = {
     {"“赤烟”腾武", {2, "minion", "tenwu", true, false, false, 2}},  // 官方名（日志/卡图）别名
     {"押注猎手", {3, "minion", "gambler_hunter", false, true, false, 4}},  // 快枪或连击：获取一张幸运币
     {"狐人老千", {2, "minion", "foxy_fraud", true, false, false, 2}},  // 战吼：下一张连击牌减 2 费（非连击牌）
+    {"持枪要挟", {1, "spell", "discover_quickdraw", false, false, false, -1}},  // 发现一张另一职业的快枪牌
+};
+
+// ===================== 抽牌属性 =====================
+// 抽牌属性：卡牌会抽牌时记录“抽什么类型的牌、几张”：
+//   - random=随机：发现（选 3 张随机牌抽 1 张）或未知类型的普通抽牌，抽到的牌类型不可知；
+//   - minion=随从 / spell=法术：抽牌类型已知。
+// 只用于辅助“是否考虑展开该路径”的判断（generate_successors / cards_drawn_if_played），
+// 不模拟具体抽到哪张牌（牌库未知时抽牌结果不可建模）。
+struct DrawSpec {
+    string type;              // "random" / "minion" / "spell"
+    int count = 0;            // 张数
+    bool conditional = false; // 有条件才抽（预留；当前无此类抽牌卡）
+};
+
+// 基础抽牌（无条件部分）；DRAW_ATTR_COMBO 为连击触发时追加的部分。
+static const unordered_map<string, vector<DrawSpec>> DRAW_ATTR_BASE = {
+    {"dig_for_treasure", {{"minion", 1}}},           // 挖掘宝藏：抽 1 张随从牌
+    {"cultist_map", {{"random", 1}}},                // 异教地图：从牌库发现（选 3 张随机抽 1）→ 随机
+    {"discover_quickdraw", {{"random", 1}}},         // 持枪要挟：发现一张另一职业快枪牌 → 随机
+    {"swindle", {{"spell", 1}}},                     // 行骗：抽 1 张法术牌
+    {"shroud_of_concealment", {{"minion", 2}}},      // 潜伏帷幕：抽 2 张随从牌
+    {"dubious_purchase", {{"random", 3}}},           // 可疑交易：抽 3 张随机牌
+};
+static const unordered_map<string, vector<DrawSpec>> DRAW_ATTR_COMBO = {
+    {"gone_fishin", {{"random", 1}}},  // 垂钓时光：基础不抽（探底），连击才抽 1 张
+    {"swindle", {{"minion", 1}}},      // 行骗：连击再抽 1 张随从牌
 };
 
 static uint64_t str_hash(const string& s);
@@ -196,7 +223,7 @@ static bool is_coin_name(const string& n) {
 struct State {
     vector<Card> hand;
     vector<Card> board;
-    vector<Card> enemy_board;  // 敌方随从（只需血量，用于锯齿骨刺击杀抽牌）
+    vector<Card> enemy_board;  // 敌方随从（只需血量，用于锯齿骨刺击杀目标判定）
     vector<Card> deck;
     vector<Card> secrets;
     Card weapon;
@@ -588,12 +615,11 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
             s.mana = std::min(s.mana_crystals, s.mana + 2);
         }
     } else if (e == "swindle") {
-        // 行骗：不连击抽 1 张法术；连击再抽 1 张随从（即连击共抽法术+随从 2 张）。
-        // 牌库已知时按实际牌库精确模拟（移出牌库进手牌/满手烧毁）：
-        // 牌库里还有随从（如红龙）就抽得到，不受“随从组集齐=随从已抽完”启发影响
-        // （该启发只用于牌库未知的兜底，见 cards_drawn_if_played）；
-        // 牌库未知时不模拟，保持“不抽牌”可打出触发连击（避免虚构抽牌后继）。
         if (s.deck_is_known) {
+            // 行骗：不连击抽 1 张法术；连击再抽 1 张随从（即连击共抽法术+随从 2 张）。
+            // 牌库已知时按实际牌库精确模拟（移出牌库进手牌/满手烧毁）：
+            // 牌库里还有随从（如红龙）就抽得到，不受“随从组集齐=随从已抽完”启发影响
+            // （该启发只用于牌库未知的兜底，见 cards_drawn_if_played）。
             bool combo = s.cards_played_this_turn > 0;  // 本张行骗的连击状态
             for (auto it = s.deck.begin(); it != s.deck.end(); ++it) {
                 if (!it->is_spell_like()) continue;
@@ -612,11 +638,32 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
                     break;
                 }
             }
+        } else {
+            // 牌库未知：行骗保底抽 1 张法术（必然发生，不能当成免费连击触发器）。
+            // 把该法术作为“未知法术”杂牌置入手牌（满手按进场顺序烧毁）；
+            // 连击的随从部分不模拟（牌库是否还有随从未知，避免虚构抽牌后继）。
+            Card unknown_spell = make_card("未知法术");
+            unknown_spell.card_type = "spell";
+            add_card_to_hand_or_burn(s, unknown_spell);
+        }
+    } else if (e == "gone_fishin") {
+        // 垂钓时光：连击才抽 1 张牌（不连击只有探底，不抽牌）。
+        // 牌库已知：按实际牌库抽第一张（移出牌库进手牌/满手烧毁）；
+        // 牌库未知：把抽到的牌作为“未知抽牌”杂牌置入手牌（不能当免费连击触发器）。
+        if (s.cards_played_this_turn > 0) {
+            if (s.deck_is_known && !s.deck.empty()) {
+                Card drawn = s.deck.front();
+                s.deck.erase(s.deck.begin());
+                add_card_to_hand_or_burn(s, drawn);
+            } else if (!s.deck_is_known) {
+                Card unknown = make_card("未知抽牌");
+                add_card_to_hand_or_burn(s, unknown);
+            }
         }
     } else if (e == "serrated_bone_spike") {
         if (target_enemy_is_killed) {
             if (target_friendly_index < -1) {
-                // 敌方随从目标（编码 -2 起）：血量 <= 3 必死，抽 2
+                // 敌方随从目标（编码 -2 起）：血量 <= 3 必死，下一张牌减 2 费（不抽牌）
                 int eidx = -target_friendly_index - 2;
                 if (eidx < 0 || eidx >= (int)s.enemy_board.size()) return false;
                 const Card& target = s.enemy_board[eidx];
@@ -643,8 +690,14 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
             add_card_to_hand_or_burn(s, make_card("幸运币"));
         }
     } else if (e == "cultist_map") {
-        Card unknown = make_card("未知发现物");
-        add_card_to_hand_or_burn(s, unknown);
+        // 异教地图：从牌库中“发现”一张牌（保底抽 1 张）。
+        // 牌库已知：按实际牌库抽第一张（移出牌库进手牌/满手烧毁）；
+        // 牌库未知：无法可靠建模抽到的牌，搜索不再展开该动作（见 generate_successors）。
+        if (s.deck_is_known && !s.deck.empty()) {
+            Card drawn = s.deck.front();
+            s.deck.erase(s.deck.begin());
+            add_card_to_hand_or_burn(s, drawn);
+        }
     }
     // alexstrasza / 未知效果：无操作
     return true;
@@ -700,11 +753,9 @@ static vector<State> apply_search_effect(State base, const Card& card,
 }
 
 // ===================== 后继生成 =====================
-// 领域剪枝：牌库未知时抽牌类法术不可枚举（跳过），避免虚构后继。
-static const std::set<string> DRAW_CARD_EFFECTS = {
-    "dig_for_treasure", "shroud_of_concealment", "swindle",
-    "dubious_purchase", "gone_fishin", "quick_pick",
-};
+// 抽牌类卡仍可打出（触发连击/腾手牌格）；牌库未知时只模拟“保底抽到”的部分
+// （如行骗必抽 1 张法术），其余不枚举，避免虚构抽牌后继。
+// 会抽牌的卡由抽牌属性表（DRAW_ATTR_BASE / DRAW_ATTR_COMBO）标记，见上方定义。
 
 static bool combo_active(const State& s) { return s.cards_played_this_turn > 0; }
 
@@ -732,43 +783,56 @@ static bool combo_minion_set_complete(const State& s) {
     return false;
 }
 
-static int cards_drawn_if_played(const State& s, const Card& card) {
-    const string& e = card.effect_id;
-    if (DRAW_CARD_EFFECTS.find(e) == DRAW_CARD_EFFECTS.end()) return 0;
-    if (e == "gone_fishin" && !combo_active(s)) return 0;
-    bool no_minions_left = combo_minion_set_complete(s);  // 随从组已集齐 → 牌库视作无随从
-    if (!s.deck_is_known) {
-        if (e == "dig_for_treasure" || e == "shroud_of_concealment")
-            return no_minions_left ? 0 : (e == "shroud_of_concealment" ? 2 : 1);
-        if (e == "dubious_purchase") return 3;
-        // 行骗：不连击抽 1 张法术；连击再抽 1 张随从（共 2 张）。
-        // 随从组已集齐（随从已抽完）时，随从部分按 0 处理。
-        if (e == "swindle") return combo_active(s) ? (no_minions_left ? 1 : 2) : 1;
-        if (e == "gone_fishin") return 1;
-        if (e == "quick_pick") return 1;
-        return 1;
+// 纯随机抽牌（发现/未知类型）且牌库未知时无法建模抽到的牌：
+// 若卡牌本身是法术且其抽牌为无条件随机，则禁止作为免费填充牌展开
+// （异教地图/持枪要挟/可疑交易；垂钓时光是连击才抽、锯齿骨刺不抽牌只减费、
+// 疾速矿锄不触发抽牌可当杂牌打出，均不受此限制）。
+static bool card_is_unmodelable_random_draw(const Card& card) {
+    auto base_it = DRAW_ATTR_BASE.find(card.effect_id);
+    if (base_it == DRAW_ATTR_BASE.end()) return false;
+    if (DRAW_ATTR_COMBO.find(card.effect_id) != DRAW_ATTR_COMBO.end()) return false;  // 连击追加 → 可展开
+    if (!card.is_spell_like()) return false;  // 武器/随从等还有装备/战吼等其他效果
+    for (const auto& d : base_it->second) {
+        if (d.type != "random" || d.conditional) return false;
     }
+    return true;
+}
+
+static int cards_drawn_if_played(const State& s, const Card& card) {
+    // 按抽牌属性汇总本次实际会抽的条目：基础抽牌 + 连击追加（连击时才生效）
+    auto base_it = DRAW_ATTR_BASE.find(card.effect_id);
+    auto combo_it = DRAW_ATTR_COMBO.find(card.effect_id);
+    if (base_it == DRAW_ATTR_BASE.end() && combo_it == DRAW_ATTR_COMBO.end()) return 0;
+    vector<const DrawSpec*> specs;
+    if (base_it != DRAW_ATTR_BASE.end())
+        for (const auto& d : base_it->second) specs.push_back(&d);
+    if (combo_it != DRAW_ATTR_COMBO.end() && combo_active(s))
+        for (const auto& d : combo_it->second) specs.push_back(&d);
+    if (specs.empty()) return 0;
+    // 随从组已集齐 → 牌库视作无随从（仅牌库未知时的兜底启发）
+    bool no_minions_left = combo_minion_set_complete(s);
+    if (!s.deck_is_known) {
+        int n = 0;
+        for (const DrawSpec* d : specs) {
+            if (d->type == "minion" && no_minions_left) continue;
+            n += d->count;
+        }
+        return n;
+    }
+    // 牌库已知时以实际牌库为准：按抽牌类型统计可得张数
+    int deck_total = (int)s.deck.size();
     int deck_minions = 0, deck_spells = 0;
     for (const auto& c : s.deck) {
         if (c.card_type == "minion") deck_minions++;
         if (c.is_spell_like()) deck_spells++;
     }
-    // 牌库已知时以实际牌库为准：牌库里还有随从（如红龙）就还能抽到。
-    // “随从组集齐=随从已抽完”的启发只用于牌库未知的兜底（上方分支），
-    // 否则会出现“牌库有红龙却抽不到”的自相矛盾。
-    int deck_total = (int)s.deck.size();
-    if (e == "dubious_purchase") return std::min(3, deck_total);
-    if (e == "gone_fishin") return std::min(1, deck_total);
-    if (e == "dig_for_treasure") return std::min(1, deck_minions);
-    if (e == "swindle") {
-        // 行骗：不连击抽 1 张法术；连击再抽 1 张随从（共 2 张）
-        int n = std::min(1, deck_spells);
-        if (combo_active(s)) n += std::min(1, deck_minions);
-        return n;
+    int n = 0;
+    for (const DrawSpec* d : specs) {
+        int avail = d->type == "minion" ? deck_minions :
+                    d->type == "spell"  ? deck_spells : deck_total;
+        n += std::min(d->count, avail);
     }
-    if (e == "shroud_of_concealment") return std::min(2, deck_minions);
-    if (e == "quick_pick") return std::min(1, deck_total);
-    return 0;
+    return n;
 }
 
 static vector<State> generate_successors(const State& st) {
@@ -795,9 +859,12 @@ static vector<State> generate_successors(const State& st) {
                 if (sec.name() == card.name()) { dup_secret = true; break; }
             if (dup_secret) continue;  // 每种奥秘只能装备一个
         }
-        // 抽牌类法术不再彻底禁止展开：按“不抽牌”打出（触发连击/腾手牌格），
-        // 避免虚构抽牌后继；随从表判空后更可直接作为普通法术使用。
-        // （draw 效果本身不模拟，见 apply_effect_inplace）
+        // 抽牌属性辅助“是否考虑展开该路径”：牌库未知时，纯随机抽牌
+        // （发现/未知类型）无法建模抽到的牌，禁止展开，避免它作为免费填充牌
+        // 进入路径；牌库已知时按实际牌库抽牌模拟（见 apply_effect_inplace）。
+        if (!st.deck_is_known && card_is_unmodelable_random_draw(card)) continue;
+        // 其余抽牌类卡按“不抽牌”打出（触发连击/腾手牌格），避免虚构抽牌后继；
+        // 随从表判空后更可直接作为普通法术使用（draw 效果本身不模拟）。
 
         vector<int> friendly_targets;
         if (card.effect_id == "shadowstep" || card.effect_id == "shadowcaster" ||

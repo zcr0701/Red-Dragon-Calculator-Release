@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import sys
@@ -38,6 +39,7 @@ from PyQt5.QtWidgets import (
     QSizeGrip,
     QSpinBox,
     QSplitter,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -106,8 +108,49 @@ CARD_ABBREVIATIONS = {
     "战略转移": "转",
 }
 
+# 小窗缩写字底方块颜色（未列出的缩写不画方块；殒不在此表——跟随所变形卡的颜色）
+CARD_ABBREV_COLORS = {
+    "鱼": "#46F2FF",
+    "牛": "#683926",
+    "龙": "#FFAC42",
+    "狐": "#F9517B",
+    "刀": "#C7AA8C",
+    "晦": "#7D24DD",
+    "暗": "#F978F6",
+    "舞": "#FFFCAE",
+    "幻": "#1057ED",
+    "币": "#31A610",
+    "伺": "#B0F46F",
+    "步": "#050305",
+    "骨": "#EAF0D7",
+    "腾": "#D62443",
+}
+
+
+def _contrast_text_color(hex_color: str) -> str:
+    """按背景色亮度返回黑/白文字色，保证方块内可读。"""
+    try:
+        r = int(hex_color[1:3], 16)
+        g = int(hex_color[3:5], 16)
+        b = int(hex_color[5:7], 16)
+    except (ValueError, IndexError):
+        return "#FFFFFF"
+
+    luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+    return "#000000" if luminance > 0.5 else "#FFFFFF"
+
+
+def _abbr_square(ch: str, color: str) -> str:
+    """单个缩写字的正方形字底方块（背景色 + 自动黑/白文字）。"""
+    text = _contrast_text_color(color)
+    return (
+        f'<span style="background-color:{color}; color:{text}; '
+        f'padding:0 2px;">{ch}</span>'
+    )
+
 # 指向性操作统一标准：卡名（目标名Nnd），N 为目标随从在 board 上的顺序（1 起），
-# 由 C++ 核心在路径里直接输出；缩写显示为 卡(目标缩写Nnd)，如 暗影施法者（斯卡布斯·刀油3nd）-> 暗(刀3nd)。
+# 由 C++ 核心在路径里直接输出；小窗缩写显示为 卡(目标缩写N)（去掉 nd），
+# 如 暗影施法者（斯卡布斯·刀油3nd）-> 暗(刀3)。
 ROUND_SPLIT_NAMES = ("战略转移", "舞动全场")  # 与 split_path_rounds 提取的基础名匹配
 
 _CN_DIGITS = "零一二三四五六七八九"
@@ -181,11 +224,11 @@ def abbreviate_step(step: str) -> str:
             if not p:
                 continue
 
-            # 指向性目标带 board 序号，如 斯卡布斯·刀油3nd -> 刀3nd
+            # 指向性目标带 board 序号，如 斯卡布斯·刀油3nd -> 刀3（小窗去掉 nd）
             m = re.match(r"^(.*?)(\d+)nd$", p)
 
             if m:
-                parts.append(abbreviate_card_name(m.group(1).strip()) + m.group(2) + "nd")
+                parts.append(abbreviate_card_name(m.group(1).strip()) + m.group(2))
             else:
                 # 牛头人乐队选择（-> 连接）或无效目标等：无序号，保持原名
                 parts.append(abbreviate_card_name(p))
@@ -194,6 +237,49 @@ def abbreviate_step(step: str) -> str:
         target = "(" + "".join(parts) + ")"
 
     return abbreviate_card_name(name) + target + deadly
+
+
+def abbreviate_step_html(step: str) -> str:
+    """小窗彩色显示：已知缩写字按 CARD_ABBREV_COLORS 上色，其余字符原样保留。
+
+    [殒] 标记跟随“所变形卡”（主卡缩写）的颜色，而不是目标括号里的缩写。
+    """
+    plain = abbreviate_step(step)
+    deadly = plain.endswith("[殒]")
+    body = plain[:-3] if deadly else plain
+
+    split_at = -1
+    for sep in ("（", "("):
+        pos = body.find(sep)
+        if pos >= 0 and (split_at < 0 or pos < split_at):
+            split_at = pos
+
+    if split_at >= 0:
+        main, target = body[:split_at], body[split_at:]
+    else:
+        main, target = body, ""
+
+    main_color = CARD_ABBREV_COLORS.get(main)
+    parts: List[str] = []
+
+    if main_color:
+        parts.append(_abbr_square(html.escape(main), main_color))
+    else:
+        parts.append(html.escape(main))
+
+    for ch in target:
+        if ch in CARD_ABBREV_COLORS:
+            parts.append(_abbr_square(ch, CARD_ABBREV_COLORS[ch]))
+        else:
+            parts.append(html.escape(ch))
+
+    if deadly:
+        if main_color:
+            parts.append("[" + _abbr_square("殒", main_color) + "]")
+        else:
+            parts.append("[殒]")
+
+    return "".join(parts)
 
 
 def split_path_rounds(path: List[str]) -> List[List[str]]:
@@ -215,12 +301,34 @@ def split_path_rounds(path: List[str]) -> List[List[str]]:
     return rounds
 
 
-def format_mini_results(data: Dict[str, object]) -> str:
-    """小窗结果：最高伤害路径按轮次分割，只显示缩写。"""
+def format_mini_results(data: Dict[str, object], colors: bool = False) -> str:
+    """小窗结果：最高伤害路径按轮次分割，只显示缩写。
+
+    colors=True 时返回 HTML（缩写字上色），否则返回纯文本。
+    """
     results = data.get("results") or []
-    lines = [
-        f"最大伤害：{data.get('max_damage', 0)}，最大龙数：{data.get('max_dragons', 0)}"
-    ]
+    title = f"最大伤害：{data.get('max_damage', 0)}，最大龙数：{data.get('max_dragons', 0)}"
+
+    if colors:
+        esc = html.escape
+        lines = [esc(title)]
+
+        if not results:
+            lines.append(esc("（无路径）"))
+            return "<br>".join(lines)
+
+        path = (results[0].get("path") or []) if results else []
+        rounds = split_path_rounds(path)
+
+        for index, rnd in enumerate(rounds, start=1):
+            abbr = "-".join(abbreviate_step_html(step) for step in rnd)
+            lines.append(esc(f"[第{chinese_round_number(index)}轮]："))
+            lines.append(abbr if abbr else esc("（空）"))
+            lines.append("")
+
+        return "<br>".join(lines)
+
+    lines = [title]
 
     if not results:
         lines.append("（无路径）")
@@ -481,8 +589,12 @@ class MainWindow(QWidget):
         self.mini_font_spin.setRange(12, 48)
         self.mini_font_spin.setValue(self.mini_font_size())
         self.mini_font_spin.setSuffix("px")
-        self.mini_font_spin.setToolTip("小窗公式字号（默认 24px，可记忆）")
+        self.mini_font_spin.setToolTip("小窗公式字号（默认 32px，可记忆）")
         self.mini_font_spin.valueChanged.connect(self.apply_mini_font)
+        self.mini_color_check = QCheckBox("小窗颜色")
+        self.mini_color_check.setChecked(self.mini_color_enabled())
+        self.mini_color_check.setToolTip("小窗公式缩写字用颜色区分（默认勾选）")
+        self.mini_color_check.toggled.connect(self.apply_mini_color)
         self.manual_button = QPushButton("▸ 手动输入")
         self.manual_button.setCheckable(True)
         self.manual_button.setChecked(True)
@@ -493,6 +605,7 @@ class MainWindow(QWidget):
         status.addWidget(self.mini_button)
         status.addWidget(self.mini_font_label)
         status.addWidget(self.mini_font_spin)
+        status.addWidget(self.mini_color_check)
         root.addLayout(status)
 
         main_splitter = QSplitter(Qt.Vertical)
@@ -900,9 +1013,9 @@ class MainWindow(QWidget):
 
     @staticmethod
     def mini_font_size() -> int:
-        """小窗公式字号（QSettings 记忆，默认 24px）。"""
-        value = QSettings("RedDragonCalculator", "main").value("mini_font_px", 24)
-        return int(value or 24)
+        """小窗公式字号（QSettings 记忆，默认 32px）。"""
+        value = QSettings("RedDragonCalculator", "main").value("mini_font_px", 32)
+        return int(value or 32)
 
     def apply_mini_font(self, size: int) -> None:
         """保存小窗公式字号并即时生效。"""
@@ -910,6 +1023,21 @@ class MainWindow(QWidget):
 
         if self.mini_window is not None:
             self.mini_window.set_formula_font(int(size))
+
+    @staticmethod
+    def mini_color_enabled() -> bool:
+        """小窗缩写字颜色开关（QSettings 记忆，默认勾选）。"""
+        value = QSettings("RedDragonCalculator", "main").value("mini_color", True)
+        if isinstance(value, bool):
+            return value
+        return str(value).lower() not in ("0", "false", "no", "off", "")
+
+    def apply_mini_color(self, checked: bool) -> None:
+        """保存小窗颜色开关并即时刷新已显示的结果。"""
+        QSettings("RedDragonCalculator", "main").setValue("mini_color", bool(checked))
+
+        if self.mini_window is not None:
+            self.mini_window.refresh_result()
 
     def _sync_mini_window(self, *_args) -> None:
         if self.mini_window is None or not self.mini_window.isVisible():
@@ -1300,6 +1428,7 @@ class MiniWindow(QWidget):
         self.setWindowTitle("红龙小窗")
         self.resize(210, 560)  # 高:宽 ≈ 2.7:1（2~4:1）
         self._drag_offset: Optional[QPoint] = None
+        self._last_data: Optional[Dict[str, object]] = None
         self._build_ui()
         self.sync_from_main()
 
@@ -1367,9 +1496,9 @@ class MiniWindow(QWidget):
         self.mini_calc_button.clicked.connect(self.start_calc)
         root.addWidget(self.mini_calc_button)
 
-        self.mini_result = QPlainTextEdit()
+        self.mini_result = QTextBrowser()
         self.mini_result.setReadOnly(True)
-        self.mini_result.setMaximumBlockCount(3000)
+        self.mini_result.document().setMaximumBlockCount(3000)
         root.addWidget(self.mini_result, 1)
         self.set_formula_font(self.main.mini_font_size())
 
@@ -1381,6 +1510,7 @@ class MiniWindow(QWidget):
         font = self.mini_result.font()
         font.setPixelSize(int(size))
         self.mini_result.setFont(font)
+        self.mini_result.document().setDefaultFont(font)
 
     # ---- 拖动 / 吸附 / 调整大小 ----
 
@@ -1567,7 +1697,22 @@ class MiniWindow(QWidget):
 
     def show_result(self, data: Dict[str, object]) -> None:
         """解析并显示主窗口计算结果（小窗只负责解析主界面路径）。"""
-        self.mini_result.setPlainText(format_mini_results(data))
+        self._last_data = data
+        self._render_result()
+
+    def _render_result(self) -> None:
+        """按当前“小窗颜色”开关渲染最近一次结果（HTML 上色 / 纯文本）。"""
+        if self._last_data is None:
+            return
+
+        if self.main.mini_color_enabled():
+            self.mini_result.setHtml(format_mini_results(self._last_data, colors=True))
+        else:
+            self.mini_result.setPlainText(format_mini_results(self._last_data))
+
+    def refresh_result(self) -> None:
+        """小窗颜色开关切换后重绘已显示的结果。"""
+        self._render_result()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         event.accept()
