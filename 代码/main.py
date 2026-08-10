@@ -22,12 +22,13 @@ import ipaddress  # noqa: F401 - PyInstaller 打包必需（frozen urllib.parse 
 import json
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import QEventLoop, QPoint, QSettings, QThread, QTimer, Qt, pyqtSignal
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QCursor, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -98,9 +99,9 @@ DEMO_SNAPSHOT = {
         {"name": "舞动全场（ft.迦罗娜）", "cost": 3},
         {"name": "殒命暗影", "cost": None},
     ],
-    "board": [
-        {"name": "晦鳞巢母", "cost": 3, "health": 3},
-    ],
+    # 空场：原十龙局面（8 水晶 8 法力 → 10 龙 / 160 伤）要求场上无随从，
+    # 若放一只随从会占掉第 7 格，导致十龙路径在第 9 步刀油前满场而打不出来
+    "board": [],
     "deck": [],
     "secrets": [],
     "weapon": None,
@@ -348,6 +349,10 @@ def _format_exchange_line(exchanges: List[Tuple[int, int]]) -> str:
     return f"场面交换处理：{plan}。其中X为随从在board中的序号"
 
 
+# 小窗段落（每轮路径行）开头缩进两个全角空格
+PARA_INDENT = "\u3000\u3000"
+
+
 def format_mini_results(
     data: Dict[str, object],
     colors: bool = False,
@@ -383,7 +388,7 @@ def format_mini_results(
         for index, rnd in enumerate(rounds, start=1):
             abbr = "-".join(abbreviate_step_html(step) for step in rnd)
             lines.append(esc(f"[第{chinese_round_number(index)}轮]："))
-            lines.append(abbr if abbr else esc("（空）"))
+            lines.append(PARA_INDENT + (abbr if abbr else esc("（空）")))
             lines.append("")
 
         return "<br>".join(lines)
@@ -403,7 +408,7 @@ def format_mini_results(
     for index, rnd in enumerate(rounds, start=1):
         abbr = "-".join(abbreviate_step(step) for step in rnd)
         lines.append(f"[第{chinese_round_number(index)}轮]：")
-        lines.append(abbr if abbr else "（空）")
+        lines.append(PARA_INDENT + (abbr if abbr else "（空）"))
         lines.append("")
 
     return "\n".join(lines)
@@ -2087,7 +2092,7 @@ class IntroDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         self._close_btn = close_btn
         self._close_ready = False
-        self._close_wait_secs = 3
+        self._close_wait_secs = 5
         self._update_close_button_text()
         self._countdown_timer = QTimer(self)
         self._countdown_timer.setInterval(1000)
@@ -2165,11 +2170,26 @@ def _verify_integrity() -> Optional[str]:
     return None
 
 
+def _center_on_screen(window: QWidget) -> None:
+    """主窗口默认居中显示（取鼠标所在屏幕，回退主屏）。"""
+    cursor_screen = QApplication.screenAt(QCursor.pos())
+    screen = cursor_screen or QApplication.primaryScreen()
+
+    if screen is None:
+        return
+
+    geo = screen.availableGeometry()
+    frame = window.frameGeometry()
+    frame.moveCenter(geo.center())
+    window.move(frame.topLeft())
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     demo = "--demo" in sys.argv
     smoke = "--smoke" in sys.argv
     selftest = "--selftest" in sys.argv
+    bench = "--bench" in sys.argv
 
     integrity_error = _verify_integrity()
 
@@ -2185,9 +2205,55 @@ def main() -> int:
 
     window = MainWindow(demo=demo)
     window.show()
+    _center_on_screen(window)
 
-    if not smoke and not selftest:
+    if not smoke and not selftest and not bench:
         IntroDialog(window).exec_()
+
+    if bench:
+        # 性能基准：连续跑 3 次固定预算计算（默认 3 秒/次，--bench N 可改预算，
+        # 0 = 不限时自然跑完），输出引擎自报耗时与展开量，用于对比打包前后计算性能。
+        bench_sec = 3.0
+
+        try:
+            if "--bench" in sys.argv:
+                idx = sys.argv.index("--bench")
+                if idx + 1 < len(sys.argv):
+                    bench_sec = float(sys.argv[idx + 1])
+        except ValueError:
+            pass
+
+        def run_bench() -> None:
+            try:
+                for i in range(1, 4):
+                    t0 = time.perf_counter()
+                    result = engine.compute(
+                        DEMO_SNAPSHOT,
+                        min_alex=1,
+                        max_alex=10,
+                        depth=40,
+                        max_paths=1000000,
+                        threads=4,
+                        time_budget_sec=bench_sec,
+                    )
+                    wall = time.perf_counter() - t0
+                    stats = result.get("stats") or {}
+                    print(
+                        f"BENCH iter={i} wall={wall:.3f}s "
+                        f"damage={result.get('max_damage')} "
+                        f"dragons={result.get('max_dragons')} "
+                        f"expansions={result.get('expansions')} "
+                        f"engine_total={stats.get('总耗时(秒)')} "
+                        f"exp_per_sec={stats.get('展开/秒')}"
+                    )
+                app.exit(0)
+            except Exception as exc:  # noqa: BLE001
+                print(f"BENCH FAILED: {type(exc).__name__}: {exc}")
+                app.exit(1)
+
+        QTimer.singleShot(300, run_bench)
+        QTimer.singleShot(180000, app.quit)
+        return app.exec_()
 
     if selftest:
         def run_self_test() -> None:
