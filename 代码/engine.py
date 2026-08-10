@@ -738,6 +738,15 @@ DRAW_MINION_SPELLS = {
     "行骗": (2, 1),
     "垂钓时光": (1, 1),
 }
+# “可能抽到”的随从优先级：鱼 > 刀 > 牛 > 暗 > 晦 > 狐（其余最低）
+DRAW_PRIORITY = {
+    "鲨鱼之灵": 6,
+    "斯卡布斯·刀油": 5,
+    "乐队经理精英牛头人酋长": 4,
+    "暗影施法者": 3,
+    "晦鳞巢母": 2,
+    "狐人老千": 1,
+}
 
 
 def _quick_otk_estimate(snapshot: Dict[str, object]) -> Tuple[int, int, int]:
@@ -803,6 +812,8 @@ def compute_draw_whatif(
         return None
 
     best = None
+    best_prio = -1
+    best_dmg = -1
     for dcard in draw_cards:
         cur_cost = DRAW_MINION_SPELLS[dcard][0]
         for h in hand:
@@ -823,7 +834,8 @@ def compute_draw_whatif(
             if variant["mana"] < 0:
                 continue
             dmg, drg, mana_left = _quick_otk_estimate(variant)
-            if best is None or dmg > best["damage"]:
+            prio = DRAW_PRIORITY.get(mn, 0)
+            if best is None or prio > best_prio or (prio == best_prio and dmg > best_dmg):
                 cards = ["伺机待发", dcard] if prep_used else [dcard]
                 best = {
                     "cards": cards,
@@ -832,4 +844,6 @@ def compute_draw_whatif(
                     "dragons": drg,
                     "mana_left": mana_left,
                 }
+                best_prio = prio
+                best_dmg = dmg
     return best
