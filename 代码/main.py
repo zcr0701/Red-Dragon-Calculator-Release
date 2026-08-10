@@ -24,9 +24,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import QEventLoop, QPoint, QSettings, QThread, QTimer, Qt, pyqtSignal
+from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
+    QDialog,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -36,6 +38,7 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizeGrip,
     QSpinBox,
     QSplitter,
@@ -653,7 +656,7 @@ def parse_exchange_text(
 class MainWindow(QWidget):
     def __init__(self, demo: bool = False):
         super().__init__()
-        self.setWindowTitle("红龙贼计算器（C++ 核心 + hslog 日志读取）")
+        self.setWindowTitle("红龙贼计算器（C++ 核心 + hslog 日志读取）(CreATedBy此人乃天下绝响#5854)")
         self.resize(1120, 780)
 
         self.watcher = LogWatcher()
@@ -1615,7 +1618,7 @@ class MiniWindow(QWidget):
     def __init__(self, main: "MainWindow"):
         super().__init__(None, Qt.Window | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
         self.main = main
-        self.setWindowTitle("红龙小窗")
+        self.setWindowTitle("红龙小窗(CreATedBy此人乃天下绝响#5854)")
         self.resize(210, 560)  # 高:宽 ≈ 2.7:1（2~4:1）
         self._drag_offset: Optional[QPoint] = None
         self._last_data: Optional[Dict[str, object]] = None
@@ -1926,6 +1929,97 @@ class MiniWindow(QWidget):
         event.accept()
 
 
+class IntroDialog(QDialog):
+    """启动介绍弹窗：使用说明 + 作者/反馈 + 收款码（内容可滚动，收款码在底部）。
+
+    收款码图片读取程序目录下的 收款码.png；不存在时显示占位提示。
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("使用说明(CreATedBy此人乃天下绝响#5854)")
+        # 去掉标题栏的“?”帮助按钮，只保留关闭 x
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.resize(760, 920)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(14)
+
+        title = QLabel("使用说明")
+        title.setStyleSheet("font-size:40px; font-weight:bold;")
+        layout.addWidget(title)
+
+        usage = QLabel(
+            "1. 启动后自动跟随最新一局 Power.log，实时读取手牌/场面/法力。\n"
+            "2. 主窗口点击“开始计算”，或小窗点击“计算”，运行纯束宽搜索。\n"
+            "3. 束宽填 0 = 自动四通道；可勾选“不限时”跑满束宽×深度。\n"
+            "4. 场面交换：填写 我方序号->敌方序号（逗号分隔），留空则自动搜索最优交换。\n"
+            "5. 小窗可置顶，分轮显示最优路径（缩写字带颜色方块）。"
+        )
+        usage.setWordWrap(True)
+        usage.setStyleSheet("font-size:36px;")
+        layout.addWidget(usage)
+
+        layout.addSpacing(6)
+        author = QLabel("该计算器由 战网ID：此人乃天下绝响#5854 制作")
+        author.setStyleSheet("font-size:36px;")
+        layout.addWidget(author)
+
+        feedback = QLabel("如遇到bug或功能建议，请加作者QQ：2250195126提供反馈")
+        feedback.setWordWrap(True)
+        feedback.setStyleSheet("font-size:36px;")
+        layout.addWidget(feedback)
+
+        layout.addSpacing(6)
+        thanks = QLabel("最后，如果你喜欢该作品，并且对你起到了帮助\n不妨请我喝瓶可乐吧~")
+        thanks.setWordWrap(True)
+        thanks.setStyleSheet("font-size:36px;")
+        layout.addWidget(thanks)
+
+        qr_label = QLabel()
+        qr_label.setAlignment(Qt.AlignCenter)
+        qr_path = BASE_DIR / "收款码.png"
+
+        if qr_path.is_file():
+            pixmap = QPixmap(str(qr_path))
+
+            if not pixmap.isNull():
+                pixmap = pixmap.scaled(
+                    500, 500, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+                qr_label.setPixmap(pixmap)
+            else:
+                qr_label.setText("（收款码图片读取失败）")
+        else:
+            qr_label.setText(
+                "（未找到收款码图片：请将图片命名为 收款码.png\n"
+                "放在程序目录，重启后即可显示）"
+            )
+            qr_label.setWordWrap(True)
+            qr_label.setStyleSheet("font-size:30px; color:#666;")
+
+        layout.addWidget(qr_label)
+        layout.addStretch(1)
+        scroll.setWidget(content)
+
+        outer = QVBoxLayout(self)
+        outer.addWidget(scroll, 1)
+
+        close_row = QHBoxLayout()
+        close_btn = QPushButton("知道了")
+        close_btn.setStyleSheet("font-size:30px; padding:8px 30px;")
+        close_btn.clicked.connect(self.accept)
+        close_row.addStretch(1)
+        close_row.addWidget(close_btn)
+        close_row.addStretch(1)
+        outer.addLayout(close_row)
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     demo = "--demo" in sys.argv
@@ -1933,6 +2027,9 @@ def main() -> int:
     selftest = "--selftest" in sys.argv
     window = MainWindow(demo=demo)
     window.show()
+
+    if not smoke and not selftest:
+        IntroDialog(window).exec_()
 
     if selftest:
         def run_self_test() -> None:
