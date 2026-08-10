@@ -1667,7 +1667,7 @@ class MiniWindow(QWidget):
         root.setSpacing(4)
 
         title = QHBoxLayout()
-        self.title_label = QLabel("红龙小窗")
+        self.title_label = QLabel("红龙小窗(CreATedBy此人乃天下绝响#5854)")
         min_btn = QPushButton("─")
         min_btn.setFixedSize(24, 18)
         min_btn.setToolTip("最小化")
