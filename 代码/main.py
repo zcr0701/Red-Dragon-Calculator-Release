@@ -1615,6 +1615,11 @@ class MainWindow(QWidget):
             if discounts:
                 unique = list(dict.fromkeys(discounts))
                 lines.append("减费状态：" + "、".join(f"{d}(-2)" for d in unique) + "（当前费用为减费后显示值）")
+            if whatif.get("completeness") is not None:
+                lines.append(
+                    f"随从齐全度：{whatif['completeness']}/{whatif.get('completeness_total', 7)}"
+                    f"（法力 {whatif.get('mana_left')} / 水晶 {whatif.get('crystals')}）"
+                )
             lines.append(f"预计伤害：{whatif['damage']}，龙数：{whatif['dragons']}，余：{whatif['mana_left']}费")
 
         text = "\n".join(lines)

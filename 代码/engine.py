@@ -789,6 +789,18 @@ def _quick_otk_estimate(snapshot: Dict[str, object]) -> Tuple[int, int, int]:
     return damage, dragons, max(0, mana)
 
 
+def _combo_completeness(snapshot: Dict[str, object]) -> int:
+    """随从齐全度：两个预写组合并集（7 个随从）中手牌/战场已拥有的数量。"""
+    have = set(str(h.get("name", "")) for h in snapshot.get("hand") or [])
+    have |= set(str(b.get("name", "")) for b in snapshot.get("board") or [])
+    all_minions = []
+    for combo in COMBO_MINION_SETS:
+        for n in combo:
+            if n not in all_minions:
+                all_minions.append(n)
+    return sum(1 for n in all_minions if n in have)
+
+
 def compute_draw_whatif(
     snapshot: Dict[str, object],
     options: Optional[Dict[str, object]] = None,
@@ -882,10 +894,14 @@ def compute_draw_whatif(
     variant["mana"] = mana
 
     dmg, drg, mana_left = _quick_otk_estimate(variant)
+    crystals = int(snapshot.get("crystals") or 0)
     return {
         "cards": list(used_cards),
         "drawn": drawn_minions,
         "discounts": discounts,
+        "completeness": _combo_completeness(variant),
+        "completeness_total": 7,
+        "crystals": crystals,
         "damage": dmg,
         "dragons": drg,
         "mana_left": mana_left,
