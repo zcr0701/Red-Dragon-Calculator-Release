@@ -465,6 +465,9 @@ class CalculationWorker(QThread):
                 found_callback=self.found.emit,
                 should_stop=lambda: self._stop,
             )
+            if bool(self.options.get("draw_whatif", True)):
+                # 独立的“如果机制”：省费打出抽随从卡、抽缺失组合随从后的最高伤害推演
+                result["draw_whatif"] = engine.compute_draw_whatif(self.snapshot, self.options)
             self.finished_ok.emit(result)
         except InterruptedError as exc:
             self.failed.emit(str(exc))
@@ -868,6 +871,13 @@ class MainWindow(QWidget):
             "只返回最高伤害路径，计算更快"
         )
         param_grid.addWidget(self.best_only_check, 9, 0, 1, 2)
+        self.draw_whatif_check = QCheckBox("如果机制：抽随从假设最高伤害（省费打出抽随从卡）")
+        self.draw_whatif_check.setChecked(True)
+        self.draw_whatif_check.setToolTip(
+            "计算完成后独立推演：若用手牌中的抽随从卡（默认先伺机待发省费）"
+            "抽到预写组合缺失的随从，能达到的最高伤害"
+        )
+        param_grid.addWidget(self.draw_whatif_check, 10, 0, 1, 2)
         right_layout.addWidget(param_box)
 
         run_row = QHBoxLayout()
@@ -1361,6 +1371,7 @@ class MainWindow(QWidget):
             "beam_width": self.beam_width.value(),
             "exchanges": self.current_exchange_pairs(),
             "only_best_damage": self.best_only_check.isChecked(),
+            "draw_whatif": self.draw_whatif_check.isChecked(),
         }
 
     def current_exchange_pairs(self) -> List[Tuple[int, int]]:
@@ -1592,6 +1603,14 @@ class MainWindow(QWidget):
                 f"{index:3d}. {item.get('dragons', 0)} 龙 / {item.get('damage', 0)} 伤"
                 f" / 余{item.get('mana', '?')}费：{path}"
             )
+
+        whatif = data.get("draw_whatif")
+        if whatif:
+            lines.append("")
+            lines.append("如果机制：")
+            lines.append("如果使用：[" + "][".join(whatif["cards"]) + "]")
+            lines.append(f"可能抽到：[{whatif['drawn']}]")
+            lines.append(f"预计伤害：{whatif['damage']}，龙数：{whatif['dragons']}，余：{whatif['mana_left']}费")
 
         text = "\n".join(lines)
         self.result_text.setPlainText(text)

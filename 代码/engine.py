@@ -722,3 +722,109 @@ def compute(
         best = result.get("max_damage", 0)
         result["results"] = [r for r in result["results"] if r.get("damage") == best]
     return result
+
+
+# ===================== 独立的“如果机制” =====================
+# 手牌有抽随从卡时，假设以省费方式打出（默认先伺机待发，下一张法术减2费），
+# 抽到“用户预写随从组合”里缺失的随从，评估这之后能达到的最高伤害。
+COMBO_MINION_SETS = [
+    ["鲨鱼之灵", "狐人老千", "斯卡布斯·刀油", "暗影施法者", "乐队经理精英牛头人酋长", "晦鳞巢母"],
+    ["鲨鱼之灵", "斯卡布斯·刀油", "晦鳞巢母", "赤烟·腾武", "乐队经理精英牛头人酋长"],
+]
+# 抽随从卡：卡名 -> (基础费用, 抽随从张数)
+DRAW_MINION_SPELLS = {
+    "挖掘宝藏": (1, 1),
+    "潜伏帷幕": (3, 2),
+    "行骗": (2, 1),
+    "垂钓时光": (1, 1),
+}
+
+
+def compute_draw_whatif(
+    snapshot: Dict[str, object],
+    options: Optional[Dict[str, object]] = None,
+) -> Optional[Dict[str, object]]:
+    """独立的“如果机制”：返回最优假设情形，或 None（无抽随从卡 / 组合已齐）。
+
+    返回：{"cards": [用到的卡], "drawn": 抽到的随从,
+          "damage": 最高伤害, "dragons": 龙数, "mana_left": 剩余法力}
+    """
+    import concurrent.futures
+
+    hand = list(snapshot.get("hand") or [])
+    hand_names = [str(h.get("name", "")) for h in hand]
+    have = set(hand_names) | set(str(b.get("name", "")) for b in snapshot.get("board") or [])
+
+    missing: List[str] = []
+    for combo in COMBO_MINION_SETS:
+        for n in combo:
+            if n not in have and n not in missing:
+                missing.append(n)
+    draw_cards = [n for n in hand_names if n in DRAW_MINION_SPELLS]
+    if not missing or not draw_cards:
+        return None
+
+    opts = dict(options or {})
+    main_budget = float(opts.get("time_budget_sec") or 3.0)
+    whatif_budget = min(main_budget, 1.2)  # 假设推演用短预算，避免拖慢主流程
+
+    variants = []
+    for dcard in draw_cards:
+        cur_cost = DRAW_MINION_SPELLS[dcard][0]
+        for h in hand:
+            if str(h.get("name", "")) == dcard and h.get("cost") is not None:
+                cur_cost = int(h["cost"])
+                break
+        # 默认以省费方式打出：有伺机待发则先打伺机待发（下一张法术减2费，最低0费）
+        prep_used = "伺机待发" in hand_names
+        eff_cost = max(0, cur_cost - 2) if prep_used else max(0, cur_cost)
+        for mn in missing:
+            new_hand = [h for h in hand if str(h.get("name", "")) not in (dcard, "伺机待发")]
+            if len(new_hand) >= 10:
+                continue
+            new_hand.append({"name": mn})
+            variant = dict(snapshot)
+            variant["hand"] = new_hand
+            variant["mana"] = int(snapshot.get("mana") or 0) - eff_cost
+            if variant["mana"] < 0:
+                continue
+            variants.append((dcard, mn, prep_used, variant))
+
+    if not variants:
+        return None
+
+    def run_one(args):
+        dcard, mn, prep_used, variant = args
+        try:
+            r = compute(
+                variant,
+                min_alex=int(opts.get("min_alex", 1)),
+                max_alex=int(opts.get("max_alex", 10)),
+                depth=int(opts.get("depth", 30)),
+                max_paths=int(opts.get("max_paths", 1000000)),
+                threads=2,
+                time_budget_sec=whatif_budget,
+                etc_band=list(opts.get("etc_band") or snapshot.get("etc_band") or []),
+                only_best_damage=True,
+            )
+            return dcard, mn, prep_used, r
+        except Exception:  # noqa: BLE001 - 单变体失败不影响整体
+            return None
+
+    best = None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(3, len(variants))) as ex:
+        for out in ex.map(run_one, variants):
+            if out is None:
+                continue
+            dcard, mn, prep_used, r = out
+            dmg = int(r.get("max_damage") or 0)
+            if best is None or dmg > best["damage"]:
+                cards = ["伺机待发", dcard] if prep_used else [dcard]
+                best = {
+                    "cards": cards,
+                    "drawn": mn,
+                    "damage": dmg,
+                    "dragons": int(r.get("max_dragons") or 0),
+                    "mana_left": int(r.get("mana") or 0),
+                }
+    return best
