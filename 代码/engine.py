@@ -807,15 +807,23 @@ def compute_draw_whatif(
 ) -> Optional[Dict[str, object]]:
     """独立的“如果机制”：毫秒级递归预评估，返回最优假设情形，或 None（无抽随从卡 / 组合已齐）。
 
-    递归：先按优先级抽缺失随从（鱼>刀>牛>暗>晦>狐），抽到的刀油/狐人老千等
-    立即成为新的减费来源（伺机待发-2、刀油-2、狐-2），让后续抽随从卡能以更低
-    费用连续打出，直至无卡可抽。输出记录减费状态，明确“当前费用为减费后显示值”。
+    省费打出抽随从卡（默认先伺机待发 -2、狐人老千 -2），按优先级抽缺失随从
+    （鱼>刀>牛>暗>晦>狐）；抽到的刀油立即打出成为新的减费状态。
+
+    刀油减费状态模型：
+      - 一层刀油状态 = “下两张牌各减 2 费”（一层含 2 个槽位，每个槽位 -2）；
+      - 鲨鱼之灵在场时战吼触发两次 = 两层状态（下两张牌各自两层 -2，即各 -4）；
+      - 每打出一张随从，每层消耗 1 个槽位；两张随从后该层耗尽移除；
+      - 法术（抽随从卡）享受减费但不消耗槽位，可连续低成本打出；
+      - 暗(刀)把 1/1 刀油复制加入手牌（不立即补层）；丢晦回 4 法力（鱼在场翻倍）。
+    递归直到“减费状态不存在”的场面再评分（深度 ≤10，毫秒级，不改启发函数与主搜索）。
     返回：{"cards": 用到的抽卡, "drawn": 抽到的随从列表,
           "discounts": 减费来源卡列表, "damage": 预估伤害, "dragons": 龙数, "mana_left": 剩余法力}
     """
     hand = list(snapshot.get("hand") or [])
     hand_names = [str(h.get("name", "")) for h in hand]
-    have = set(hand_names) | set(str(b.get("name", "")) for b in snapshot.get("board") or [])
+    board_names = [str(b.get("name", "")) for b in snapshot.get("board") or []]
+    have = set(hand_names) | set(board_names)
 
     missing: List[str] = []
     for combo in COMBO_MINION_SETS:
@@ -828,73 +836,188 @@ def compute_draw_whatif(
         return None
 
     mana = int(snapshot.get("mana") or 0)
+    crystals = int(snapshot.get("crystals") or 0)
     cards_in_hand = set(hand_names)
     prep_used = "伺机待发" in cards_in_hand
     foxy_used = "狐人老千" in cards_in_hand
-    scabbs_pool = sum(1 for n in hand_names if n == "斯卡布斯·刀油")
+    shark = "鲨鱼之灵" in board_names  # 只有场上的鱼才让战吼触发两次
+    fish_played = shark
+
+    # 刀油减费状态：一层 = 下两张牌各 -2（槽位 2→1→移除）；鱼在场一次战吼 = 两层
+    scabbs_layers: List[int] = []
+    scabbs_in_hand = sum(1 for n in hand_names if n == "斯卡布斯·刀油")
+    scabbs_played = 0
+    scabbs_copies = 0  # 暗(刀)复制的 1/1 刀油（留在手牌，不补层）
 
     used_cards: List[str] = []
     drawn_minions: List[str] = []
     discounts: List[str] = []
+    played_minions: List[str] = []
     draw_cards_in_hand = list(draw_cards)
+    hand_left = list(hand)  # 未打出的原始手牌（随出随删，费用取当前显示值）
+    shadowcaster_played = False
+    mother_played = False
 
-    # 递归：循环打出可负担的抽随从卡（利用伺机/刀油/狐减费），抽到刀油会补充减费源
-    while draw_cards_in_hand and missing:
-        played = False
+    def _hand_cost(name: str, base: int) -> int:
+        # 手牌当前费用（已含旧减费）优先，抽到/缺失牌用基础费用
+        for h in hand_left:
+            if str(h.get("name", "")) == name:
+                c = h.get("cost")
+                return int(c) if c is not None else base
+        return base
+
+    def _remove_hand_card(name: str) -> None:
+        # 打出一张手牌后从“未打出手牌”里移除（同名牌只移除一张）
+        for i, h in enumerate(hand_left):
+            if str(h.get("name", "")) == name:
+                hand_left.pop(i)
+                return
+
+    def _add_scabbs() -> None:
+        # 一层 = 下两张牌各 -2；鱼在场战吼双触发 = 两层
+        if shark:
+            scabbs_layers.extend([2, 2])
+        else:
+            scabbs_layers.append(2)
+
+    def _minion_consumes() -> None:
+        # 打出一张随从：每层消耗 1 个槽位；槽位耗尽移除该层
+        if scabbs_layers:
+            scabbs_layers[:] = [s - 1 for s in scabbs_layers if s > 1]
+
+    def _spell_discount() -> int:
+        # 抽随从卡（法术）：伺机/狐一次性 -2，刀油层对法术生效但不消耗槽位
+        d = 2 * len(scabbs_layers)
+        if prep_used:
+            d += 2
+        if foxy_used:
+            d += 2
+        return d
+
+    # 递归：优先打出鱼/刀油补减费状态 → 抽随从卡（省费连抽）→ 暗(刀) → 丢晦，
+    # 直到减费状态不存在（每层槽位用尽）或无可负担动作（深度 ≤10，毫秒级）。
+    depth = 0
+    while depth < 10:
+        depth += 1
+        progressed = False
+
+        # 0) 手牌/刚抽到的鱼先打出：战吼翻倍来源（随从，消耗每层 1 槽）
+        if not fish_played and "鲨鱼之灵" in cards_in_hand:
+            eff = max(0, _hand_cost("鲨鱼之灵", 4) - 2 * len(scabbs_layers))
+            if eff <= mana:
+                mana -= eff
+                _minion_consumes()
+                _remove_hand_card("鲨鱼之灵")
+                cards_in_hand.discard("鲨鱼之灵")
+                used_cards.append("鲨鱼之灵")
+                played_minions.append("鲨鱼之灵")
+                fish_played = True
+                shark = True
+                progressed = True
+        if progressed:
+            continue
+
+        # 1) 打出刀油（手牌中原版或抽到的）：一层=下两张牌-2，鱼在场两层
+        if scabbs_in_hand > 0:
+            eff = max(0, _hand_cost("斯卡布斯·刀油", 4) - 2 * len(scabbs_layers))
+            if eff <= mana:
+                mana -= eff
+                _minion_consumes()
+                _remove_hand_card("斯卡布斯·刀油")
+                scabbs_in_hand -= 1
+                cards_in_hand.discard("斯卡布斯·刀油")
+                used_cards.append("斯卡布斯·刀油")
+                played_minions.append("斯卡布斯·刀油")
+                scabbs_played += 1
+                _add_scabbs()
+                discounts.append("斯卡布斯·刀油")
+                progressed = True
+        if progressed:
+            continue
+
+        # 2) 抽随从卡（法术）：享受减费、不消耗刀油槽位，优先最省费的
         for dcard in sorted(draw_cards_in_hand, key=lambda n: DRAW_MINION_SPELLS[n][0]):
-            base = DRAW_MINION_SPELLS[dcard][0]
-            eff = base
-            local = []
-            if prep_used:
-                eff -= 2
-                local.append("伺机待发")
-            if scabbs_pool > 0:
-                eff -= 2
-                local.append("斯卡布斯·刀油")
-            if foxy_used and dcard == "行骗":
-                eff -= 2
-                local.append("狐人老千")
-            eff = max(0, eff)
+            eff = max(0, DRAW_MINION_SPELLS[dcard][0] - _spell_discount())
             if eff > mana:
                 continue
             mana -= eff
             used_cards.append(dcard)
-            discounts.extend(local)
+            _remove_hand_card(dcard)
             if prep_used:
                 prep_used = False
-            if scabbs_pool > 0:
-                scabbs_pool -= 1
-            if foxy_used and dcard == "行骗":
+                discounts.append("伺机待发")
+            if foxy_used:
                 foxy_used = False
+                discounts.append("狐人老千")
             for _ in range(DRAW_MINION_SPELLS[dcard][1]):
                 if not missing:
                     break
-                mn = missing.pop(0)  # 最高优先级
+                mn = missing.pop(0)
                 drawn_minions.append(mn)
-                have.add(mn)
+                cards_in_hand.add(mn)
                 if mn == "斯卡布斯·刀油":
-                    scabbs_pool += 1  # 抽到刀油成为新的减费源
+                    scabbs_in_hand += 1
             draw_cards_in_hand.remove(dcard)
-            played = True
+            progressed = True
             break
-        if not played:
+        if progressed:
+            continue
+
+        # 3) 暗(刀)：复制刀油进手牌（1/1，留在手牌不补层），随从消耗每层 1 槽
+        if not shadowcaster_played and "暗影施法者" in cards_in_hand and scabbs_played > 0:
+            eff = max(0, _hand_cost("暗影施法者", 1) - 2 * len(scabbs_layers))
+            if eff <= mana:
+                mana -= eff
+                _minion_consumes()
+                _remove_hand_card("暗影施法者")
+                cards_in_hand.discard("暗影施法者")
+                used_cards.append("暗影施法者")
+                played_minions.append("暗影施法者")
+                shadowcaster_played = True
+                scabbs_copies += 1
+                progressed = True
+        if progressed:
+            continue
+
+        # 4) 丢晦：回 4 法力（鱼在场翻倍，上限水晶），随从消耗每层 1 槽
+        if not mother_played and "晦鳞巢母" in cards_in_hand:
+            eff = max(0, _hand_cost("晦鳞巢母", 3) - 2 * len(scabbs_layers))
+            if eff <= mana:
+                mana -= eff
+                _minion_consumes()
+                _remove_hand_card("晦鳞巢母")
+                cards_in_hand.discard("晦鳞巢母")
+                used_cards.append("晦鳞巢母")
+                played_minions.append("晦鳞巢母")
+                mother_played = True
+                mana = min(crystals, mana + (4 if shark else 2))
+                progressed = True
+        if not progressed:
             break
 
     if not drawn_minions:
         return None
 
-    # 最终变体：移除已打出的抽卡/伺机待发，加入抽到的随从
-    remove_names = set(used_cards) | ({"伺机待发"} if "伺机待发" in cards_in_hand and any(
-        c == "伺机待发" for c in discounts) else set())
+    # 最终变体：移除已打出的卡（抽卡/刀油/暗/晦/鱼/伺机），加入抽到的随从与暗(刀)复制的刀油，
+    # 打出的随从放入战场（随从齐全度按 手牌+战场 计算）。
+    remove_names = set(used_cards)
+    if "伺机待发" in set(hand_names) and "伺机待发" in discounts:
+        remove_names.add("伺机待发")
     new_hand = [h for h in hand if str(h.get("name", "")) not in remove_names]
     for mn in drawn_minions:
-        new_hand.append({"name": mn})
+        if mn not in played_minions:
+            new_hand.append({"name": mn})
+    for _ in range(scabbs_copies):
+        new_hand.append({"name": "斯卡布斯·刀油"})
+    new_board = [dict(b) for b in (snapshot.get("board") or [])]
+    for mn in played_minions:
+        new_board.append({"name": mn})
     variant = dict(snapshot)
     variant["hand"] = new_hand
+    variant["board"] = new_board
     variant["mana"] = mana
 
     dmg, drg, mana_left = _quick_otk_estimate(variant)
-    crystals = int(snapshot.get("crystals") or 0)
     return {
         "cards": list(used_cards),
         "drawn": drawn_minions,
