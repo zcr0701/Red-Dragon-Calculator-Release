@@ -1143,8 +1143,10 @@ static string canonical_action(string item) {
     // 重放匹配：去掉指向性目标后缀（如 暗影施法者（斯卡布斯·刀油3nd）→ 暗影施法者），
     // 让 --verify 回溯自动尝试所有合法目标选择
     size_t lp = out.rfind("（");
-    if (lp != string::npos && out.size() >= lp + 4 &&
-        out.compare(out.size() - 3, 3, "nd）") == 0) {
+    // 注意：尾部 "nd）" 中全角 ） 占 3 字节，整体 5 字节，不能按 3 字节比较
+    static const string target_suffix = "nd）";
+    if (lp != string::npos && out.size() >= lp + target_suffix.size() &&
+        out.compare(out.size() - target_suffix.size(), target_suffix.size(), target_suffix) == 0) {
         out = out.substr(0, lp);
     }
     return out;
@@ -1240,22 +1242,7 @@ static BottleneckParts bottleneck_parts(const State& s) {
     if (cheapest_dragon < 0) cheapest_dragon = 9;
     int per_scabbs = shark ? 4 : 2;
     int eff_dragon = std::max(0, cheapest_dragon - scabbs * per_scabbs);
-    if (s.mana < eff_dragon) {
-        // 法力阈值不足时，允许"先免费打出刀油蓄减费"解锁第一条龙：
-        // 手牌中当前法力可打出的刀油，其减费潜力（鲨鱼时每条 -4）计入阈值，
-        // 避免 0 费蓄费中间状态被瓶颈归零剪掉（如 5 费 3 龙局面漏掉 48 伤线）。
-        int unlock = 0;
-        for (const auto& c : s.hand) {
-            if (c.name() == "斯卡布斯·刀油") {
-                int cc = effective_cost(s, c);
-                if (cc >= 0 && cc <= s.mana) unlock += per_scabbs;
-            }
-        }
-        int eff2 = std::max(0, eff_dragon - unlock);
-        if (s.mana < eff2) return r;                                                 // 补上刀油仍不够：打不起第一条龙
-        r.mana_rounds = 1.0 + (double)std::max(0, s.mana - eff2) / std::max(1, eff2 + 1);
-        return r;
-    }
+    if (s.mana < eff_dragon) return r;                                              // 阈值：打不起第一条龙
     r.mana_rounds = 1 + (s.mana - eff_dragon) / std::max(1, eff_dragon + 1);        // 每轮 ≈ 龙费 + 回手费(约1)
     return r;
 }
@@ -1342,13 +1329,50 @@ static int subchain_score(const State& s) {
     for (const auto& c : s.enemy_board)
         if (c.health >= 0 && c.health <= 3) { score += 10; break; }  // 骨刺击杀敌方随从抽2
     if (dragons > 0 && shark) score += dragons * 16;
-    // 鱼已在场 + 手牌有当前法力可打出的龙：下一只龙必吃满 16 伤。
-    // 不加这 8 分，"先下龙"（立即可见 +8 伤害）会压过"先下鱼"（当期 0 伤害），
-    // 导致束内被剪，漏掉 3 龙 48 伤这类解（如 5 费局面 40→48）。
+    // ===== 精准蓄力维度（一个漏解对应一个精确状态特征，杜绝全局加分误伤） =====
+    // ① 复制蓄力（175430 第 20 步等）：场上有鱼 + 场上有龙（可被复制）
+    //    + 手牌有复制器（暗施/幻）且可打出 + 手牌没有费用≤当前法力的龙（无龙可打）
+    //    → +16。严格检查"无可打出龙"：174341 早期手牌有 9 费龙时不触发。
+    if (shark_on > 0 && board_d > 0) {
+        bool playable_dragon = false;
+        for (const auto& c : s.hand) {
+            if (c.dragon) {
+                int cc = effective_cost(s, c);
+                if (cc >= 0 && cc <= s.mana) { playable_dragon = true; break; }
+            }
+        }
+        if (!playable_dragon) {
+            for (const auto& c : s.hand) {
+                const string& n = c.name();
+                if (n == "暗影施法者" || n == "幻觉药水") {
+                    int cc = effective_cost(s, c);
+                    if (cc >= 0 && cc <= s.mana) { score += 16; break; }
+                }
+            }
+        }
+    }
+    // ② 弹回蓄力（174341 第 18 步等）：龙数≤1 + 手牌 1 费龙 + 手牌 1 费鱼
+    //    （舞动/暗影步弹回后的爆发前兆）→ +18。
+    //    早期层不可能同时出现 1 费龙和 1 费鱼（减费需要舞动等操作），不会误伤前中期。
+    if (s.alex_play_count <= 1) {
+        bool fish1 = false, dragon1 = false;
+        for (const auto& c : s.hand) {
+            int cc = c.current_cost();
+            if (cc != 1) continue;
+            if (c.dragon) dragon1 = true;
+            else if (c.name() == "鲨鱼之灵") fish1 = true;
+        }
+        if (fish1 && dragon1) score += 18;
+    }
+    // ③ 直出蓄力（170618 第 11 步、174341 原鱼龙线等）：场上有鱼 + 手牌有可打出的龙 → +16。
+    // 鱼在场时下一只龙必吃满 16 伤；不看鱼是否在手（舞后鱼已下场即就绪）。
     if (shark_on > 0) {
         for (const auto& c : s.hand) {
-            if (c.dragon && c.current_cost() >= 0 && c.current_cost() <= s.mana) {
-                score += 16;
+            if (c.dragon) {
+                int cc = effective_cost(s, c);
+                if (cc >= 0 && cc <= s.mana) {
+                    score += 16;
+                }
                 break;
             }
         }
@@ -1795,8 +1819,8 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
         // 每桶配额放宽（1.8×），并多保留启发值冠军，避免深线（如 102558 的 112 伤
         // 法力农场线）被“总分高但同质”的分支挤掉。
         int per_bucket = std::max(1, (int)(beam_width * 1.8 / std::max(1, (int)buckets.size())));
-        vector<State> next_level;
-        next_level.reserve(std::min((size_t)beam_width, cands.size()));
+        vector<const Cand*> all_selected;
+        all_selected.reserve(std::min((size_t)(beam_width * 2), cands.size()));
         for (auto it = buckets.rbegin(); it != buckets.rend(); ++it) {
             auto& bstates = it->second;
             std::stable_sort(bstates.begin(), bstates.end(),
@@ -1825,9 +1849,42 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
                     if (!found) selected.push_back(champ);
                 }
             }
-            for (const Cand* s : selected) next_level.push_back(s->s);
+            for (const Cand* s : selected) all_selected.push_back(s);
         }
-        if ((int)next_level.size() > beam_width) next_level.resize(beam_width);
+        vector<State> next_level;
+        // 全局按总分取前 beam_width（不整桶砍掉低龙数蓄力桶），
+        // 再给每个龙数桶保底 beam_width/(2N) 个名额，避免"总分高但同质"分支挤掉必要延续。
+        std::stable_sort(all_selected.begin(), all_selected.end(),
+                         [](const Cand* a, const Cand* b) {
+                             if (a->total != b->total) return a->total > b->total;
+                             return a->mana > b->mana;
+                         });
+        int nb = (int)buckets.size();
+        int floor_pb = std::max(1, beam_width / std::max(1, 2 * nb));
+        vector<const Cand*> keep;
+        keep.reserve(beam_width);
+        size_t top_n = std::min((size_t)beam_width, all_selected.size());
+        for (size_t i = 0; i < top_n; i++) keep.push_back(all_selected[i]);
+        map<int, int> in_keep;
+        for (const Cand* c : keep) in_keep[c->count]++;
+        for (auto& kv : buckets) {
+            int need = floor_pb - in_keep[kv.first];
+            if (need <= 0) continue;
+            for (const Cand* c : kv.second) {
+                if (need <= 0) break;
+                if (std::find(keep.begin(), keep.end(), c) != keep.end()) continue;
+                keep.pop_back();
+                keep.push_back(c);
+                need--;
+                std::stable_sort(keep.begin(), keep.end(),
+                                 [](const Cand* a, const Cand* b) {
+                                     if (a->total != b->total) return a->total > b->total;
+                                     return a->mana > b->mana;
+                                 });
+            }
+        }
+        next_level.reserve(keep.size());
+        for (const Cand* s : keep) next_level.push_back(s->s);
         level = std::move(next_level);
         out.reached_depth = std::max(out.reached_depth, depth);
     }
