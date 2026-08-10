@@ -460,6 +460,7 @@ class CalculationWorker(QThread):
                 heuristics=heuristics,
                 etc_band=list(self.options.get("etc_band") or []),
                 exchanges=list(self.options.get("exchanges") or []),
+                only_best_damage=bool(self.options.get("only_best_damage", True)),
                 progress_callback=self.progress.emit,
                 found_callback=self.found.emit,
                 should_stop=lambda: self._stop,
@@ -860,6 +861,13 @@ class MainWindow(QWidget):
         self.no_time_limit = QCheckBox("不限时：按束宽×最大深度跑完（时间预算失效，大束宽可能很慢）")
         self.no_time_limit.setToolTip("勾选后搜索不因时间耗尽而停止，跑满最大深度或状态收敛为止")
         param_grid.addWidget(self.no_time_limit, 8, 0, 1, 2)
+        self.best_only_check = QCheckBox("只计算最高伤害：找到最高伤后剪掉无法超越它的低伤路径")
+        self.best_only_check.setChecked(True)
+        self.best_only_check.setToolTip(
+            "默认勾选：一旦找到当前最高伤害，就剪掉无论如何都超不过它的低伤分支，"
+            "只返回最高伤害路径，计算更快"
+        )
+        param_grid.addWidget(self.best_only_check, 9, 0, 1, 2)
         right_layout.addWidget(param_box)
 
         run_row = QHBoxLayout()
@@ -1352,6 +1360,7 @@ class MainWindow(QWidget):
             "etc_band": band,
             "beam_width": self.beam_width.value(),
             "exchanges": self.current_exchange_pairs(),
+            "only_best_damage": self.best_only_check.isChecked(),
         }
 
     def current_exchange_pairs(self) -> List[Tuple[int, int]]:

@@ -440,6 +440,7 @@ def build_payload(
     heuristics: Optional[List[int]] = None,
     etc_band: Optional[List[str]] = None,
     exchanges: Optional[List[tuple]] = None,
+    only_best_damage: bool = False,
 ) -> Dict[str, object]:
     """把日志快照转成 C++ JSON 局面（纯束宽搜索）。
 
@@ -549,6 +550,7 @@ def build_payload(
         "threads": threads,
         "time_budget_sec": time_budget_sec,
         "heuristic": heuristic,
+        "only_best_damage": 1 if only_best_damage else 0,
         # 默认四通道：H6/1100（8水晶十龙深线）、H1/1500（4水晶十龙/紧线）、
         # H2/1100（96 伤线）、H2/3000（6水晶紧 48 伤线）
         "wide_widths": wide_widths or [1100, 1500, 1100, 3000],
@@ -686,6 +688,7 @@ def compute(
     heuristics: Optional[List[int]] = None,
     etc_band: Optional[List[str]] = None,
     exchanges: Optional[List[tuple]] = None,
+    only_best_damage: bool = False,
     exe_path: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
     found_callback: Optional[Callable[[int, int], None]] = None,
@@ -705,11 +708,17 @@ def compute(
         heuristics=heuristics,
         etc_band=etc_band,
         exchanges=exchanges,
+        only_best_damage=only_best_damage,
     )
-    return run_engine(
+    result = run_engine(
         payload,
         exe_path=exe_path,
         progress_callback=progress_callback,
         found_callback=found_callback,
         should_stop=should_stop,
     )
+    if only_best_damage and result.get("results"):
+        # 只计算最高伤害：结果里只保留最高伤害的路径
+        best = result.get("max_damage", 0)
+        result["results"] = [r for r in result["results"] if r.get("damage") == best]
+    return result

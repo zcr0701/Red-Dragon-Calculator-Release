@@ -1163,6 +1163,7 @@ struct SearchParams {
     vector<int> wide_widths;    // 多宽束并行组合；空 = 默认 {1100,2000}
     vector<int> heuristics;     // 各宽束通道的启发函数；空 = 默认 {6,2}
     int inner_threads = 1;      // 宽束通道内部的并行展开线程数（大局面通道给 3）
+    int only_best_damage = 0;   // 只计算最高伤害：找到最高伤后剪掉无法超越它的分支
 };
 
 // ---------- 子链覆盖度（旧 beam 冠军判据：状态侧已凑齐的子链骨架数） ----------
@@ -1524,6 +1525,39 @@ struct Cand {
     int count = 0;
 };
 
+// 只计算最高伤害：剩余动作里最多还能打出的龙数上界（宽松安全上界，宁多勿少）。
+// 每条龙最多 16 伤；上限 = 当前可用的龙源（手牌/场上/暗施复制）+ 回手/复制/发现潜力，
+// 再与剩余步数取小，并 +2 裕量兜底（牛/殒命/幻等变数）。
+static int max_extra_dragon_plays(const State& s, int remaining) {
+    int plays = 0;
+    bool shark = false;
+    int sc = 0, wr = 0, sr = 0, po = 0, etc = 0, dl = 0;
+    for (const auto& c : s.hand) {
+        const string& n = c.name();
+        if (c.dragon) plays++;
+        else if (n == "暗影施法者") sc++;
+        else if (n == "舞动全场（ft.迦罗娜）") wr++;
+        else if (n == "幻觉药水") po++;
+        else if (n == "乐队经理精英牛头人酋长") etc++;
+        else if (n == "暗影步" || n == "赤烟·腾武") sr++;
+        else if (n == "鲨鱼之灵") shark = true;
+        else if (n == "殒命暗影") dl++;
+    }
+    for (const auto& c : s.board) {
+        const string& n = c.name();
+        if (n == "生命的缚誓者阿莱克丝塔萨") plays++;
+        else if (n == "暗影施法者") sc++;
+        else if (n == "鲨鱼之灵") shark = true;
+    }
+    plays += sc * (shark ? 2 : 1);   // 暗施复制龙（鲨鱼双倍）
+    plays += wr * 7;                 // 舞动全场每张最多弹回 7 个随从
+    plays += po * 7;                 // 幻觉药水最多复制 7 个场上随从
+    plays += sr;                     // 暗影步/腾武各回手 1 个
+    plays += etc * 3;                // 牛头人最多从乐队拿 3 张
+    plays += dl * 2;                 // 殒命暗影可变形为回手/复制法术
+    return std::min(remaining, plays + 2);
+}
+
 struct BeamRawCand {
     uint64_t key;
     State s;
@@ -1541,6 +1575,7 @@ struct BeamSliceArgs {
     int begin;
     int end;
     std::atomic<long long>* total_exp;
+    std::atomic<int>* best_damage = nullptr;
 };
 
 // 并行合并分片：同 key 必落在同片（key % shards），seen/候选去重互不冲突
@@ -1550,6 +1585,7 @@ struct BeamMergeArgs {
     unordered_map<uint64_t, int>* seen;  // key -> 已见过的最高法力（无需存整状态）
     vector<Cand>* cands;
     unordered_map<int, State>* best;
+    std::atomic<int>* best_damage = nullptr;
 };
 
 static void merge_shard_work(BeamMergeArgs* a) {
@@ -1578,6 +1614,12 @@ static void merge_shard_work(BeamMergeArgs* a) {
             a->cands->push_back(std::move(c));
         }
         add_best((*a->cands)[cand_index[rc.key]].s, *a->best, a->p->min_alex);
+        if (a->best_damage) {
+            int d = rc.s.alex_damage;
+            int cur = a->best_damage->load();
+            while (d > cur && !a->best_damage->compare_exchange_weak(cur, d)) {
+            }
+        }
     }
 }
 
@@ -1614,6 +1656,19 @@ static void* beam_slice_worker(void* param) {
             rc.hval = a->p->heuristic >= 0 ? heuristic_value(succ, a->p->heuristic)
                                            : (double)subchain_score(succ) + (double)discrete_path_score(succ);
             rc.total = (double)succ.alex_damage + rc.hval;
+            if (a->best_damage) {
+                int d = succ.alex_damage;
+                int cur = a->best_damage->load();
+                while (d > cur && !a->best_damage->compare_exchange_weak(cur, d)) {
+                }
+                if (a->p->only_best_damage) {
+                    // 只计算最高伤害：当前伤害 + 剩余步数/龙源上界仍超不过已知最高伤则剪掉
+                    int remaining = a->p->depth - (int)succ.path().size();
+                    if (remaining < 0) remaining = 0;
+                    int bound = succ.alex_damage + max_extra_dragon_plays(succ, remaining) * 16;
+                    if (bound < a->best_damage->load()) continue;
+                }
+            }
             rc.mana = succ.mana;
             rc.count = succ.alex_play_count;
             rc.s = std::move(succ);
@@ -1629,7 +1684,8 @@ static void* beam_slice_worker(void* param) {
 }
 
 static void wide_beam_pass(const State& start_in, const SearchParams& p,
-                           const Budget& budget, ThreadOut& out) {
+                           const Budget& budget, ThreadOut& out,
+                           std::atomic<int>* best_damage = nullptr) {
     // 宽束通道宽度：默认至少 2400（经验值：1600 会漏掉 3 龙/48 伤这类深线，
     // 旧 beam 3000 稳定挖出 10 龙/160 伤），束宽参数调大时随之上限 3000。
     int beam_width = p.wide_width > 0
@@ -1647,6 +1703,10 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
 
     for (int depth = 1; depth <= p.depth; depth++) {
         if (budget.over()) break;
+        if (best_damage && p.only_best_damage &&
+            best_damage->load() >= p.max_alex * 16) {
+            break;  // 已达理论上限（每条龙最多 16 伤），不可能再提升
+        }
         // 并行展开：本层状态分片到 inner_threads 线程（后继生成 + 打分近线性扩展）
         int inner = shards;
         vector<vector<BeamRawCand>> raw_buckets(inner);
@@ -1662,6 +1722,7 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
             args[t].begin = t * per;
             args[t].end = std::min(nstates, (t + 1) * per);
             args[t].total_exp = &total_exp;
+            args[t].best_damage = best_damage;
         }
 #ifdef _WIN32
         if (inner == 1) {
@@ -1699,6 +1760,7 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
             margs[sh].seen = &seen_shards[sh];
             margs[sh].cands = &shard_cands[sh];
             margs[sh].best = &shard_best[sh];
+            margs[sh].best_damage = best_damage;
         }
 #ifdef _WIN32
         if (shards == 1) {
@@ -1790,6 +1852,7 @@ struct WorkerArgs {
     ThreadOut* out = nullptr;
     Progress* prog = nullptr;
     const Budget* budget = nullptr;
+    std::atomic<int>* best_damage = nullptr;  // 跨通道共享：已发现的最高伤害
     int ww = 0;   // 宽束通道专用：本次模拟的束宽（0 = 用 p->wide_width）
     int heur = -1;  // 宽束通道专用：本次模拟的启发函数（<0 = 用 p->heuristic）
     int inner = 1;  // 宽束通道内部并行展开线程数
@@ -1807,7 +1870,7 @@ static void* wide_worker_entry(void* param) {
     pp.wide_width = a->ww > 0 ? a->ww : pp.wide_width;
     if (a->heur >= 0) pp.heuristic = a->heur;
     pp.inner_threads = a->inner;
-    wide_beam_pass(*a->start, pp, *a->budget, *a->out);
+    wide_beam_pass(*a->start, pp, *a->budget, *a->out, a->best_damage);
     a->out->work_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
     if (a->prog && a->prog->enabled) {
         fprintf(stderr, "PROGRESS %d %d %d\n",
@@ -1826,6 +1889,8 @@ static void* wide_worker_entry(void* param) {
 static BeamResult run_beam_search(const State& start, const SearchParams& p, Progress* prog) {
     BeamResult res;
     auto t0 = std::chrono::steady_clock::now();
+    // 只计算最高伤害：跨通道共享最高伤，用于剪枝与提前停止
+    std::atomic<int> shared_best{0};
     // 默认四通道：H6/1100（8水晶十龙深线）、H1/1500（4水晶十龙/紧线）、
     // H2/1100（96 伤线）、H2/3000（6水晶紧 48 伤线）
     static const int DEFAULT_WIDE_WIDTHS[] = {1100, 1500, 1100, 3000};
@@ -1857,6 +1922,7 @@ static BeamResult run_beam_search(const State& start, const SearchParams& p, Pro
         if (a.heur == 2 && a.ww >= 2500)
             ch_budgets[w].budget_sec = std::min(ch_budgets[w].budget_sec, 2.0);
         a.budget = &ch_budgets[w];
+        a.best_damage = &shared_best;
         a.inner = 1;  // 多通道并行，各通道单线程即可（分配瘦身后跨线程可缩放）
         a.tid = 90 + w;
         wide_args.push_back(a);
@@ -2182,6 +2248,7 @@ int main(int argc, char** argv) {
     p.threads = (int)root.get_int("threads", p.threads);
     p.time_budget_sec = root.get_double("time_budget_sec", p.time_budget_sec);
     p.heuristic = (int)root.get_int("heuristic", p.heuristic);
+    p.only_best_damage = (int)root.get_int("only_best_damage", 0);
     p.wide_width = (int)root.get_int("wide_width", p.wide_width);
     const JVal* wws = root.find("wide_widths");
     if (wws && wws->type == JVal::ARR) {
