@@ -715,7 +715,13 @@ class PowerLogParser:
 
 
 class LogWatcher:
-    """跟随最新会话的 Power.log，增量喂给 hslog 解析器。"""
+    """跟随 Power.log，增量喂给 hslog 解析器。
+
+    支持三种数据源（优先级从高到低）：
+      1. log_file：用户手动指定的 Power.log（自定义路径，直接跟随该文件）；
+      2. game_dir：用户手动指定的炉石安装目录（取其中最新会话的 Power.log）；
+      3. 自动检测：detect_game_dir() 常见路径 / 注册表 / 盘符探测。
+    """
 
     # 只解析最新一局（GameState 的 CREATE_GAME 才是一局起点；
     # PowerTaskList 的重复 CREATE_GAME 行不算）
@@ -728,16 +734,20 @@ class LogWatcher:
     def __init__(
         self,
         game_dir: Optional[str] = None,
+        log_file: Optional[str] = None,
         player_id: Optional[int] = None,
     ):
+        self.custom_log_file = Path(log_file) if log_file else None
         self.game_dir = game_dir or detect_game_dir()
         self.player_id = player_id
         self.parser = PowerLogParser(
             local_accounts=find_local_accounts(),
             player_id=player_id,
         )
-        self.session_dir: Optional[Path] = None
-        self.log_file: Optional[Path] = None
+        self.session_dir: Optional[Path] = (
+            self.custom_log_file.parent if self.custom_log_file else None
+        )
+        self.log_file: Optional[Path] = self.custom_log_file
         self._pos = 0
         self._parser_generation = 0  # parser.reset() 时 +1，用于快照缓存失效
         self._cached_snapshot: Optional[dict] = None
@@ -785,6 +795,22 @@ class LogWatcher:
         self._pos = offset if offset is not None else 0
 
     def _refresh(self) -> None:
+        if self.custom_log_file is not None:
+            # 自定义 Power.log：直接跟随指定文件，不切换到最新会话
+            if self.log_file != self.custom_log_file:
+                self.log_file = self.custom_log_file
+                self.session_dir = self.custom_log_file.parent
+                self._restart_at_latest_game()
+                return
+
+            if self.log_file.exists():
+                size = self.log_file.stat().st_size
+
+                if size < self._pos:
+                    # 文件被重写/截断：重新定位到最新一局
+                    self._restart_at_latest_game()
+            return
+
         session = find_latest_session(self.game_dir)
 
         if session != self.session_dir:

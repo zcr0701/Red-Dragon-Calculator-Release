@@ -33,11 +33,13 @@ from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
+    QFileDialog,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -690,7 +692,14 @@ class MainWindow(QWidget):
         self.setWindowTitle("红龙贼计算器（C++ 核心 + hslog 日志读取）(CreATedBy此人乃天下绝响#5854)")
         self.resize(1120, 780)
 
-        self.watcher = LogWatcher()
+        # 自定义路径（QSettings 记忆）：手动指定的游戏目录 / Power.log，解决自动搜不到日志的问题
+        path_settings = QSettings("RedDragonCalculator", "main")
+        self._custom_game_dir = str(path_settings.value("custom_game_dir", "") or "")
+        self._custom_log_file = str(path_settings.value("custom_log_file", "") or "")
+        self.watcher = LogWatcher(
+            game_dir=self._custom_game_dir or None,
+            log_file=self._custom_log_file or None,
+        )
         self.snapshot: Dict[str, object] = {}
         self.worker: Optional[CalculationWorker] = None
         self.mini_window: Optional[MiniWindow] = None
@@ -720,6 +729,16 @@ class MainWindow(QWidget):
         self.status_label = QLabel("数据源：正在查找 Power.log …")
         self.refresh_button = QPushButton("刷新")
         self.refresh_button.clicked.connect(self.refresh_log)
+        self.path_menu_button = QPushButton("自定义路径")
+        self.path_menu_button.setToolTip(
+            "手动指定炉石安装目录或 Power.log，解决自动搜不到日志的问题；选择会被记住，重启后仍生效"
+        )
+        path_menu = QMenu(self)
+        path_menu.addAction("选择游戏目录…", self.pick_game_dir)
+        path_menu.addAction("选择 Power.log 文件…", self.pick_log_file)
+        path_menu.addAction("恢复自动检测", self.reset_auto_detect)
+        self.path_menu_button.setMenu(path_menu)
+        status.addWidget(self.path_menu_button)
         self.demo_button = QPushButton("载入示例局面")
         self.demo_button.clicked.connect(lambda: self._apply_snapshot(DEMO_SNAPSHOT))
         self.mini_button = QPushButton("小窗")
@@ -1049,11 +1068,84 @@ class MainWindow(QWidget):
         self._last_state_key = ""
         self.refresh_log()
 
+    # ---------- 自定义路径 ----------
+
+    def _apply_custom_path(
+        self,
+        game_dir: Optional[str],
+        log_file: Optional[str],
+    ) -> None:
+        self._custom_game_dir = game_dir or ""
+        self._custom_log_file = log_file or ""
+        self.watcher = LogWatcher(
+            game_dir=self._custom_game_dir or None,
+            log_file=self._custom_log_file or None,
+        )
+        self._manual_mode = False
+        self._last_state_key = ""
+        self.refresh_log()
+
+        if not self._manual_mode and self.watcher.log_file is None:
+            QMessageBox.warning(
+                self,
+                "未找到日志",
+                "所选路径下未找到 Power.log：\n"
+                "1) 游戏目录需包含 Logs 子目录（内含会话文件夹）；\n"
+                "2) 需在 log.config 中开启 [Power] 详细日志；\n"
+                "3) 若选了文件请确认它就是 Power.log。",
+            )
+
+    def pick_game_dir(self) -> None:
+        start = self._custom_game_dir or str(Path.home())
+        chosen = QFileDialog.getExistingDirectory(
+            self, "选择炉石安装目录（含 Logs 子目录）", start
+        )
+
+        if not chosen:
+            return
+
+        settings = QSettings("RedDragonCalculator", "main")
+        settings.setValue("custom_game_dir", chosen)
+        settings.remove("custom_log_file")
+        self._apply_custom_path(chosen, None)
+
+    def pick_log_file(self) -> None:
+        start = self._custom_log_file or str(Path.home())
+        chosen, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 Power.log 文件",
+            start,
+            "日志文件 (*.log);;所有文件 (*)",
+        )
+
+        if not chosen:
+            return
+
+        settings = QSettings("RedDragonCalculator", "main")
+        settings.setValue("custom_log_file", chosen)
+        settings.remove("custom_game_dir")
+        self._apply_custom_path(None, chosen)
+
+    def reset_auto_detect(self) -> None:
+        settings = QSettings("RedDragonCalculator", "main")
+        settings.remove("custom_game_dir")
+        settings.remove("custom_log_file")
+        self._apply_custom_path(None, None)
+
     def _apply_snapshot(self, snap: Dict[str, object]) -> None:
         self.snapshot = snap
         log_path = snap.get("log_path")
-        source = "手动输入" if self._manual_mode else "Power.log"
-        self.status_label.setText(f"数据源：{source}（{log_path or '未找到对局'}）")
+
+        if self._manual_mode:
+            self.status_label.setText("数据源：手动输入")
+        elif self._custom_log_file:
+            self.status_label.setText(f"数据源：Power.log（自定义：{self._custom_log_file}）")
+        elif self._custom_game_dir:
+            self.status_label.setText(
+                f"数据源：Power.log（自定义目录：{self._custom_game_dir}；{log_path or '未找到对局'}）"
+            )
+        else:
+            self.status_label.setText(f"数据源：Power.log（{log_path or '未找到对局'}）")
 
         in_game = bool(snap.get("in_game"))
         player = snap.get("player_name") or "?"
