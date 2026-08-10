@@ -1140,6 +1140,13 @@ static string canonical_action(string item) {
     size_t pos;
     while ((pos = out.find(needle)) != string::npos) out.erase(pos, needle.size());
     if (is_coin_name(out)) return "幸运币";
+    // 重放匹配：去掉指向性目标后缀（如 暗影施法者（斯卡布斯·刀油3nd）→ 暗影施法者），
+    // 让 --verify 回溯自动尝试所有合法目标选择
+    size_t lp = out.rfind("（");
+    if (lp != string::npos && out.size() >= lp + 4 &&
+        out.compare(out.size() - 3, 3, "nd）") == 0) {
+        out = out.substr(0, lp);
+    }
     return out;
 }
 
@@ -1232,7 +1239,22 @@ static BottleneckParts bottleneck_parts(const State& s) {
     if (cheapest_dragon < 0) cheapest_dragon = 9;
     int per_scabbs = shark ? 4 : 2;
     int eff_dragon = std::max(0, cheapest_dragon - scabbs * per_scabbs);
-    if (s.mana < eff_dragon) return r;                                              // 阈值：打不起第一条龙
+    if (s.mana < eff_dragon) {
+        // 法力阈值不足时，允许"先免费打出刀油蓄减费"解锁第一条龙：
+        // 手牌中当前法力可打出的刀油，其减费潜力（鲨鱼时每条 -4）计入阈值，
+        // 避免 0 费蓄费中间状态被瓶颈归零剪掉（如 5 费 3 龙局面漏掉 48 伤线）。
+        int unlock = 0;
+        for (const auto& c : s.hand) {
+            if (c.name() == "斯卡布斯·刀油") {
+                int cc = effective_cost(s, c);
+                if (cc >= 0 && cc <= s.mana) unlock += per_scabbs;
+            }
+        }
+        int eff2 = std::max(0, eff_dragon - unlock);
+        if (s.mana < eff2) return r;                                                 // 补上刀油仍不够：打不起第一条龙
+        r.mana_rounds = 1.0 + (double)std::max(0, s.mana - eff2) / std::max(1, eff2 + 1);
+        return r;
+    }
     r.mana_rounds = 1 + (s.mana - eff_dragon) / std::max(1, eff_dragon + 1);        // 每轮 ≈ 龙费 + 回手费(约1)
     return r;
 }
@@ -1319,6 +1341,17 @@ static int subchain_score(const State& s) {
     for (const auto& c : s.enemy_board)
         if (c.health >= 0 && c.health <= 3) { score += 10; break; }  // 骨刺击杀敌方随从抽2
     if (dragons > 0 && shark) score += dragons * 16;
+    // 鱼已在场 + 手牌有当前法力可打出的龙：下一只龙必吃满 16 伤。
+    // 不加这 8 分，"先下龙"（立即可见 +8 伤害）会压过"先下鱼"（当期 0 伤害），
+    // 导致束内被剪，漏掉 3 龙 48 伤这类解（如 5 费局面 40→48）。
+    if (shark_on > 0) {
+        for (const auto& c : s.hand) {
+            if (c.dragon && c.current_cost() >= 0 && c.current_cost() <= s.mana) {
+                score += 16;
+                break;
+            }
+        }
+    }
     if (dragons > 0 && mother > 0) score += 12;
     if (dragons > 0 && shadowcaster > 0) score += 12;
     if (dragons > 0 && (dance > 0 || potion > 0)) score += 12;
