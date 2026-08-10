@@ -793,10 +793,13 @@ def compute_draw_whatif(
     snapshot: Dict[str, object],
     options: Optional[Dict[str, object]] = None,
 ) -> Optional[Dict[str, object]]:
-    """独立的“如果机制”：毫秒级预评估，返回最优假设情形，或 None（无抽随从卡 / 组合已齐）。
+    """独立的“如果机制”：毫秒级递归预评估，返回最优假设情形，或 None（无抽随从卡 / 组合已齐）。
 
-    返回：{"cards": [用到的卡], "drawn": 抽到的随从,
-          "damage": 最高伤害, "dragons": 龙数, "mana_left": 剩余法力}
+    递归：先按优先级抽缺失随从（鱼>刀>牛>暗>晦>狐），抽到的刀油/狐人老千等
+    立即成为新的减费来源（伺机待发-2、刀油-2、狐-2），让后续抽随从卡能以更低
+    费用连续打出，直至无卡可抽。输出记录减费状态，明确“当前费用为减费后显示值”。
+    返回：{"cards": 用到的抽卡, "drawn": 抽到的随从列表,
+          "discounts": 减费来源卡列表, "damage": 预估伤害, "dragons": 龙数, "mana_left": 剩余法力}
     """
     hand = list(snapshot.get("hand") or [])
     hand_names = [str(h.get("name", "")) for h in hand]
@@ -807,43 +810,83 @@ def compute_draw_whatif(
         for n in combo:
             if n not in have and n not in missing:
                 missing.append(n)
+    missing.sort(key=lambda n: -DRAW_PRIORITY.get(n, 0))
     draw_cards = [n for n in hand_names if n in DRAW_MINION_SPELLS]
     if not missing or not draw_cards:
         return None
 
-    best = None
-    best_prio = -1
-    best_dmg = -1
-    for dcard in draw_cards:
-        cur_cost = DRAW_MINION_SPELLS[dcard][0]
-        for h in hand:
-            if str(h.get("name", "")) == dcard and h.get("cost") is not None:
-                cur_cost = int(h["cost"])
-                break
-        # 默认以省费方式打出：有伺机待发则先打伺机待发（下一张法术减2费，最低0费）
-        prep_used = "伺机待发" in hand_names
-        eff_cost = max(0, cur_cost - 2) if prep_used else max(0, cur_cost)
-        for mn in missing:
-            new_hand = [h for h in hand if str(h.get("name", "")) not in (dcard, "伺机待发")]
-            if len(new_hand) >= 10:
+    mana = int(snapshot.get("mana") or 0)
+    cards_in_hand = set(hand_names)
+    prep_used = "伺机待发" in cards_in_hand
+    foxy_used = "狐人老千" in cards_in_hand
+    scabbs_pool = sum(1 for n in hand_names if n == "斯卡布斯·刀油")
+
+    used_cards: List[str] = []
+    drawn_minions: List[str] = []
+    discounts: List[str] = []
+    draw_cards_in_hand = list(draw_cards)
+
+    # 递归：循环打出可负担的抽随从卡（利用伺机/刀油/狐减费），抽到刀油会补充减费源
+    while draw_cards_in_hand and missing:
+        played = False
+        for dcard in sorted(draw_cards_in_hand, key=lambda n: DRAW_MINION_SPELLS[n][0]):
+            base = DRAW_MINION_SPELLS[dcard][0]
+            eff = base
+            local = []
+            if prep_used:
+                eff -= 2
+                local.append("伺机待发")
+            if scabbs_pool > 0:
+                eff -= 2
+                local.append("斯卡布斯·刀油")
+            if foxy_used and dcard == "行骗":
+                eff -= 2
+                local.append("狐人老千")
+            eff = max(0, eff)
+            if eff > mana:
                 continue
-            new_hand.append({"name": mn})
-            variant = dict(snapshot)
-            variant["hand"] = new_hand
-            variant["mana"] = int(snapshot.get("mana") or 0) - eff_cost
-            if variant["mana"] < 0:
-                continue
-            dmg, drg, mana_left = _quick_otk_estimate(variant)
-            prio = DRAW_PRIORITY.get(mn, 0)
-            if best is None or prio > best_prio or (prio == best_prio and dmg > best_dmg):
-                cards = ["伺机待发", dcard] if prep_used else [dcard]
-                best = {
-                    "cards": cards,
-                    "drawn": mn,
-                    "damage": dmg,
-                    "dragons": drg,
-                    "mana_left": mana_left,
-                }
-                best_prio = prio
-                best_dmg = dmg
-    return best
+            mana -= eff
+            used_cards.append(dcard)
+            discounts.extend(local)
+            if prep_used:
+                prep_used = False
+            if scabbs_pool > 0:
+                scabbs_pool -= 1
+            if foxy_used and dcard == "行骗":
+                foxy_used = False
+            for _ in range(DRAW_MINION_SPELLS[dcard][1]):
+                if not missing:
+                    break
+                mn = missing.pop(0)  # 最高优先级
+                drawn_minions.append(mn)
+                have.add(mn)
+                if mn == "斯卡布斯·刀油":
+                    scabbs_pool += 1  # 抽到刀油成为新的减费源
+            draw_cards_in_hand.remove(dcard)
+            played = True
+            break
+        if not played:
+            break
+
+    if not drawn_minions:
+        return None
+
+    # 最终变体：移除已打出的抽卡/伺机待发，加入抽到的随从
+    remove_names = set(used_cards) | ({"伺机待发"} if "伺机待发" in cards_in_hand and any(
+        c == "伺机待发" for c in discounts) else set())
+    new_hand = [h for h in hand if str(h.get("name", "")) not in remove_names]
+    for mn in drawn_minions:
+        new_hand.append({"name": mn})
+    variant = dict(snapshot)
+    variant["hand"] = new_hand
+    variant["mana"] = mana
+
+    dmg, drg, mana_left = _quick_otk_estimate(variant)
+    return {
+        "cards": list(used_cards),
+        "drawn": drawn_minions,
+        "discounts": discounts,
+        "damage": dmg,
+        "dragons": drg,
+        "mana_left": mana_left,
+    }

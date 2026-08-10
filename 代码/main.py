@@ -1609,7 +1609,12 @@ class MainWindow(QWidget):
             lines.append("")
             lines.append("如果机制：")
             lines.append("如果使用：[" + "][".join(whatif["cards"]) + "]")
-            lines.append(f"可能抽到：[{whatif['drawn']}]")
+            drawn = whatif.get("drawn") or []
+            lines.append("可能抽到：[" + "][".join(drawn) + "]")
+            discounts = whatif.get("discounts") or []
+            if discounts:
+                unique = list(dict.fromkeys(discounts))
+                lines.append("减费状态：" + "、".join(f"{d}(-2)" for d in unique) + "（当前费用为减费后显示值）")
             lines.append(f"预计伤害：{whatif['damage']}，龙数：{whatif['dragons']}，余：{whatif['mana_left']}费")
 
         text = "\n".join(lines)
