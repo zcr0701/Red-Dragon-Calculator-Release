@@ -15,7 +15,10 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import html
+import ipaddress  # noqa: F401 - PyInstaller 打包必需（frozen urllib.parse 依赖它，缺了无法启动）
 import json
 import re
 import sys
@@ -52,7 +55,23 @@ from powerlog_reader import LogWatcher
 
 
 BASE_DIR = Path(__file__).resolve().parent
+
+if getattr(sys, "frozen", False):
+    # PyInstaller 打包：程序文件（引擎 exe / 卡名映射 / 日志目录）都放在主程序同目录
+    BASE_DIR = Path(sys.executable).resolve().parent
+
 LOGS_DIR = BASE_DIR / "logs"
+
+try:
+    from _embedded_assets import (  # type: ignore
+        EMBEDDED_QR_BASE64,
+        ENGINE_EXE_SHA256,
+        CARD_MAP_SHA256,
+    )
+except Exception:  # noqa: BLE001 - 开发环境没有嵌入资产时走文件/无校验
+    EMBEDDED_QR_BASE64 = ""
+    ENGINE_EXE_SHA256 = ""
+    CARD_MAP_SHA256 = ""
 
 # 示例局面：手牌 + 战场 + 水晶（用于无游戏时的界面/计算自测）
 DEMO_SNAPSHOT = {
@@ -2032,20 +2051,21 @@ class IntroDialog(QDialog):
         qr_label.setAlignment(Qt.AlignCenter)
         qr_path = BASE_DIR / "收款码.png"
 
-        if qr_path.is_file():
-            pixmap = QPixmap(str(qr_path))
+        if EMBEDDED_QR_BASE64:
+            pixmap = QPixmap()
+            pixmap.loadFromData(base64.b64decode(EMBEDDED_QR_BASE64))
+        else:
+            pixmap = QPixmap(str(qr_path)) if qr_path.is_file() else QPixmap()
 
-            if not pixmap.isNull():
-                pixmap = pixmap.scaled(
-                    500, 500, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                )
-                qr_label.setPixmap(pixmap)
-            else:
-                qr_label.setText("（收款码图片读取失败）")
+        if not pixmap.isNull():
+            pixmap = pixmap.scaled(
+                500, 500, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            qr_label.setPixmap(pixmap)
         else:
             qr_label.setText(
                 "（未找到收款码图片：请将图片命名为 收款码.png\n"
-                "放在程序目录，重启后即可显示）"
+                "放在程序目录后重新打包，即可内嵌显示）"
             )
             qr_label.setWordWrap(True)
             qr_label.setStyleSheet("font-size:30px; color:#666;")
@@ -2088,11 +2108,53 @@ class IntroDialog(QDialog):
         super().keyPressEvent(event)
 
 
+def _verify_integrity() -> Optional[str]:
+    """打包版启动自检：计算核心 / 卡牌数据被篡改或缺失时拒绝启动。
+
+    校验哈希在打包时由 build_dist.py 内嵌进代码（随代码一起加密），
+    运行时只做一次 SHA256 对比，对计算时间无影响。
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+
+    for filename, expected, label in (
+        ("red_dragon_engine.exe", ENGINE_EXE_SHA256, "计算核心"),
+        ("card_id_map.json", CARD_MAP_SHA256, "卡牌数据"),
+    ):
+        if not expected:
+            continue
+
+        path = BASE_DIR / filename
+
+        try:
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return f"缺少{label}文件，程序可能被篡改"
+
+        if actual != expected:
+            return f"{label}文件校验失败，程序可能被篡改"
+
+    return None
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     demo = "--demo" in sys.argv
     smoke = "--smoke" in sys.argv
     selftest = "--selftest" in sys.argv
+
+    integrity_error = _verify_integrity()
+
+    if integrity_error:
+        if smoke or selftest:
+            print(integrity_error)
+            return 1
+
+        QMessageBox.critical(
+            None, "校验失败", integrity_error + "\n请从作者处获取原始版本。"
+        )
+        return 1
+
     window = MainWindow(demo=demo)
     window.show()
 

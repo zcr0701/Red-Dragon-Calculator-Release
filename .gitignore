@@ -18,3 +18,11 @@ work/
 # 本地压缩备份（不入库）
 *.rar
 
+# PyInstaller 构建产物
+dist/
+build/
+*.spec
+_embedded_assets.py
+
+# 收款码原图（仅打包时内嵌，不入库）
+收款码.png

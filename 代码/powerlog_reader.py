@@ -36,7 +36,12 @@ from hslog.player import coerce_to_entity_id
 
 
 BASE_DIR = Path(__file__).resolve().parent
-CARD_ID_MAP_PATH = BASE_DIR / "card_id_map.json"
+
+if getattr(sys, "frozen", False):
+    # PyInstaller 打包：卡名映射与主程序同目录
+    CARD_ID_MAP_PATH = Path(sys.executable).resolve().parent / "card_id_map.json"
+else:
+    CARD_ID_MAP_PATH = BASE_DIR / "card_id_map.json"
 
 # 常见炉石安装位置（跨电脑兼容：直接安装 / Battle.net 游戏目录 / 各盘符）
 DEFAULT_GAME_DIRS = [

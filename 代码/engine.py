@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -404,6 +405,12 @@ def find_engine(exe_path: Optional[str] = None) -> Optional[str]:
         BASE_DIR / "red_dragon_engine.exe",
         BASE_DIR / "red_dragon_calculator.exe",
     ]
+
+    if getattr(sys, "frozen", False):
+        # PyInstaller 打包：引擎 exe 与主程序放在同一目录
+        candidates.insert(
+            0, Path(sys.executable).resolve().parent / "red_dragon_engine.exe"
+        )
 
     for p in candidates:
         if p.is_file():
