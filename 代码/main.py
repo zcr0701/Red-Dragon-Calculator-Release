@@ -60,6 +60,9 @@ if getattr(sys, "frozen", False):
     # PyInstaller 打包：程序文件（引擎 exe / 卡名映射 / 日志目录）都放在主程序同目录
     BASE_DIR = Path(sys.executable).resolve().parent
 
+# PyInstaller onefile 的运行时数据解压目录（onedir 与开发模式直接使用程序目录）
+DATA_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
+
 LOGS_DIR = BASE_DIR / "logs"
 
 try:
@@ -2080,9 +2083,16 @@ class IntroDialog(QDialog):
         close_row = QHBoxLayout()
         close_btn = QPushButton("知道了")
         close_btn.setStyleSheet("font-size:30px; padding:8px 30px;")
-        close_btn.setEnabled(False)  # 必须滑到最底看完才能关闭
+        close_btn.setEnabled(False)  # 必须滑到最底看完，且等待 3 秒后才能关闭
         close_btn.clicked.connect(self.accept)
         self._close_btn = close_btn
+        self._close_ready = False
+        self._close_wait_secs = 3
+        self._update_close_button_text()
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.setInterval(1000)
+        self._countdown_timer.timeout.connect(self._on_countdown)
+        self._countdown_timer.start()
         close_row.addStretch(1)
         close_row.addWidget(close_btn)
         close_row.addStretch(1)
@@ -2093,9 +2103,27 @@ class IntroDialog(QDialog):
         sb.rangeChanged.connect(self._update_close_enabled)
 
     def _update_close_enabled(self) -> None:
-        """滑到最底（value >= maximum）才允许点“知道了”关闭。"""
+        """滑到最底（value >= maximum）且等待满 3 秒，才允许点“知道了”关闭。"""
         sb = self._scroll.verticalScrollBar()
-        self._close_btn.setEnabled(sb.value() >= sb.maximum())
+        at_bottom = sb.value() >= sb.maximum()
+        self._close_btn.setEnabled(at_bottom and self._close_ready)
+
+    def _on_countdown(self) -> None:
+        """每秒递减倒计时，满 3 秒后允许关闭（仍需滑到最底）。"""
+        self._close_wait_secs -= 1
+
+        if self._close_wait_secs <= 0:
+            self._countdown_timer.stop()
+            self._close_ready = True
+
+        self._update_close_button_text()
+        self._update_close_enabled()
+
+    def _update_close_button_text(self) -> None:
+        if self._close_wait_secs > 0:
+            self._close_btn.setText(f"知道了（{self._close_wait_secs}秒后可关闭）")
+        else:
+            self._close_btn.setText("知道了")
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         super().showEvent(event)
@@ -2124,7 +2152,7 @@ def _verify_integrity() -> Optional[str]:
         if not expected:
             continue
 
-        path = BASE_DIR / filename
+        path = DATA_DIR / filename
 
         try:
             actual = hashlib.sha256(path.read_bytes()).hexdigest()

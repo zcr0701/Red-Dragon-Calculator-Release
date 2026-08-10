@@ -38,8 +38,9 @@ from hslog.player import coerce_to_entity_id
 BASE_DIR = Path(__file__).resolve().parent
 
 if getattr(sys, "frozen", False):
-    # PyInstaller 打包：卡名映射与主程序同目录
-    CARD_ID_MAP_PATH = Path(sys.executable).resolve().parent / "card_id_map.json"
+    # PyInstaller 打包：onefile 解压到临时目录，onedir 与主程序同目录
+    data_dir = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    CARD_ID_MAP_PATH = data_dir / "card_id_map.json"
 else:
     CARD_ID_MAP_PATH = BASE_DIR / "card_id_map.json"
 

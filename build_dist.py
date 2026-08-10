@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
-"""打包红龙贼计算器为可分发的副本。
+"""打包红龙贼计算器为可分发的单文件副本。
 
 - 内嵌收款码（_embedded_assets.py，随代码一起被打入 PyInstaller 归档）；
 - 记录 计算核心/卡牌数据 的 SHA256，运行时校验，防篡改/替换；
-- PyInstaller onedir 打包，源码编译进归档，不易阅读修改；
+- PyInstaller onefile 打包，引擎 exe / 卡名映射 / 收款码全部打进单个 exe，源码编译进归档；
 - 计算核心仍是原生 C++ exe，计算性能不受影响。
 """
 import base64
 import hashlib
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -60,20 +59,23 @@ def main() -> int:
         "--noconfirm",
         "--clean",
         "--noconsole",
-        "--onedir",
+        "--onefile",
         "--name",
         NAME,
+        # 引擎 exe 与卡名映射打进单文件，运行时解压到临时目录
+        "--add-binary",
+        f"{engine_exe};.",
+        "--add-data",
+        f"{card_map};.",
         str(PROJ / "main.py"),
     ]
     print("运行 PyInstaller（可能需要几分钟）...")
     subprocess.check_call(cmd, cwd=str(PROJ))
 
-    dist = PROJ / "dist" / NAME
-    shutil.copy2(engine_exe, dist / "red_dragon_engine.exe")
-    shutil.copy2(card_map, dist / "card_id_map.json")
-    (dist / "logs").mkdir(exist_ok=True)
-    print("副本生成完毕:", dist)
-    print("说明：计算核心与卡牌数据已带完整性校验，收款码内嵌于归档代码中。")
+    dist_exe = PROJ / "dist" / f"{NAME}.exe"
+    (PROJ / "dist" / "logs").mkdir(exist_ok=True)
+    print("副本生成完毕:", dist_exe)
+    print("说明：引擎 exe / 卡名映射 / 收款码均已内嵌，启动时自动校验完整性。")
     return 0
 
 

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -407,10 +408,15 @@ def find_engine(exe_path: Optional[str] = None) -> Optional[str]:
     ]
 
     if getattr(sys, "frozen", False):
-        # PyInstaller 打包：引擎 exe 与主程序放在同一目录
-        candidates.insert(
-            0, Path(sys.executable).resolve().parent / "red_dragon_engine.exe"
-        )
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            # PyInstaller onefile：引擎 exe 随程序一起解压到临时目录
+            candidates.insert(0, Path(meipass) / "red_dragon_engine.exe")
+        else:
+            # PyInstaller onedir：引擎 exe 与主程序放在同一目录
+            candidates.insert(
+                0, Path(sys.executable).resolve().parent / "red_dragon_engine.exe"
+            )
 
     for p in candidates:
         if p.is_file():
@@ -583,6 +589,11 @@ def run_engine(
             "未找到 C++ 计算核心，请先运行 代码/build_engine.bat 编译 red_dragon_engine.exe"
         )
 
+    popen_kwargs: Dict[str, object] = {}
+    if os.name == "nt":
+        # 引擎是控制台程序：不创建新窗口，避免计算时弹出黑框
+        popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
     proc = subprocess.Popen(
         [exe, "--json"],
         stdin=subprocess.PIPE,
@@ -591,6 +602,7 @@ def run_engine(
         text=True,
         encoding="utf-8",
         errors="replace",
+        **popen_kwargs,
     )
     stdout_chunks: List[str] = []
 
