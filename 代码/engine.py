@@ -740,17 +740,55 @@ DRAW_MINION_SPELLS = {
 }
 
 
+def _quick_otk_estimate(snapshot: Dict[str, object]) -> Tuple[int, int, int]:
+    """毫秒级 OTK 预评估：按资源计数估算（可达龙数、伤害、剩余法力）。
+
+    龙源数 = 手牌/场上龙 + 暗施复制(鱼在场×2) + 牛拿龙 + 药水复制；
+    回手容量 = 单体回手 + 整场回手(舞/药水，乐观按 5 个随从)；
+    法力轮数 = (法力+水晶)/2 的简化估算；
+    可达龙数 = min(龙源, 回手, 法力轮数)；每条龙 16 伤（鱼在场）/ 8 伤。
+    """
+    hand = [str(h.get("name", "")) for h in snapshot.get("hand") or []]
+    board = [str(b.get("name", "")) for b in snapshot.get("board") or []]
+    cards = hand + board
+
+    def cnt(n: str) -> int:
+        return sum(1 for c in cards if c == n)
+
+    shark = cnt("鲨鱼之灵") > 0
+    dragon_hand = cnt("生命的缚誓者阿莱克丝塔萨")
+    caster = cnt("暗影施法者")
+    etc = cnt("乐队经理精英牛头人酋长")
+    band = [str(x) for x in (snapshot.get("etc_band") or [])]
+    potion = cnt("幻觉药水")
+    shadowstep = cnt("暗影步")
+    tenwu = cnt("赤烟·腾武")
+    dance = cnt("舞动全场（ft.迦罗娜）")
+
+    sources = (
+        dragon_hand
+        + caster * (2 if shark else 1)
+        + (1 if etc and "生命的缚誓者阿莱克丝塔萨" in band else 0)
+        + (potion if dragon_hand > 0 else 0)
+    )
+    returns = shadowstep + tenwu + 5 * dance + (5 if potion and board else 0)
+    mana = int(snapshot.get("mana") or 0)
+    crystals = int(snapshot.get("crystals") or 0)
+    mana_rounds = max(1, (mana + crystals) // 2)
+    dragons = max(0, min(sources, max(1, returns), mana_rounds))
+    damage = dragons * (16 if shark else 8)
+    return damage, dragons, max(0, mana)
+
+
 def compute_draw_whatif(
     snapshot: Dict[str, object],
     options: Optional[Dict[str, object]] = None,
 ) -> Optional[Dict[str, object]]:
-    """独立的“如果机制”：返回最优假设情形，或 None（无抽随从卡 / 组合已齐）。
+    """独立的“如果机制”：毫秒级预评估，返回最优假设情形，或 None（无抽随从卡 / 组合已齐）。
 
     返回：{"cards": [用到的卡], "drawn": 抽到的随从,
           "damage": 最高伤害, "dragons": 龙数, "mana_left": 剩余法力}
     """
-    import concurrent.futures
-
     hand = list(snapshot.get("hand") or [])
     hand_names = [str(h.get("name", "")) for h in hand]
     have = set(hand_names) | set(str(b.get("name", "")) for b in snapshot.get("board") or [])
@@ -764,11 +802,7 @@ def compute_draw_whatif(
     if not missing or not draw_cards:
         return None
 
-    opts = dict(options or {})
-    main_budget = float(opts.get("time_budget_sec") or 3.0)
-    whatif_budget = min(main_budget, 1.2)  # 假设推演用短预算，避免拖慢主流程
-
-    variants = []
+    best = None
     for dcard in draw_cards:
         cur_cost = DRAW_MINION_SPELLS[dcard][0]
         for h in hand:
@@ -788,43 +822,14 @@ def compute_draw_whatif(
             variant["mana"] = int(snapshot.get("mana") or 0) - eff_cost
             if variant["mana"] < 0:
                 continue
-            variants.append((dcard, mn, prep_used, variant))
-
-    if not variants:
-        return None
-
-    def run_one(args):
-        dcard, mn, prep_used, variant = args
-        try:
-            r = compute(
-                variant,
-                min_alex=int(opts.get("min_alex", 1)),
-                max_alex=int(opts.get("max_alex", 10)),
-                depth=int(opts.get("depth", 30)),
-                max_paths=int(opts.get("max_paths", 1000000)),
-                threads=2,
-                time_budget_sec=whatif_budget,
-                etc_band=list(opts.get("etc_band") or snapshot.get("etc_band") or []),
-                only_best_damage=True,
-            )
-            return dcard, mn, prep_used, r
-        except Exception:  # noqa: BLE001 - 单变体失败不影响整体
-            return None
-
-    best = None
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(3, len(variants))) as ex:
-        for out in ex.map(run_one, variants):
-            if out is None:
-                continue
-            dcard, mn, prep_used, r = out
-            dmg = int(r.get("max_damage") or 0)
+            dmg, drg, mana_left = _quick_otk_estimate(variant)
             if best is None or dmg > best["damage"]:
                 cards = ["伺机待发", dcard] if prep_used else [dcard]
                 best = {
                     "cards": cards,
                     "drawn": mn,
                     "damage": dmg,
-                    "dragons": int(r.get("max_dragons") or 0),
-                    "mana_left": int(r.get("mana") or 0),
+                    "dragons": drg,
+                    "mana_left": mana_left,
                 }
     return best
