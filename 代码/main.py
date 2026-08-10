@@ -1938,12 +1938,16 @@ class IntroDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("使用说明(CreATedBy此人乃天下绝响#5854)")
-        # 去掉标题栏的“?”帮助按钮，只保留关闭 x
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.resize(760, 920)
+        # 去掉标题栏的“?”帮助按钮和关闭 x（只能看完滚动内容后点“知道了”关闭）
+        flags = self.windowFlags()
+        flags &= ~Qt.WindowContextHelpButtonHint
+        flags &= ~Qt.WindowCloseButtonHint
+        self.setWindowFlags(flags)
+        self.resize(900, 1000)
 
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
+        self._scroll = scroll
 
         content = QWidget()
         layout = QVBoxLayout(content)
@@ -1951,34 +1955,77 @@ class IntroDialog(QDialog):
         layout.setSpacing(14)
 
         title = QLabel("使用说明")
-        title.setStyleSheet("font-size:40px; font-weight:bold;")
+        title.setStyleSheet("font-size:40px; font-weight:bold; color:#C2410C;")
         layout.addWidget(title)
 
         usage = QLabel(
-            "1. 启动后自动跟随最新一局 Power.log，实时读取手牌/场面/法力。\n"
-            "2. 主窗口点击“开始计算”，或小窗点击“计算”，运行纯束宽搜索。\n"
-            "3. 束宽填 0 = 自动四通道；可勾选“不限时”跑满束宽×深度。\n"
-            "4. 场面交换：填写 我方序号->敌方序号（逗号分隔），留空则自动搜索最优交换。\n"
-            "5. 小窗可置顶，分轮显示最优路径（缩写字带颜色方块）。"
+            '<span style="font-size:36px; color:#1F2937;">'
+            '1. 启动后会自动解析炉石本地 <b><span style="color:#0E7490;">Power.log</span></b>，'
+            '实时读取场面数据；自动更新牛内随从以及殒命暗影追踪。<br/>'
+            '2. 主窗口点击“<b><span style="color:#DC2626;">开始计算</span></b>”，或点击'
+            '<b><span style="color:#7C3AED;">小窗</span></b>按钮，弹出小窗；小窗处点击“计算”，'
+            '运行<b>束宽搜索</b>。<br/>'
+            '3. <b>束宽</b>默认填 0 即可；如果怀疑搜出的不是最优解，可勾选'
+            '“<b><span style="color:#DC2626;">不限时</span></b>”，并将束宽设置为'
+            '<b>十万</b>或更高，<b>深度40</b>或更高，以计算全局最优解。<br/>'
+            '4. <b><span style="color:#D97706;">场面交换</span></b>：默认留空，自动搜索最优交换；'
+            '会根据当前场面，计算出场面得到的<b><span style="color:#D97706;">最高伤害</span></b>交换解。<br/>'
+            '5. 小窗默认置顶，最小化需要点击按钮，默认计算最高伤害，<b>分轮</b>显示路径。'
+            '</span>'
         )
         usage.setWordWrap(True)
-        usage.setStyleSheet("font-size:36px;")
+        usage.setStyleSheet("font-size:36px; color:#1F2937;")
         layout.addWidget(usage)
 
-        layout.addSpacing(6)
-        author = QLabel("该计算器由 战网ID：此人乃天下绝响#5854 制作")
-        author.setStyleSheet("font-size:36px;")
-        layout.addWidget(author)
+        layout.addSpacing(20)
 
-        feedback = QLabel("如遇到bug或功能建议，请加作者QQ：2250195126提供反馈")
+        author_header = QLabel("作者附言：")
+        author_header.setStyleSheet("font-size:36px; font-weight:bold; color:#D97706;")
+        layout.addWidget(author_header)
+
+        author_body = QLabel(
+            '<span style="font-size:36px; color:#374151;">'
+            '　　该计算器经历了多轮底层架构的优化和算法的设计尝试，以及反复的bug修改，'
+            '才实现了将计算时间压缩到<b><span style="color:#DC2626;">3s以内</span></b>，'
+            '普遍覆盖了<b><span style="color:#16A34A;">95%以上的最优解</span></b>，'
+            '并且计算出许多公式表上的<b><span style="color:#D97706;">更优解</span></b>'
+            '以及一些神奇的<b><span style="color:#7C3AED;">等价路径</span></b>，'
+            '具体由使用者自己发掘。<br/>'
+            '　　开发这个软件的过程耗费了作者不少的时间精力和金钱，'
+            '所以如果帮助到了您，请务必给作者<b><span style="color:#D97706;">一点支持</span></b>。'
+            '</span>'
+        )
+        author_body.setWordWrap(True)
+        author_body.setStyleSheet("font-size:36px; color:#374151;")
+        layout.addWidget(author_body)
+
+        author_id = QLabel(
+            '<span style="font-size:36px; color:#1F2937;">该计算器由 '
+            '<b><span style="color:#1D4ED8;">战网ID：此人乃天下绝响#5854</span></b> 制作</span>'
+        )
+        layout.addWidget(author_id)
+
+        feedback = QLabel(
+            '<span style="font-size:36px; color:#1F2937;">'
+            '如遇到bug或功能建议，请加作者<b><span style="color:#B91C1C;">QQ：2250195126</span></b>提供反馈<br/>'
+            '如果您需要<b><span style="color:#7C3AED;">定制</span></b>其他相关的插件或功能，'
+            '也可以加我<b><span style="color:#B91C1C;">QQ</span></b>。'
+            '</span>'
+        )
         feedback.setWordWrap(True)
-        feedback.setStyleSheet("font-size:36px;")
+        feedback.setStyleSheet("font-size:36px; color:#DC2626;")
         layout.addWidget(feedback)
 
-        layout.addSpacing(6)
-        thanks = QLabel("最后，如果你喜欢该作品，并且对你起到了帮助\n不妨请我喝瓶可乐吧~")
+        layout.addSpacing(20)
+
+        thanks = QLabel(
+            '<span style="font-size:36px; color:#1F2937;">'
+            '　　最后，如果你喜欢该作品，并且对你起到了帮助<br/>'
+            '<b><span style="color:#B45309;">不妨请我喝瓶可乐吧~</span></b>'
+            '</span>'
+        )
         thanks.setWordWrap(True)
-        thanks.setStyleSheet("font-size:36px;")
+        thanks.setStyleSheet("font-size:36px; font-weight:bold; color:#B45309;")
         layout.addWidget(thanks)
 
         qr_label = QLabel()
@@ -2013,11 +2060,32 @@ class IntroDialog(QDialog):
         close_row = QHBoxLayout()
         close_btn = QPushButton("知道了")
         close_btn.setStyleSheet("font-size:30px; padding:8px 30px;")
+        close_btn.setEnabled(False)  # 必须滑到最底看完才能关闭
         close_btn.clicked.connect(self.accept)
+        self._close_btn = close_btn
         close_row.addStretch(1)
         close_row.addWidget(close_btn)
         close_row.addStretch(1)
         outer.addLayout(close_row)
+
+        sb = scroll.verticalScrollBar()
+        sb.valueChanged.connect(self._update_close_enabled)
+        sb.rangeChanged.connect(self._update_close_enabled)
+
+    def _update_close_enabled(self) -> None:
+        """滑到最底（value >= maximum）才允许点“知道了”关闭。"""
+        sb = self._scroll.verticalScrollBar()
+        self._close_btn.setEnabled(sb.value() >= sb.maximum())
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        super().showEvent(event)
+        QTimer.singleShot(0, self._update_close_enabled)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if event.key() == Qt.Key_Escape:
+            event.ignore()  # ESC 不关闭，必须看完后点“知道了”
+            return
+        super().keyPressEvent(event)
 
 
 def main() -> int:
