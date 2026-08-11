@@ -398,7 +398,7 @@ def _card_box_html(name: str) -> str:
         return "[" + _abbr_square(html.escape(abbr), color) + "]"
     return "[" + html.escape(abbr) + "]"
 # 可能分支机制：持枪要挟发现牌单独计算的优先级（补水 > 脱水 > 误炸 > 袋底藏沙 > 不许乱动）
-QUICKDRAW_BRANCH_ORDER = ("补水", "脱水", "误炸", "袋底藏沙", "不许乱动")
+QUICKDRAW_BRANCH_ORDER = ("补水", "脱水", "误炸", "袋底藏沙", "不许乱动", "其他快枪牌")
 
 
 def _whatif_branch_data(
@@ -907,11 +907,12 @@ class CalculationWorker(QThread):
                 )
 
                 if qi > 0 and self._stop is False:
-                    # 记忆节点+回溯：重放主路径分支点前的公共前缀，从分支点一次搜完五个分支
+                    # 记忆节点+回溯：重放主路径分支点前的公共前缀，从分支点一次搜完
+                    # 五张已建模快枪牌 + “其他快枪牌”杂牌分支（其余未建模牌按数量加权）
                     prefix = list(best_path[:qi])
                     branch_list: List[Dict[str, object]] = []
 
-                    for choice in engine.QUICKDRAW_CHOICES:
+                    for choice in (*engine.QUICKDRAW_CHOICES, engine.QUICKDRAW_OTHER):
                         if self._stop:
                             break
 
@@ -930,20 +931,24 @@ class CalculationWorker(QThread):
                                 "dragons": int(best_i.get("dragons") or 0),
                                 "mana_left": int(best_i.get("mana") or 0),
                                 "path": best_i.get("path") or [],
+                                "weight": engine.QUICKDRAW_WEIGHTS.get(choice, 1),
                             }
                         )
 
-                    # 只有单分支时无需考虑分支情况（结果确定），不显示 WhatIF 平均
+                    # 只有单分支时无需考虑分支情况（结果确定），不显示 WhatIF 平均；
+                    # 多分支按牌池数量加权（未建模的“其他快枪牌”权重 = 剩余牌数）
                     if len(branch_list) >= 2:
                         quickdraw_branches = branch_list
-                        n = len(quickdraw_branches)
+                        total_w = sum(int(b.get("weight") or 1) for b in quickdraw_branches)
                         whatif_average = {
                             "damage": sum(
-                                int(b.get("damage") or 0) for b in quickdraw_branches
-                            ) / n,
+                                int(b.get("damage") or 0) * int(b.get("weight") or 1)
+                                for b in quickdraw_branches
+                            ) / total_w,
                             "dragons": sum(
-                                int(b.get("dragons") or 0) for b in quickdraw_branches
-                            ) / n,
+                                int(b.get("dragons") or 0) * int(b.get("weight") or 1)
+                                for b in quickdraw_branches
+                            ) / total_w,
                         }
 
             result["quickdraw_branches"] = quickdraw_branches or None

@@ -184,6 +184,10 @@ static const unordered_map<string, int> QUICKDRAW_POOL_SCORE = {
     {"袋底藏沙", 2},
     {"不许乱动", 1},
 };
+// 其余未建模快枪牌（农场小助手/银蛇/热浪来袭/和善的银行职员/亮石旋岩虫/列车难题）
+// 统一视作“其他快枪牌”杂牌分支：置入一张未知法术杂牌，按数量加权（6/11）。
+static const string QUICKDRAW_OTHER_NAME = "其他快枪牌";
+static const int QUICKDRAW_OTHER_COUNT = 6;
 
 // 误炸快枪分支上限（3 点 + 2 点 + 1 点可击杀最多 3 个随从，组合数防止爆炸）
 static const size_t MAX_MISFIRE_BRANCHES = 80;
@@ -795,8 +799,9 @@ static vector<State> apply_search_effect(State base, const Card& card,
         return states;
     }
     if (e == "discover_quickdraw") {
-        // 持枪要挟：发现一张另一职业快枪牌（牌池固定，只展开已建模的快枪牌；
-        // 未建模的牌先纳入备注忽略）。发现牌本回合进入手牌 → 快枪可用。
+        // 持枪要挟：发现一张另一职业快枪牌（牌池固定，展开 5 张已建模牌；
+        // 其余未建模牌统一视作“其他快枪牌”杂牌分支，数量加权 6/11）。
+        // 发现牌本回合进入手牌 → 快枪可用。
         // forced_discover_choice 非空时（可能分支机制单独计算）只展开该牌。
         vector<State> states;
         const bool forced = !base.forced_discover_choice.empty();
@@ -810,6 +815,20 @@ static vector<State> apply_search_effect(State base, const Card& card,
             // 路径标注“（X）”：持枪要挟只是把快枪牌置入手牌，X 由玩家后续打出
             if (!s.path().empty()) {
                 s.path_mut().back() += "（" + choice + "）";
+            }
+            states.push_back(std::move(s));
+        }
+        // 其余快枪牌：统一视作杂牌（未知法术，不占随从栏），按数量加权
+        if (!forced || base.forced_discover_choice == QUICKDRAW_OTHER_NAME) {
+            State s = base.clone_reserved();
+            if (s.quickdraw_choice < 0)
+                s.quickdraw_choice = (int)QUICKDRAW_MODELED_POOL.size();  // 下标 5 = 其他快枪牌
+            s.used_quickdraw = true;
+            Card junk = make_card("未知快枪牌");
+            junk.card_type = "spell";
+            add_card_to_hand_or_burn(s, junk);
+            if (!s.path().empty()) {
+                s.path_mut().back() += "（" + QUICKDRAW_OTHER_NAME + "）";
             }
             states.push_back(std::move(s));
         }
@@ -1499,6 +1518,18 @@ static string canonical_action(string item) {
         out.compare(out.size() - target_suffix.size(), target_suffix.size(), target_suffix) == 0) {
         out = out.substr(0, lp);
     }
+    return out;
+}
+
+// 精确动作匹配（branch_prefix 分支点重放）：只规范化硬币/殒命标记，
+// 保留指向性目标后缀（如 暗影施法者（斯卡布斯·刀油2nd）），
+// 保证分支搜索从主路径的同一状态继续。
+static string canonical_action_exact(string item) {
+    string out = item;
+    string needle = "[殒命暗影]";
+    size_t pos;
+    while ((pos = out.find(needle)) != string::npos) out.erase(pos, needle.size());
+    if (is_coin_name(out)) return "幸运币";
     return out;
 }
 
@@ -2464,17 +2495,22 @@ static void print_json_result(const BeamResult& res, const SearchParams& p) {
         printf("]}%s\n", i + 1 < results.size() ? "," : "");
     }
     printf("  ],\n");
-    // 持枪要挟按发现牌分组的最优路径（可能分支显示；按牌池优先级 补水>脱水>误炸>… 排序）
+    // 持枪要挟按发现牌分组的最优路径（可能分支显示；按牌池优先级 补水>脱水>误炸>… 排序，
+    // 最后附“其他快枪牌”杂牌分支）
     vector<const State*> choices;
-    for (size_t ci = 0; ci < QUICKDRAW_MODELED_POOL.size(); ci++) {
+    for (size_t ci = 0; ci <= QUICKDRAW_MODELED_POOL.size(); ci++) {
         auto it = res.best_by_choice.find((int)ci);
         if (it != res.best_by_choice.end()) choices.push_back(&it->second);
     }
     printf("  \"quickdraw_branches\": [\n");
     for (size_t i = 0; i < choices.size(); i++) {
         const State& pst = *choices[i];
+        const string card_name =
+            pst.quickdraw_choice < (int)QUICKDRAW_MODELED_POOL.size()
+                ? QUICKDRAW_MODELED_POOL[pst.quickdraw_choice]
+                : QUICKDRAW_OTHER_NAME;
         printf("    {\"card\": \"%s\", \"damage\": %d, \"dragons\": %d, \"mana_left\": %d, \"path\": [",
-               json_escape(QUICKDRAW_MODELED_POOL[pst.quickdraw_choice]).c_str(),
+               json_escape(card_name).c_str(),
                pst.alex_damage, pst.alex_play_count, pst.mana);
         for (size_t j = 0; j < pst.path().size(); j++) {
             if (j) printf(", ");
@@ -2619,17 +2655,22 @@ static State state_from_json(const JVal& root) {
 
 // ---------- 路径验证（--verify / replay_path）：逐动作重放，报告卡在哪一步 ----------
 // 回溯匹配：同一卡名可能有多个目标实例（如多张红龙），逐个尝试，任一实例组合走通即通过
+// exact=true（branch_prefix 分支点重放）：必须精确匹配目标后缀
+// （如 暗影施法者（斯卡布斯·刀油2nd）），保证分支搜索从主路径的同一状态继续；
+// exact=false（--verify 通用重放）：去掉目标后缀自动尝试所有合法目标。
 static bool verify_rec(const State& st, const vector<string>& replay, size_t i,
-                       State& final_state, int* attempts) {
+                       State& final_state, int* attempts, bool exact = false) {
     if (i >= replay.size()) {
         final_state = st;
         return true;
     }
-    string want = canonical_action(replay[i]);
+    string want = exact ? canonical_action_exact(replay[i]) : canonical_action(replay[i]);
     vector<State> succs = generate_successors(st);
     for (State& succ : succs) {
         if (succ.path().empty()) continue;
-        if (canonical_action(succ.path().back()) != want) continue;
+        string got = exact ? canonical_action_exact(succ.path().back())
+                           : canonical_action(succ.path().back());
+        if (got != want) continue;
         fprintf(stderr, "TRACE step %d: %s | mana=%d hand=%d board=%d burned=%d dragons=%d dmg=%d\n",
                 (int)i, succ.path().back().c_str(), succ.mana, succ.hand_size(),
                 succ.board_size(), succ.burned_cards, succ.alex_play_count, succ.alex_damage);
@@ -2640,7 +2681,7 @@ static bool verify_rec(const State& st, const vector<string>& replay, size_t i,
         for (const auto& bc : succ.board)
             fprintf(stderr, " [%s cost=%d hp=%d]", bc.name().c_str(), bc.current_cost(), bc.health);
         fprintf(stderr, "\n");
-        if (verify_rec(succ, replay, i + 1, final_state, attempts)) return true;
+        if (verify_rec(succ, replay, i + 1, final_state, attempts, exact)) return true;
         if (attempts && ++(*attempts) > 500000) return false;  // 回溯预算保护
     }
     if (attempts) {
@@ -2652,9 +2693,9 @@ static bool verify_rec(const State& st, const vector<string>& replay, size_t i,
 }
 
 static int verify_path(const State& start, const vector<string>& replay,
-                       State& final_state, int* fail_step) {
+                       State& final_state, int* fail_step, bool exact = false) {
     int attempts = 0;
-    bool ok = verify_rec(start, replay, 0, final_state, &attempts);
+    bool ok = verify_rec(start, replay, 0, final_state, &attempts, exact);
     if (!ok && fail_step) *fail_step = attempts;
     return ok ? 1 : 0;
 }
@@ -2795,7 +2836,8 @@ int main(int argc, char** argv) {
     if (!branch_prefix.empty()) {
         State final_state;
         int fail_step = -1;
-        if (verify_path(st, branch_prefix, final_state, &fail_step)) {
+        // 分支点重放用精确目标匹配：保证从主路径同一状态继续搜索
+        if (verify_path(st, branch_prefix, final_state, &fail_step, /*exact=*/true)) {
             search_start = final_state;  // 前缀重放成功：从分支点继续
         }
         // 重放失败则退回从初始状态搜索（功能兜底，结果不变）

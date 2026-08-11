@@ -1074,6 +1074,12 @@ DRAW_PRIORITY = {
 
 # 持枪要挟发现牌池（全部已知）
 QUICKDRAW_CHOICES = ("补水", "脱水", "误炸", "袋底藏沙", "不许乱动")
+# 其余未建模快枪牌（农场小助手/银蛇/热浪来袭/和善的银行职员/亮石旋岩虫/列车难题）：
+# 统一视作“其他快枪牌”杂牌分支，按数量加权（6/11）计入 WhatIF 平均。
+QUICKDRAW_OTHER = "其他快枪牌"
+QUICKDRAW_OTHER_COUNT = 6
+QUICKDRAW_WEIGHTS = {name: 1 for name in QUICKDRAW_CHOICES}
+QUICKDRAW_WEIGHTS[QUICKDRAW_OTHER] = QUICKDRAW_OTHER_COUNT
 
 
 def wb_draw_delta(drawn_minions: List[str]) -> float:
