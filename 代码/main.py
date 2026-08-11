@@ -2311,7 +2311,7 @@ class MiniWindow(QWidget):
         self.mini_deadly_check = QCheckBox("殒命序号：")
         self.mini_deadly_check.setToolTip("重开游戏时需要填，平时不用管")
         self.mini_deadly_input = QLineEdit()
-        self.mini_deadly_input.setPlaceholderText("如 3,7")
+        self.mini_deadly_input.setPlaceholderText("重开游戏时需要手动标记，其余情况不用管")
         self.mini_deadly_input.setToolTip("重开游戏时需要填，平时不用管")
         self.mini_deadly_input.setEnabled(False)
         self.mini_deadly_check.toggled.connect(self.mini_deadly_input.setEnabled)
