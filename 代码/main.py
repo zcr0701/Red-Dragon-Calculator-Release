@@ -668,11 +668,37 @@ class CalculationWorker(QThread):
                 )
 
             if bool(self.options.get("draw_whatif", True)):
-                # 独立的“如果机制”：省费打出抽随从卡、抽缺失组合随从后的最高伤害推演，
-                # 返回预处理完整路径（path）+ 预计伤害（多回合预估）。
-                result["draw_whatif"] = engine.compute_draw_whatif(
-                    self.snapshot, self.options
-                )
+                # 独立的“如果机制”：省费打出抽随从卡、抽缺失组合随从后的最高伤害推演。
+                # 在干净变体（只打了抽卡）上跑真实搜索，得到 WhatIf 的完整路径与真实伤害。
+                whatif = engine.compute_draw_whatif(self.snapshot, self.options)
+
+                if whatif:
+                    variant = whatif.pop("variant", None)
+
+                    if variant:
+                        res2 = engine.compute(
+                            variant,
+                            exchanges=best_exchange,
+                            lethal_threshold=(
+                                _lethal_threshold(variant, best_exchange)
+                                if bool(self.options.get("truncate_branch", True))
+                                else -1
+                            ),
+                            should_stop=lambda: self._stop,
+                            **common_kwargs,
+                        )
+                        best2 = (res2.get("results") or [{}])[0]
+                        cont = best2.get("path") or []
+
+                        if cont or (res2.get("max_damage") or 0) > 0:
+                            whatif["damage"] = int(res2.get("max_damage") or 0)
+                            whatif["dragons"] = int(res2.get("max_dragons") or 0)
+                            whatif["mana_left"] = int(best2.get("mana") or 0)
+                            whatif["path"] = (
+                                list(whatif.get("pre_path") or []) + list(cont)
+                            )
+
+                result["draw_whatif"] = whatif
 
             # 可能分支机制：主结果最优路径含持枪要挟时，提取分支点前缀，
             # 各发现牌只“回溯到分支点往后”单独计算（前缀由引擎重放，不重复搜索）。
@@ -2097,17 +2123,33 @@ class MainWindow(QWidget):
         whatif = data.get("draw_whatif")
         if whatif:
             lines.append("")
-            lines.append("如果机制预处理：")
-            lines.append("如果使用：[" + "][".join(whatif.get("cards") or []) + "]")
-            lines.append("可能抽到：[" + "][".join(whatif.get("drawn") or []) + "]")
+            lines.append("WhatIf：")
+            cards = whatif.get("cards") or []
+            drawn = whatif.get("drawn") or []
+
+            if cards:
+                note = ""
+
+                if whatif.get("discounts"):
+                    note = f"（因为{cards[-1]}后就没有减费状态了）"
+
+                lines.append("如果使用：[" + "][".join(cards) + "]" + note + ";")
+
+            if drawn:
+                lines.append("将抽到：[" + "][".join(drawn) + "]")
+
             lines.append(
-                f"预计伤害：{whatif.get('damage', 0)}，龙数：{whatif.get('dragons', 0)}，"
+                f"预计最大伤害：{whatif.get('damage', 0)}，龙数：{whatif.get('dragons', 0)}，"
                 f"余：{whatif.get('mana_left', 0)}费"
             )
             path = whatif.get("path") or []
 
             if path:
-                lines.append("可能路径：" + " → ".join(str(step) for step in path))
+                for index, rnd in enumerate(split_path_rounds(path), start=1):
+                    lines.append(
+                        f"[第{chinese_round_number(index)}轮]："
+                        + " → ".join(str(step) for step in rnd)
+                    )
 
         branch_lines = _format_whatif_branch_lines(
             results, data.get("quickdraw_branches"), full_names=True
@@ -2549,7 +2591,7 @@ class MiniWindow(QWidget):
     def _mini_whatif_block(
         self, whatif: Dict[str, object], colors: bool
     ) -> str:
-        """如果机制预处理显示块：如果使用/可能抽到/预计伤害/可能路径（缩写+颜色框）。"""
+        """WhatIf 显示块：如果使用/将抽到/预计最大伤害/分轮完整路径（缩写+颜色框）。"""
         if colors:
             box_fn = _card_box_html
             sep = "<br>"
@@ -2560,17 +2602,30 @@ class MiniWindow(QWidget):
         cards = whatif.get("cards") or []
         drawn = whatif.get("drawn") or []
         path = whatif.get("path") or []
-        lines = ["如果机制预处理："]
-        lines.append("如果使用：" + "".join(box_fn(str(c)) for c in cards))
-        lines.append("可能抽到：" + "".join(box_fn(str(c)) for c in drawn))
+        lines = ["WhatIf："]
+
+        if cards:
+            note = ""
+
+            if whatif.get("discounts"):
+                note = f"（因为{cards[-1]}后就没有减费状态了）"
+
+            lines.append("如果使用：" + "".join(box_fn(str(c)) for c in cards) + note + ";")
+
+        if drawn:
+            lines.append("将抽到：" + "".join(box_fn(str(c)) for c in drawn))
+
         lines.append(
-            f"预计伤害：{whatif.get('damage', 0)}，龙数：{whatif.get('dragons', 0)}，"
+            f"预计最大伤害：{whatif.get('damage', 0)}，龙数：{whatif.get('dragons', 0)}，"
             f"余：{whatif.get('mana_left', 0)}费"
         )
 
         if path:
             abbr_fn = abbreviate_step_html if colors else abbreviate_step
-            lines.append("可能路径：" + " → ".join(abbr_fn(str(s)) for s in path))
+
+            for index, rnd in enumerate(split_path_rounds(path), start=1):
+                abbr = "-".join(abbr_fn(str(s)) for s in rnd)
+                lines.append(f"[第{chinese_round_number(index)}轮]：{abbr}")
 
         return sep.join(lines)
 

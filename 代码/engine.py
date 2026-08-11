@@ -1123,9 +1123,9 @@ def compute_draw_whatif(
      - 暗(刀)把 1/1 刀油复制加入手牌（不立即补层）；丢晦回 4 法力（鱼在场翻倍）。
     剪枝条件：当前状态没有任何减费状态（层用尽、伺机/狐已消耗、也无刀油可补层）
     即停止递归直接评分——不再按原价继续展开后续可能性（深度 ≤10，毫秒级，不改启发函数与主搜索）。
-    返回：{"cards": 预处理打出的卡, "drawn": 抽到的随从列表,
+    返回：{"cards": 用到的抽随从卡, "drawn": 抽到的随从列表,
           "discounts": 减费来源卡列表, "damage": 预估伤害, "dragons": 龙数, "mana_left": 剩余法力,
-          "pre_path": 预处理打牌路径, "path": 可能后的完整路径}
+          "pre_path": 抽卡路径, "path": 抽卡路径, "variant": 假设后的干净快照}
     """
     hand = list(snapshot.get("hand") or [])
     hand_names = [str(h.get("name", "")) for h in hand]
@@ -1161,6 +1161,8 @@ def compute_draw_whatif(
     scabbs_copies = 0  # 暗(刀)复制的 1/1 刀油（留在手牌，不补层）
 
     used_cards: List[str] = []
+    draw_cards_used: List[str] = []
+    draw_cost_total = 0
     drawn_minions: List[str] = []
     discounts: List[str] = []
     played_minions: List[str] = []
@@ -1259,7 +1261,9 @@ def compute_draw_whatif(
             if eff > mana:
                 continue
             mana -= eff
+            draw_cost_total += eff
             used_cards.append(dcard)
+            draw_cards_used.append(dcard)
             _remove_hand_card(dcard)
             if prep_used:
                 prep_used = False
@@ -1318,24 +1322,19 @@ def compute_draw_whatif(
 
     # 最终变体：移除已打出的卡（抽卡/刀油/暗/晦/鱼/伺机），加入抽到的随从与暗(刀)复制的刀油，
     # 打出的随从放入战场（随从齐全度按 手牌+战场 计算）。
-    remove_names = set(used_cards)
+    # 干净变体：只把“抽随从卡+伺机待发”当作已打出（其省费已计入 draw_cost_total），
+    # 抽到的随从加入手牌；狐人老千保留（其 -2 由真实搜索自然作用于下一张连击牌）；
+    # 不预先铺鱼/刀等，法力=原法力-抽卡实付，让真实搜索从完整局面找最优线。
+    remove_names = set(draw_cards_used)
     if "伺机待发" in set(hand_names) and "伺机待发" in discounts:
         remove_names.add("伺机待发")
-    if "狐人老千" in set(hand_names) and "狐人老千" in discounts:
-        remove_names.add("狐人老千")
     new_hand = [h for h in hand if str(h.get("name", "")) not in remove_names]
     for mn in drawn_minions:
-        if mn not in played_minions:
-            new_hand.append({"name": mn})
-    for _ in range(scabbs_copies):
-        new_hand.append({"name": "斯卡布斯·刀油"})
-    new_board = [dict(b) for b in (snapshot.get("board") or [])]
-    for mn in played_minions:
-        new_board.append({"name": mn})
+        new_hand.append({"name": mn})
     variant = dict(snapshot)
     variant["hand"] = new_hand
-    variant["board"] = new_board
-    variant["mana"] = mana
+    variant["board"] = [dict(b) for b in (snapshot.get("board") or [])]
+    variant["mana"] = int(snapshot.get("mana") or 0) - draw_cost_total
 
     dmg, drg, mana_left = _quick_otk_estimate(variant)
 
@@ -1351,32 +1350,8 @@ def compute_draw_whatif(
             if lethal > 0:
                 dmg = min(dmg, lethal)
 
-    # 预处理打牌路径（显示顺序）：伺机/狐（减费源）→ 抽随从卡(抽到X) → 其余预处理卡
-    pre_steps: List[str] = []
-    di = 0
-    draws_first = [c for c in used_cards if c in DRAW_MINION_SPELLS]
-    others = [c for c in used_cards if c not in DRAW_MINION_SPELLS]
-
-    for card in draws_first + others:
-        n = DRAW_MINION_SPELLS.get(card, (0, 0))[1]
-
-        if n:
-            got = drawn_minions[di:di + n]
-            di += n
-            pre_steps.append(card + ("（抽到" + "、".join(got) + "）" if got else ""))
-        elif card == "暗影施法者" and "斯卡布斯·刀油" in used_cards:
-            pre_steps.append("暗影施法者(斯卡布斯·刀油)")
-        else:
-            pre_steps.append(card)
-
-    if "伺机待发" in discounts:
-        pre_steps.insert(0, "伺机待发")
-
-    if "狐人老千" in discounts:
-        pre_steps.insert(0, "狐人老千")
-
     return {
-        "cards": list(used_cards),
+        "cards": list(draw_cards_used),
         "drawn": drawn_minions,
         "discounts": discounts,
         "completeness": _combo_completeness(variant),
@@ -1385,6 +1360,7 @@ def compute_draw_whatif(
         "damage": dmg,
         "dragons": drg,
         "mana_left": mana_left,
-        "pre_path": pre_steps,
-        "path": list(pre_steps),
+        "pre_path": list(draw_cards_used),
+        "path": list(draw_cards_used),
+        "variant": variant,
     }
