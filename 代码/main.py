@@ -853,9 +853,11 @@ class CalculationWorker(QThread):
             # W-B 重写：分支卡（抽随从卡/持枪要挟）的全部分支已直接在 C++ 束宽搜索内
             # 展开（路径标注“（抽到X、Y）”/“（如果X）”），最高伤路径即主搜索结果；
             # Python 侧不再单独回溯计算分支树（保留 compute_wb_tree 代码备用）。
+            # 持枪要挟按发现牌分组的最优路径由 C++ 直接输出（quickdraw_branches），
+            # 小窗“可能分支”据此展示 补水/脱水/误炸/袋底藏沙/不许乱动 各自的伤害与余费。
             result["wb"] = None
             result["draw_whatif"] = None
-            result["quickdraw_branches"] = None
+            result["quickdraw_branches"] = result.get("quickdraw_branches") or None
 
             # 静默云端上报数据：场面数据 + 最高伤路径（含交换/预处理/分支完整记录）
             result["upload_payload"] = cloud_report.build_payload(
