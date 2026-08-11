@@ -501,6 +501,8 @@ class PowerLogParser:
                 "deadly_shadow_hand_indexes": [],
                 "crystals": None,
                 "mana": None,
+                "player_hero": None,
+                "opponent_hero": None,
                 "game_state": None,
                 "game_over": False,
             }
@@ -539,6 +541,8 @@ class PowerLogParser:
                 "deadly_shadow_hand_indexes": [],
                 "crystals": None,
                 "mana": None,
+                "player_hero": None,
+                "opponent_hero": None,
                 "game_state": None,
                 "game_over": False,
             }
@@ -579,6 +583,22 @@ class PowerLogParser:
             for ent in opponent_player.in_zone(Zone.PLAY):
                 if ent.type == CardType.MINION:
                     enemy_board.append(self._entity_item(ent))
+
+        # 敌我英雄：当前血量（HEALTH-DAMAGE）与护甲（ARMOR）
+        player_hero: Optional[dict] = None
+        opponent_hero: Optional[dict] = None
+
+        if local_player is not None:
+            for ent in local_player.in_zone(Zone.PLAY):
+                if ent.type == CardType.HERO:
+                    player_hero = self._hero_item(ent)
+                    break
+
+        if opponent_player is not None:
+            for ent in opponent_player.in_zone(Zone.PLAY):
+                if ent.type == CardType.HERO:
+                    opponent_hero = self._hero_item(ent)
+                    break
 
         # 牛池：真实乐队牌（无 CREATOR）始终留在 SETASIDE；被选走的牌以
         # 发现复制体（有 CREATOR）离开 SETASIDE 为准，剩余池 = 真实牌 - 已选。
@@ -669,6 +689,8 @@ class PowerLogParser:
             "player_controller": local_controller,
             "player_name": _player_name(local_controller),
             "opponent_name": _player_name(opponent_id),
+            "player_hero": player_hero,
+            "opponent_hero": opponent_hero,
             "game_state": game_state,
             "game_over": game_over,
             "crystals": crystals,
@@ -713,6 +735,22 @@ class PowerLogParser:
         }
 
 
+    def _hero_item(self, ent) -> dict:
+        """英雄实体：当前血量 = HEALTH - DAMAGE，护甲 = ARMOR（敌我双方通用）。"""
+        health = ent.tags.get(GameTag.HEALTH)
+        damage = ent.tags.get(GameTag.DAMAGE) or 0
+        armor = ent.tags.get(GameTag.ARMOR)
+        current = max(0, health - damage) if isinstance(health, int) else None
+
+        return {
+            "card_id": ent.card_id or "",
+            "name": card_name(ent.card_id or ""),
+            "health": current,
+            "health_max": health,
+            "armor": int(armor) if isinstance(armor, int) else 0,
+            "attack": ent.tags.get(GameTag.ATK),
+        }
+
 
 class LogWatcher:
     """跟随 Power.log，增量喂给 hslog 解析器。
@@ -752,6 +790,10 @@ class LogWatcher:
         self._parser_generation = 0  # parser.reset() 时 +1，用于快照缓存失效
         self._cached_snapshot: Optional[dict] = None
         self._cache_generation = -1
+        if self.custom_log_file is not None:
+            # 自定义日志首次附加：直接定位到最后一个 GameState CREATE_GAME，
+            # 避免从文件头逐局推进（观战/多局日志会延迟读取最新一局）
+            self._restart_at_latest_game()
 
     def _last_game_offset(self) -> Optional[int]:
         """从文件尾部找最后一个 GameState CREATE_GAME 的行首字节偏移。"""

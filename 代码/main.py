@@ -485,6 +485,16 @@ _STAR_COST_RE = re.compile(r"^[*★☆＊]+\s*(.+)$")
 _COMMA_ZONE_RE = re.compile(r"^\s*(\d+)\s*[,，、]\s*(\d+)\s*血?\s*(.+)$")
 
 
+def _hero_text(hero: Optional[Dict[str, object]]) -> str:
+    """英雄血量/护甲显示：如 22血/5甲；无数据时显示 ?。"""
+    if not hero:
+        return "?"
+
+    hp = hero.get("health")
+    armor = hero.get("armor") or 0
+    return f"{hp if hp is not None else '?'}血/{armor}甲"
+
+
 def parse_manual_zone_lines(
     text: str,
 ) -> Tuple[List[Tuple[Optional[int], str, Optional[int], Optional[int]]], List[str]]:
@@ -786,6 +796,7 @@ class MainWindow(QWidget):
         self.deck_label = QLabel("牌库：-")
         self.weapon_label = QLabel("武器：无")
         self.secrets_label = QLabel("奥秘：无")
+        self.hero_label = QLabel("英雄：-")
         self.effects_label = QLabel("当前效果：无")
         self.etc_summary_label = QLabel("牛池：-")
         state_grid.addWidget(self.game_label, 0, 0)
@@ -793,6 +804,7 @@ class MainWindow(QWidget):
         state_grid.addWidget(self.deck_label, 1, 0)
         state_grid.addWidget(self.weapon_label, 1, 1)
         state_grid.addWidget(self.secrets_label, 2, 0)
+        state_grid.addWidget(self.hero_label, 2, 1)
         state_grid.addWidget(self.effects_label, 2, 1)
         state_grid.addWidget(self.etc_summary_label, 3, 0)
 
@@ -1164,6 +1176,11 @@ class MainWindow(QWidget):
 
         weapon = snap.get("weapon")
         self.weapon_label.setText(f"武器：{weapon['name'] if weapon else '无'}")
+
+        self.hero_label.setText(
+            f"英雄：我方 {_hero_text(snap.get('player_hero'))}"
+            f"　敌方 {_hero_text(snap.get('opponent_hero'))}"
+        )
 
         secrets = snap.get("secrets") or []
         self.secrets_label.setText(
@@ -1625,6 +1642,11 @@ class MainWindow(QWidget):
 
         if board_parts:
             lines.append("  战场：" + "  ".join(board_parts))
+
+        lines.append(
+            f"  我方英雄：{_hero_text(snapshot.get('player_hero'))}　"
+            f"敌方英雄：{_hero_text(snapshot.get('opponent_hero'))}"
+        )
 
         enemy_parts = []
 
@@ -2156,6 +2178,30 @@ class IntroDialog(QDialog):
         author_body.setStyleSheet("font-size:36px; color:#374151;")
         layout.addWidget(author_body)
 
+        # “给一点支持”之后的变色鼓励语：你的支持就是我的动力~
+        self.support_dynamic = QLabel(
+            '<span style="font-size:36px; font-weight:bold; color:#DC2626;">'
+            '　　你的支持就是我的动力~'
+            '</span>'
+        )
+        self.support_dynamic.setWordWrap(True)
+        layout.addWidget(self.support_dynamic)
+
+        self._support_colors = [
+            "#DC2626",
+            "#EA580C",
+            "#D97706",
+            "#16A34A",
+            "#0EA5E9",
+            "#7C3AED",
+            "#DB2777",
+        ]
+        self._support_color_idx = 0
+        self._support_timer = QTimer(self)
+        self._support_timer.setInterval(600)
+        self._support_timer.timeout.connect(self._cycle_support_color)
+        self._support_timer.start()
+
         author_id = QLabel(
             '<span style="font-size:36px; color:#1F2937;">该计算器由 '
             '<b><span style="color:#1D4ED8;">战网ID：此人乃天下绝响#5854</span></b> 制作</span>'
@@ -2259,6 +2305,16 @@ class IntroDialog(QDialog):
             self._close_btn.setText(f"知道了（{self._close_wait_secs}秒后可关闭）")
         else:
             self._close_btn.setText("知道了")
+
+    def _cycle_support_color(self) -> None:
+        """“你的支持就是我的动力~”轮换颜色（红→橙→金→绿→蓝→紫→粉）。"""
+        self._support_color_idx = (self._support_color_idx + 1) % len(self._support_colors)
+        color = self._support_colors[self._support_color_idx]
+        self.support_dynamic.setText(
+            f'<span style="font-size:36px; font-weight:bold; color:{color};">'
+            "　　你的支持就是我的动力~"
+            "</span>"
+        )
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         super().showEvent(event)
