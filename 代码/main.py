@@ -244,7 +244,13 @@ def abbreviate_step(step: str) -> str:
 
     target = ""
 
-    if rest.startswith("（") and rest.endswith("）"):
+    # 抽随从卡标注：挖掘宝藏（抽到赤烟·腾武）-> 挖掘宝藏（抽到腾）
+    m_draw = re.match(r"^[（(]抽到(.+)[）)]$", rest)
+
+    if m_draw:
+        names = [abbreviate_card_name(p.strip()) for p in m_draw.group(1).split("、")]
+        target = "（抽到" + "".join(names) + "）"
+    elif rest.startswith("（") and rest.endswith("）"):
         inner = rest[1:-1]
         parts = []
 
@@ -344,28 +350,14 @@ def split_path_rounds(path: List[str]) -> List[List[str]]:
     return rounds
 
 
-def _whatif_path_text(whatif: Dict[str, object]) -> str:
-    """把如果机制结果拼成完整假设路径：抽随从卡后附“抽到X”，暗施法者标注复制刀油。"""
-    cards = whatif.get("cards") or []
-    drawn = whatif.get("drawn") or []
-    di = 0
-    steps: List[str] = []
+def _card_box_html(name: str) -> str:
+    """单个卡名 → 小窗颜色框（有颜色则画方块，无颜色保留缩写/全名）。"""
+    abbr = abbreviate_card_name(name)
+    color = CARD_ABBREV_COLORS.get(abbr)
 
-    for card in cards:
-        n = engine.DRAW_MINION_SPELLS.get(card, (0, 0))[1]
-
-        if n:
-            got = drawn[di:di + n]
-            di += n
-            steps.append(card + ("(抽到" + "、".join(got) + ")" if got else ""))
-        elif card == "暗影施法者" and "斯卡布斯·刀油" in cards:
-            steps.append("暗影施法者(斯卡布斯·刀油)")
-        else:
-            steps.append(card)
-
-    return " → ".join(steps)
-
-
+    if color:
+        return "[" + _abbr_square(html.escape(abbr), color) + "]"
+    return "[" + html.escape(abbr) + "]"
 # 可能分支机制：持枪要挟发现牌单独计算的优先级（补水 > 脱水 > 误炸 > 袋底藏沙 > 不许乱动）
 QUICKDRAW_BRANCH_ORDER = ("补水", "脱水", "误炸", "袋底藏沙", "不许乱动")
 
@@ -416,11 +408,15 @@ def _whatif_branch_data(
 def _format_whatif_branch_lines(
     results: List[Dict[str, object]],
     branches: Optional[List[Dict[str, object]]] = None,
+    colors: bool = False,
+    full_names: bool = False,
 ) -> List[str]:
     """持枪要挟分支显示：路径前半部分 -> 持枪要挟 + 可能分支。
 
     优先使用“单独完整计算”的 quickdraw_branches（已按优先级排序）；
     无该数据时退化为从主搜索结果解析（_whatif_branch_data）。
+    full_names=True 时用完整卡名并省略中间路径（主窗口）；
+    colors=True 时路径用缩写+颜色框（小窗），否则用缩写纯文本。
     """
     if not branches:
         _prefix, bmap = _whatif_branch_data(results)
@@ -442,6 +438,7 @@ def _format_whatif_branch_lines(
         return []
 
     prefix = ""
+    prefix_steps: List[str] = []
 
     for b in branches:
         path = b.get("path") or []
@@ -450,10 +447,25 @@ def _format_whatif_branch_lines(
             if "持枪要挟" in str(step or ""):
                 if i > 0 and not prefix:
                     prefix = " -> ".join(path[:i])
+                    prefix_steps = list(path[:i])
                 break
 
+    if full_names:
+        abbr_fn = None
+    elif colors:
+        abbr_fn = abbreviate_step_html
+    else:
+        abbr_fn = abbreviate_step
+
     lines = ["如果机制分支（持枪要挟）："]
-    lines.append(("路径前半部分 -> " if prefix else "") + "持枪要挟")
+
+    if full_names and prefix:
+        lines.append(prefix + " -> 持枪要挟")
+    elif prefix_steps:
+        lines.append(" -> ".join(abbr_fn(s) for s in prefix_steps) + " -> 持枪要挟")
+    else:
+        lines.append("持枪要挟")
+
     lines.append("可能分支：")
 
     for b in branches:
@@ -471,10 +483,14 @@ def _format_whatif_branch_lines(
             f"余：{b.get('mana_left', 0)}；"
         )
 
-        if any(str(c).startswith(x) for c in cont):
-            lines.append(f"持枪要挟(可能{x}) -> …… -> {x}")
+        if cont and full_names:
+            lines.append(f"持枪要挟(可能{x}) -> …… -> {cont[-1]}")
+        elif cont:
+            steps = ["持枪要挟(可能" + abbreviate_card_name(x) + ")"]
+            steps.extend(abbr_fn(str(c)) for c in cont)
+            lines.append(" -> ".join(steps))
         else:
-            lines.append(f"持枪要挟(可能{x})")
+            lines.append("持枪要挟(可能" + abbreviate_card_name(x) + ")")
 
     return lines
 
@@ -652,8 +668,11 @@ class CalculationWorker(QThread):
                 )
 
             if bool(self.options.get("draw_whatif", True)):
-                # 独立的“如果机制”：省费打出抽随从卡、抽缺失组合随从后的最高伤害推演
-                result["draw_whatif"] = engine.compute_draw_whatif(self.snapshot, self.options)
+                # 独立的“如果机制”：省费打出抽随从卡、抽缺失组合随从后的最高伤害推演，
+                # 返回预处理完整路径（path）+ 预计伤害（多回合预估）。
+                result["draw_whatif"] = engine.compute_draw_whatif(
+                    self.snapshot, self.options
+                )
 
             # 可能分支机制：主结果最优路径含持枪要挟时，提取分支点前缀，
             # 各发现牌只“回溯到分支点往后”单独计算（前缀由引擎重放，不重复搜索）。
@@ -1087,6 +1106,22 @@ class MainWindow(QWidget):
         deadly_row.addWidget(self.deadly_input, 1)
         state_grid.addLayout(deadly_row, 4, 0, 1, 2)
         left_layout.addWidget(state_box)
+
+        # 牌库剩余随从（如果机制抽牌池）：未勾选 = 已不在牌库，不会被抽到
+        combo_box = QGroupBox("牌库剩余随从（如果机制抽牌池）")
+        combo_grid = QGridLayout(combo_box)
+        combo_grid.setSpacing(4)
+        self.combo_checks: List[Tuple[str, QCheckBox]] = []
+
+        for i, (card_name, label) in enumerate(COMBO_MINION_CHECKS):
+            box = QCheckBox(label)
+            box.setChecked(True)
+            box.setToolTip(card_name)
+            box.toggled.connect(self._sync_mini_window)
+            self.combo_checks.append((card_name, box))
+            combo_grid.addWidget(box, i // 4, i % 4)
+
+        left_layout.addWidget(combo_box)
 
         hand_box = QGroupBox("手牌")
         hand_layout = QVBoxLayout(hand_box)
@@ -1802,6 +1837,7 @@ class MainWindow(QWidget):
             "exchange_plans": self.current_exchange_plans(self.exchange_count.value()),
             "only_best_damage": self.best_only_check.isChecked(),
             "draw_whatif": self.draw_whatif_check.isChecked(),
+            "whatif_combo": [name for name, box in self.combo_checks if box.isChecked()],
             "truncate_normal": self.truncate_normal_check.isChecked(),
             "truncate_branch": self.truncate_branch_check.isChecked(),
             "truncate_exchange": self.truncate_exchange_check.isChecked(),
@@ -2061,23 +2097,19 @@ class MainWindow(QWidget):
         if whatif:
             lines.append("")
             lines.append("如果机制预处理：")
-            lines.append("如果路径：" + _whatif_path_text(whatif))
-            lines.append("如果使用：[" + "][".join(whatif["cards"]) + "]")
-            drawn = whatif.get("drawn") or []
-            lines.append("可能抽到：[" + "][".join(drawn) + "]")
-            discounts = whatif.get("discounts") or []
-            if discounts:
-                unique = list(dict.fromkeys(discounts))
-                lines.append("减费状态：" + "、".join(f"{d}(-2)" for d in unique) + "（当前费用为减费后显示值）")
-            if whatif.get("completeness") is not None:
-                lines.append(
-                    f"随从齐全度：{whatif['completeness']}/{whatif.get('completeness_total', 7)}"
-                    f"（法力 {whatif.get('mana_left')} / 水晶 {whatif.get('crystals')}）"
-                )
-            lines.append(f"预计伤害：{whatif['damage']}，龙数：{whatif['dragons']}，余：{whatif['mana_left']}费")
+            lines.append("如果使用：[" + "][".join(whatif.get("cards") or []) + "]")
+            lines.append("可能抽到：[" + "][".join(whatif.get("drawn") or []) + "]")
+            lines.append(
+                f"预计伤害：{whatif.get('damage', 0)}，龙数：{whatif.get('dragons', 0)}，"
+                f"余：{whatif.get('mana_left', 0)}费"
+            )
+            path = whatif.get("path") or []
+
+            if path:
+                lines.append("可能路径：" + " → ".join(str(step) for step in path))
 
         branch_lines = _format_whatif_branch_lines(
-            results, data.get("quickdraw_branches")
+            results, data.get("quickdraw_branches"), full_names=True
         )
 
         if branch_lines:
@@ -2135,6 +2167,17 @@ MINI_ETC_LABELS = {
     "战略转移": "转",
     "赤烟·腾武": "腾",
 }
+
+# 牌库剩余随从（如果机制抽牌池）：勾选 = 仍在牌库（可被抽随从卡抽到）
+COMBO_MINION_CHECKS = [
+    ("鲨鱼之灵", "鱼"),
+    ("狐人老千", "狐"),
+    ("斯卡布斯·刀油", "刀"),
+    ("暗影施法者", "暗"),
+    ("乐队经理精英牛头人酋长", "牛"),
+    ("晦鳞巢母", "晦"),
+    ("赤烟·腾武", "腾"),
+]
 
 
 class MiniWindow(QWidget):
@@ -2201,6 +2244,21 @@ class MiniWindow(QWidget):
 
         band_row.addStretch(1)
         root.addLayout(band_row)
+
+        # 牌库剩余随从（如果机制抽牌池）：与主窗口双向同步
+        combo_row = QGridLayout()
+        combo_row.setSpacing(4)
+        self.mini_combo_checks: List[Tuple[str, QCheckBox]] = []
+
+        for i, (card_name, label) in enumerate(COMBO_MINION_CHECKS):
+            box = QCheckBox(label)
+            box.setChecked(True)
+            box.setToolTip(card_name)
+            box.toggled.connect(self._on_mini_combo_toggled)
+            self.mini_combo_checks.append((card_name, box))
+            combo_row.addWidget(box, i // 4, i % 4)
+
+        root.addLayout(combo_row)
 
         deadly_row = QHBoxLayout()
         self.mini_deadly_check = QCheckBox("殒命序号：")
@@ -2273,6 +2331,12 @@ class MiniWindow(QWidget):
         main = self.main
 
         for (_, mbox), (_, sbox) in zip(main.etc_checks, self.mini_etc_checks):
+            if sbox.isChecked() != mbox.isChecked():
+                sbox.blockSignals(True)
+                sbox.setChecked(mbox.isChecked())
+                sbox.blockSignals(False)
+
+        for (_, mbox), (_, sbox) in zip(main.combo_checks, self.mini_combo_checks):
             if sbox.isChecked() != mbox.isChecked():
                 sbox.blockSignals(True)
                 sbox.setChecked(mbox.isChecked())
@@ -2390,6 +2454,14 @@ class MiniWindow(QWidget):
 
         self.main._update_etc_summary()
 
+    def _on_mini_combo_toggled(self, _checked: bool) -> None:
+        """小窗牌库剩余随从勾选 → 同步到主窗口。"""
+        for (_, mbox), (_, sbox) in zip(self.main.combo_checks, self.mini_combo_checks):
+            if mbox.isChecked() != sbox.isChecked():
+                mbox.blockSignals(True)
+                mbox.setChecked(sbox.isChecked())
+                mbox.blockSignals(False)
+
     def _on_mini_deadly_changed(self, *_args) -> None:
         main = self.main
 
@@ -2437,82 +2509,79 @@ class MiniWindow(QWidget):
         self._render_result()
 
     def _render_result(self) -> None:
-        """按当前“小窗颜色”开关渲染最近一次结果。
+        """小窗显示顺序：正常结果在前 → 如果机制预处理 → 可能分支（持枪要挟）。
 
-        四种显示情形（标题随之切换）：
-        1) 无如果机制 → 原始结果（分轮路径）；
-        2) 仅如果机制预处理 → 递归最优场面（例：鲨鱼之灵-潜伏帷幕）；
-        3) 路径中含如果机制分支（持枪要挟）→ 分支显示；
-        4) 预处理与分支都用到了 → 两者并显。
+        所有路径与正常计算一样使用缩写，颜色开启时加颜色框。
         """
         if self._last_data is None:
             return
 
         exchanges = self.main.current_exchange_pairs()
         data = self._last_data
-        results = data.get("results") or []
-        has_preprocess = data.get("draw_whatif") is not None
-        has_branch = bool(data.get("quickdraw_branches")) or any(
-            "持枪要挟" in str(step or "")
-            for item in results
-            for step in (item.get("path") or [])
-        )
-
-        pre_text = self._mini_whatif_preprocess_text()
-        branch_text = self._mini_whatif_branch_text(data)
-
-        if has_preprocess and has_branch:
-            title = "既用到了如果机制预处理又用到了如果机制分支的显示结果："
-            body = "\n\n".join(x for x in (pre_text, branch_text) if x)
-        elif has_preprocess:
-            title = "如果机制预处理的显示结果："
-            body = pre_text
-        elif has_branch:
-            title = "路径中含如果机制分支的显示结果："
-            body = branch_text
-        else:
-            title = "无如果机制的原始结果："
-            body = ""
-
         colors = self.main.mini_color_enabled()
+        parts: List[str] = []
 
-        if body:
-            if colors:
-                self.mini_result.setHtml(
-                    html.escape(title + "\n" + body).replace("\n", "<br>")
-                )
-            else:
-                self.mini_result.setPlainText(title + "\n" + body)
-            return
-
-        # 无如果机制：原始分轮结果
+        # 1) 正常以手牌上的牌计算的结果
         if colors:
-            html_out = format_mini_results(data, colors=True, exchanges=exchanges)
-            self.mini_result.setHtml(html.escape(title) + "<br>" + html_out)
+            parts.append(format_mini_results(data, colors=True, exchanges=exchanges))
         else:
-            plain = format_mini_results(data, exchanges=exchanges)
-            self.mini_result.setPlainText(title + "\n" + plain)
+            parts.append(format_mini_results(data, exchanges=exchanges))
 
-    def _mini_whatif_preprocess_text(self) -> str:
-        """解析主窗口结果文本里的“如果机制预处理”段落（不含分支段）。"""
-        text = self.main.result_text.toPlainText()
-        marker = "如果机制预处理："
-        idx = text.find(marker)
+        # 2) 如果机制预处理
+        whatif = data.get("draw_whatif")
 
-        if idx < 0:
-            return ""
+        if whatif:
+            parts.append(self._mini_whatif_block(whatif, colors))
 
-        end_marker = "如果机制分支（持枪要挟）："
-        end = text.find(end_marker, idx)
-        return text[idx:end if end >= 0 else len(text)].rstrip()
+        # 3) 可能分支（持枪要挟）
+        branch_text = self._mini_whatif_branch_text(data, colors)
 
-    def _mini_whatif_branch_text(self, data: Dict[str, object]) -> str:
-        """持枪要挟分支显示文本（路径前半部分 + 可能分支）。"""
-        return "\n".join(
-            _format_whatif_branch_lines(
-                data.get("results") or [], data.get("quickdraw_branches")
-            )
+        if branch_text:
+            parts.append(branch_text)
+
+        if colors:
+            self.mini_result.setHtml("<br><br>".join(parts))
+        else:
+            self.mini_result.setPlainText("\n\n".join(parts))
+
+    def _mini_whatif_block(
+        self, whatif: Dict[str, object], colors: bool
+    ) -> str:
+        """如果机制预处理显示块：如果使用/可能抽到/预计伤害/可能路径（缩写+颜色框）。"""
+        if colors:
+            box_fn = _card_box_html
+            sep = "<br>"
+        else:
+            box_fn = lambda name: "[" + abbreviate_card_name(name) + "]"  # noqa: E731
+            sep = "\n"
+
+        cards = whatif.get("cards") or []
+        drawn = whatif.get("drawn") or []
+        path = whatif.get("path") or []
+        lines = ["如果机制预处理："]
+        lines.append("如果使用：" + "".join(box_fn(str(c)) for c in cards))
+        lines.append("可能抽到：" + "".join(box_fn(str(c)) for c in drawn))
+        lines.append(
+            f"预计伤害：{whatif.get('damage', 0)}，龙数：{whatif.get('dragons', 0)}，"
+            f"余：{whatif.get('mana_left', 0)}费"
         )
+
+        if path:
+            abbr_fn = abbreviate_step_html if colors else abbreviate_step
+            lines.append("可能路径：" + " → ".join(abbr_fn(str(s)) for s in path))
+
+        return sep.join(lines)
+
+    def _mini_whatif_branch_text(
+        self, data: Dict[str, object], colors: bool = False
+    ) -> str:
+        """持枪要挟分支显示文本（路径前半部分 + 可能分支）。"""
+        lines = _format_whatif_branch_lines(
+            data.get("results") or [],
+            data.get("quickdraw_branches"),
+            colors=colors,
+        )
+        return ("<br>" if colors else "\n").join(lines)
 
     def refresh_result(self) -> None:
         """小窗颜色开关切换后重绘已显示的结果。"""

@@ -1034,9 +1034,10 @@ def compute(
 # ===================== 独立的“如果机制” =====================
 # 手牌有抽随从卡时，假设以省费方式打出（默认先伺机待发，下一张法术减2费），
 # 抽到“用户预写随从组合”里缺失的随从，评估这之后能达到的最高伤害。
+# 组合 = {鱼,狐,刀,暗,牛,晦,腾}；主/小窗勾选“牌库剩余随从”可覆盖默认集合。
 COMBO_MINION_SETS = [
-    ["鲨鱼之灵", "狐人老千", "斯卡布斯·刀油", "暗影施法者", "乐队经理精英牛头人酋长", "晦鳞巢母"],
-    ["鲨鱼之灵", "斯卡布斯·刀油", "晦鳞巢母", "赤烟·腾武", "乐队经理精英牛头人酋长"],
+    ["鲨鱼之灵", "狐人老千", "斯卡布斯·刀油", "暗影施法者",
+     "乐队经理精英牛头人酋长", "晦鳞巢母", "赤烟·腾武"],
 ]
 # 抽随从卡：卡名 -> (基础费用, 抽随从张数)
 DRAW_MINION_SPELLS = {
@@ -1045,10 +1046,11 @@ DRAW_MINION_SPELLS = {
     "行骗": (2, 1),
     "垂钓时光": (1, 1),
 }
-# “可能抽到”的随从优先级：鱼 > 刀 > 牛 > 暗 > 晦 > 狐（其余最低）
+# “可能抽到”的随从优先级：鱼 > 刀 > 腾 > 牛 > 暗 > 晦 > 狐（其余最低）
 DRAW_PRIORITY = {
     "鲨鱼之灵": 6,
     "斯卡布斯·刀油": 5,
+    "赤烟·腾武": 4.5,
     "乐队经理精英牛头人酋长": 4,
     "暗影施法者": 3,
     "晦鳞巢母": 2,
@@ -1097,14 +1099,10 @@ def _quick_otk_estimate(snapshot: Dict[str, object]) -> Tuple[int, int, int]:
 
 
 def _combo_completeness(snapshot: Dict[str, object]) -> int:
-    """随从齐全度：两个预写组合并集（7 个随从）中手牌/战场已拥有的数量。"""
+    """随从齐全度：组合（默认 7 个随从）中手牌/战场已拥有的数量。"""
     have = set(str(h.get("name", "")) for h in snapshot.get("hand") or [])
     have |= set(str(b.get("name", "")) for b in snapshot.get("board") or [])
-    all_minions = []
-    for combo in COMBO_MINION_SETS:
-        for n in combo:
-            if n not in all_minions:
-                all_minions.append(n)
+    all_minions = list(COMBO_MINION_SETS[0])
     return sum(1 for n in all_minions if n in have)
 
 
@@ -1125,19 +1123,24 @@ def compute_draw_whatif(
      - 暗(刀)把 1/1 刀油复制加入手牌（不立即补层）；丢晦回 4 法力（鱼在场翻倍）。
     剪枝条件：当前状态没有任何减费状态（层用尽、伺机/狐已消耗、也无刀油可补层）
     即停止递归直接评分——不再按原价继续展开后续可能性（深度 ≤10，毫秒级，不改启发函数与主搜索）。
-    返回：{"cards": 用到的抽卡, "drawn": 抽到的随从列表,
-          "discounts": 减费来源卡列表, "damage": 预估伤害, "dragons": 龙数, "mana_left": 剩余法力}
+    返回：{"cards": 预处理打出的卡, "drawn": 抽到的随从列表,
+          "discounts": 减费来源卡列表, "damage": 预估伤害, "dragons": 龙数, "mana_left": 剩余法力,
+          "pre_path": 预处理打牌路径, "path": 可能后的完整路径}
     """
     hand = list(snapshot.get("hand") or [])
     hand_names = [str(h.get("name", "")) for h in hand]
     board_names = [str(b.get("name", "")) for b in snapshot.get("board") or []]
     have = set(hand_names) | set(board_names)
 
+    # 牌库剩余随从：主/小窗勾选集合（未勾选 = 已不在牌库，不会被抽到）
+    combo = list(options.get("whatif_combo") or []) if options else []
+    if not combo:
+        combo = list(COMBO_MINION_SETS[0])
+
     missing: List[str] = []
-    for combo in COMBO_MINION_SETS:
-        for n in combo:
-            if n not in have and n not in missing:
-                missing.append(n)
+    for n in combo:
+        if n not in have and n not in missing:
+            missing.append(n)
     missing.sort(key=lambda n: -DRAW_PRIORITY.get(n, 0))
     draw_cards = [n for n in hand_names if n in DRAW_MINION_SPELLS]
     if not missing or not draw_cards:
@@ -1318,6 +1321,8 @@ def compute_draw_whatif(
     remove_names = set(used_cards)
     if "伺机待发" in set(hand_names) and "伺机待发" in discounts:
         remove_names.add("伺机待发")
+    if "狐人老千" in set(hand_names) and "狐人老千" in discounts:
+        remove_names.add("狐人老千")
     new_hand = [h for h in hand if str(h.get("name", "")) not in remove_names]
     for mn in drawn_minions:
         if mn not in played_minions:
@@ -1346,14 +1351,40 @@ def compute_draw_whatif(
             if lethal > 0:
                 dmg = min(dmg, lethal)
 
+    # 预处理打牌路径（显示顺序）：伺机/狐（减费源）→ 抽随从卡(抽到X) → 其余预处理卡
+    pre_steps: List[str] = []
+    di = 0
+    draws_first = [c for c in used_cards if c in DRAW_MINION_SPELLS]
+    others = [c for c in used_cards if c not in DRAW_MINION_SPELLS]
+
+    for card in draws_first + others:
+        n = DRAW_MINION_SPELLS.get(card, (0, 0))[1]
+
+        if n:
+            got = drawn_minions[di:di + n]
+            di += n
+            pre_steps.append(card + ("（抽到" + "、".join(got) + "）" if got else ""))
+        elif card == "暗影施法者" and "斯卡布斯·刀油" in used_cards:
+            pre_steps.append("暗影施法者(斯卡布斯·刀油)")
+        else:
+            pre_steps.append(card)
+
+    if "伺机待发" in discounts:
+        pre_steps.insert(0, "伺机待发")
+
+    if "狐人老千" in discounts:
+        pre_steps.insert(0, "狐人老千")
+
     return {
         "cards": list(used_cards),
         "drawn": drawn_minions,
         "discounts": discounts,
         "completeness": _combo_completeness(variant),
-        "completeness_total": 7,
+        "completeness_total": len(combo),
         "crystals": crystals,
         "damage": dmg,
         "dragons": drg,
         "mana_left": mana_left,
+        "pre_path": pre_steps,
+        "path": list(pre_steps),
     }
