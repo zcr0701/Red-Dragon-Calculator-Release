@@ -240,8 +240,11 @@ def abbreviate_card_name(name: str) -> str:
     return CARD_ABBREVIATIONS.get(resolved, name)
 
 
-def abbreviate_step(step: str) -> str:
-    """把引擎路径一步（如 赤烟·腾武（斯卡布斯·刀油））转成缩写格式。"""
+def abbreviate_step(step: str, compact: bool = False) -> str:
+    """把引擎路径一步（如 赤烟·腾武（斯卡布斯·刀油））转成缩写格式。
+
+    compact=True 时抽随从卡标注用半角括号：潜伏帷幕(狐刀)（原版显示）。
+    """
     step = step.strip()
     deadly = ""
 
@@ -274,7 +277,11 @@ def abbreviate_step(step: str) -> str:
         # 抽随从卡标注：潜伏帷幕（斯卡布斯·刀油、狐人老千）-> 潜伏帷幕（刀狐）
         if name in ("潜伏帷幕", "挖掘宝藏"):
             names = [abbreviate_card_name(p.strip()) for p in inner.split("、")]
-            target = "（" + "".join(names) + "）"
+            target = (
+                "(" + "".join(names) + ")"
+                if compact
+                else "（" + "".join(names) + "）"
+            )
         # 持枪要挟（误炸）-> 持枪要挟(误炸)
         elif name == "持枪要挟":
             target = "(" + abbreviate_card_name(inner.strip()) + ")"
@@ -307,12 +314,12 @@ def abbreviate_step(step: str) -> str:
     return abbreviate_card_name(name) + target + deadly
 
 
-def abbreviate_step_html(step: str) -> str:
+def abbreviate_step_html(step: str, compact: bool = False) -> str:
     """小窗彩色显示：已知缩写字按 CARD_ABBREV_COLORS 上色，其余字符原样保留。
 
     [殒] 标记跟随“所变形卡”（主卡缩写）的颜色，而不是目标括号里的缩写。
     """
-    plain = abbreviate_step(step)
+    plain = abbreviate_step(step, compact=compact)
     deadly = plain.endswith("[殒]")
     body = plain[:-3] if deadly else plain
 
@@ -703,24 +710,6 @@ def _fmt_avg(value: Optional[float]) -> str:
     return text[:-2] if text.endswith(".0") else text
 
 
-def strip_branch_annotations(step: str) -> str:
-    """正常显示：去掉分支标注——视作 帷幕让两张随从牌进入手牌、持枪让一张杂牌进入手牌。
-
-    潜伏帷幕（刀、狐）-> 潜伏帷幕；挖掘宝藏（刀）-> 挖掘宝藏；持枪要挟（误炸）-> 持枪要挟。
-    其余步骤原样返回（误炸(刀刀晦) 等已打出的卡与目标保留）。
-    """
-    step = step.strip()
-
-    for prefix in ("潜伏帷幕", "挖掘宝藏", "持枪要挟"):
-        if step.startswith(prefix):
-            rest = step[len(prefix):].strip()
-
-            if rest.startswith("（") or rest.startswith("("):
-                return prefix
-
-    return step
-
-
 def format_mini_results(
     data: Dict[str, object],
     colors: bool = False,
@@ -731,7 +720,7 @@ def format_mini_results(
 
     colors=True 时返回 HTML（缩写字上色），否则返回纯文本；
     exchanges 非空时在标题后插入“场面交换处理”行；
-    branches=True 时保留分支标注（WhatIF 显示），否则按正常显示去掉分支标注。
+    branches=True 时保留完整标注（WhatIF 显示），否则用紧凑标注（原版显示）。
     """
     results = data.get("results") or []
     best_mana = (results[0].get("mana") if results else 0) or 0
@@ -756,10 +745,9 @@ def format_mini_results(
         rounds = split_path_rounds(path)
 
         for index, rnd in enumerate(rounds, start=1):
-            steps = [
-                step if branches else strip_branch_annotations(step) for step in rnd
-            ]
-            abbr = "-".join(abbreviate_step_html(step) for step in steps)
+            abbr = "-".join(
+                abbreviate_step_html(step, compact=not branches) for step in rnd
+            )
             lines.append(esc(f"[第{chinese_round_number(index)}轮]："))
             lines.append(PARA_INDENT + (abbr if abbr else esc("（空）")))
             lines.append("")
@@ -779,10 +767,9 @@ def format_mini_results(
     rounds = split_path_rounds(path)
 
     for index, rnd in enumerate(rounds, start=1):
-        steps = [
-            step if branches else strip_branch_annotations(step) for step in rnd
-        ]
-        abbr = "-".join(abbreviate_step(step) for step in steps)
+        abbr = "-".join(
+            abbreviate_step(step, compact=not branches) for step in rnd
+        )
         lines.append(f"[第{chinese_round_number(index)}轮]：")
         lines.append(PARA_INDENT + (abbr if abbr else "（空）"))
         lines.append("")
@@ -892,12 +879,11 @@ class CalculationWorker(QThread):
                 )
 
             # ========== 统一 W-B 机制（WhatIf-Branch）==========
-            # W-B 重写：分支卡（抽随从卡/持枪要挟）的全部分支已直接在 C++ 束宽搜索内
-            # 展开（路径标注“（刀、狐）”/“（误炸）”），最高伤路径即主搜索结果；
-            # Python 侧不再单独回溯计算分支树（保留 compute_wb_tree 代码备用）。
-            # WhatIF 平均：主路径含持枪要挟时，用 branch_prefix 从分支点回溯，
-            # 五个发现牌（补水/脱水/误炸/袋底藏沙/不许乱动）各保留一条最高伤路径
-            # （quickdraw_branches），再对 伤害/龙数/余费 求平均（whatif_average）。
+            # 分支卡（抽随从卡/持枪要挟）的全部分支直接在 C++ 束宽搜索内展开；
+            # 主结果含持枪要挟时，从分支点对五个发现牌各做一次独立回溯搜索
+            # （记忆节点：公共前缀只重放一次；独立搜索避免束宽内分支竞争漏算），
+            # 得到各分支最高伤路径（quickdraw_branches），再求平均（whatif_average）。
+            # 原版：C++ 直接输出不含持枪要挟的最优路径（original）。
             result["wb"] = None
             result["draw_whatif"] = None
             quickdraw_branches: Optional[List[Dict[str, object]]] = []
@@ -913,16 +899,34 @@ class CalculationWorker(QThread):
 
                 if qi > 0 and self._stop is False:
                     # 记忆节点+回溯：重放主路径分支点前的公共前缀，从分支点一次搜完五个分支
-                    res_bp = engine.compute(
-                        self.snapshot,
-                        branch_prefix=list(best_path[:qi]),
-                        exchanges=best_exchange,
-                        **common_kwargs,
-                    )
-                    quickdraw_branches = res_bp.get("quickdraw_branches") or []
+                    prefix = list(best_path[:qi])
+                    branch_list: List[Dict[str, object]] = []
+
+                    for choice in engine.QUICKDRAW_CHOICES:
+                        if self._stop:
+                            break
+
+                        res_i = engine.compute(
+                            self.snapshot,
+                            branch_prefix=prefix,
+                            discover_quickdraw_choice=choice,
+                            exchanges=best_exchange,
+                            **common_kwargs,
+                        )
+                        best_i = (res_i.get("results") or [{}])[0]
+                        branch_list.append(
+                            {
+                                "card": choice,
+                                "damage": int(best_i.get("damage") or 0),
+                                "dragons": int(best_i.get("dragons") or 0),
+                                "mana_left": int(best_i.get("mana") or 0),
+                                "path": best_i.get("path") or [],
+                            }
+                        )
 
                     # 只有单分支时无需考虑分支情况（结果确定），不显示 WhatIF 平均
-                    if len(quickdraw_branches) >= 2:
+                    if len(branch_list) >= 2:
+                        quickdraw_branches = branch_list
                         n = len(quickdraw_branches)
                         whatif_average = {
                             "damage": sum(
@@ -932,11 +936,10 @@ class CalculationWorker(QThread):
                                 int(b.get("dragons") or 0) for b in quickdraw_branches
                             ) / n,
                         }
-                    else:
-                        quickdraw_branches = []
 
             result["quickdraw_branches"] = quickdraw_branches or None
             result["whatif_average"] = whatif_average
+            result["original"] = result.get("original") or None
 
             # 静默云端上报数据：场面数据 + 最高伤路径（含交换/预处理/分支完整记录）
             result["upload_payload"] = cloud_report.build_payload(
@@ -2422,10 +2425,7 @@ class MainWindow(QWidget):
             lines.append("")
 
         for index, item in enumerate(results, start=1):
-            path = " → ".join(
-                strip_branch_annotations(str(step))
-                for step in (item.get("path") or [])
-            )
+            path = " → ".join(str(step) for step in (item.get("path") or []))
             lines.append(
                 f"{index:3d}. {item.get('dragons', 0)} 龙 / {item.get('damage', 0)} 伤"
                 f" / 余{item.get('mana', '?')}费：{path}"
@@ -3093,10 +3093,7 @@ class MiniWindow(QWidget):
         self._render_result()
 
     def _render_result(self) -> None:
-        """小窗显示顺序：正常结果在前 → 如果机制预处理 → 可能分支（持枪要挟）。
-
-        所有路径与正常计算一样使用缩写，颜色开启时加颜色框。
-        """
+        """小窗显示顺序：原版（不考虑分支节点）在前 → 带可能性分支的 WhatIF 显示。"""
         if self._last_data is None:
             return
 
@@ -3105,19 +3102,10 @@ class MiniWindow(QWidget):
         colors = self.main.mini_color_enabled()
         parts: List[str] = []
 
-        # 1) 正常以手牌上的牌计算的结果
-        if colors:
-            parts.append(format_mini_results(data, colors=True, exchanges=exchanges))
-        else:
-            parts.append(format_mini_results(data, exchanges=exchanges))
+        # 1) 原版：不考虑 >=1 可能结果的分支节点（即之前的计算逻辑）
+        parts.append(self._mini_original_text(data, colors, exchanges))
 
-        # 2) 统一 W-B 机制分支树
-        wb = data.get("wb")
-
-        if wb:
-            parts.append(self._mini_wb_block(wb, colors))
-
-        # 3) 带可能性分支的 WhatIF 显示：主路径 + 持枪要挟五个分支的平均值
+        # 2) 带可能性分支的 WhatIF 显示：主路径 + 分支列表 + 平均
         if data.get("whatif_average") and data.get("quickdraw_branches"):
             parts.append(self._mini_whatif_text(data, colors))
 
@@ -3126,22 +3114,90 @@ class MiniWindow(QWidget):
         else:
             self.mini_result.setPlainText("\n\n".join(parts))
 
+    def _mini_original_text(
+        self,
+        data: Dict[str, object],
+        colors: bool,
+        exchanges: Optional[List[Tuple[int, int]]] = None,
+    ) -> str:
+        """原版：不考虑 >=1 可能结果的分支节点（即之前的计算逻辑）。
+
+        持枪要挟视作杂牌不可用，单独算一条不依赖分支的线；抽随从结果作为
+        当前线的确定性结果保留（紧凑标注：潜伏帷幕(狐刀)）。
+        """
+        orig = data.get("original")
+
+        if orig and (orig.get("path") or []):
+            orig_data: Dict[str, object] = {
+                "max_damage": orig.get("damage"),
+                "max_dragons": orig.get("dragons"),
+                "results": [orig],
+            }
+        else:
+            orig_data = data
+
+        text = format_mini_results(
+            orig_data, colors=colors, exchanges=exchanges or [], branches=False
+        )
+        note = "（不考虑>=1可能结果的分支节点，即之前的计算逻辑）"
+        sep = "<br>" if colors else "\n"
+        return text + sep + (f"<i>{note}</i>" if colors else note)
+
     def _mini_whatif_text(self, data: Dict[str, object], colors: bool) -> str:
         """带可能性分支的 WhatIF 显示：
-        主路径（按轮次、含 持枪要挟(X) 标注）+ WhatIF平均最高伤害/平均龙数。
+        平均行 + 主路径（按轮次）+ 主分支末尾(伤/余费) + 其余分支 ├─ 对齐持枪要挟。
         """
         sep = "<br>" if colors else "\n"
-        header = (
-            "<b>带可能性分支的WhatIF显示：</b>" if colors
-            else "带可能性分支的WhatIF显示："
-        )
-        body = format_mini_results(data, colors=colors, exchanges=[], branches=True)
         avg = data.get("whatif_average") or {}
         avg_line = (
-            f"WhatIF平均最高伤害：{_fmt_avg(avg.get('damage'))}，"
+            f"WhatIF平均最高伤害：{_fmt_avg(avg.get('damage'))}，" 
             f"平均龙数：{_fmt_avg(avg.get('dragons'))}"
         )
-        return header + sep + body + sep + avg_line
+        body = format_mini_results(data, colors=colors, exchanges=[], branches=True)
+        results = data.get("results") or []
+        main_path = list((results[0].get("path") or []) if results else [])
+        main_dmg = int((results[0].get("damage") or 0) if results else 0)
+        main_mana = int((results[0].get("mana") or 0) if results else 0)
+        body += f"({main_dmg}伤余{main_mana}费)"
+
+        branches = data.get("quickdraw_branches") or []
+        qi = next(
+            (i for i, s in enumerate(main_path) if "持枪要挟" in str(s or "")),
+            -1,
+        )
+        main_choice = ""
+
+        if qi >= 0:
+            m = re.search(r"持枪要挟[（(](.+?)[）)]", str(main_path[qi]))
+            if m:
+                main_choice = m.group(1)
+
+        other = [b for b in branches if b.get("card") != main_choice]
+        lines = [avg_line, body]
+
+        if other and qi > 0:
+            # ├─ 分支对齐持枪要挟所在轮次的前缀宽度
+            prefix_steps = [str(s) for s in main_path[:qi]]
+            prefix_rounds = split_path_rounds(prefix_steps)
+            last_round = prefix_rounds[-1] if prefix_rounds else []
+            prefix_abbr = "-".join(
+                abbreviate_step(s, compact=False) for s in last_round
+            )
+            indent = len(prefix_abbr) + 1 if prefix_abbr else 0
+
+            for b in other:
+                card = b.get("card") or ""
+                dmg = int(b.get("damage") or 0)
+                mana = int(b.get("mana_left") or 0)
+                line = (
+                    f"├─持枪要挟({abbreviate_card_name(card)})"
+                    f"-……({dmg}伤余{mana}费)"
+                )
+                lines.append(
+                    ("&nbsp;" * indent + line) if colors else (" " * indent + line)
+                )
+
+        return sep.join(lines)
 
     def _mini_wb_block(self, wb: Dict[str, object], colors: bool) -> str:
         """统一 W-B 分支树（缩写+颜色框，全角空格缩进表示层级）。"""

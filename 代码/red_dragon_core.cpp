@@ -286,6 +286,7 @@ struct State {
     bool etc_band_provided = false;   // JSON 显式传了 etc_band（空数组=牛池已空）
     string forced_discover_choice;    // 可能分支机制：强制持枪要挟发现某张牌（空=全部展开）
     int quickdraw_choice = -1;        // 路径中第一张持枪要挟的发现牌（QUICKDRAW_MODELED_POOL 下标；-1=无）
+    bool used_quickdraw = false;      // 路径中是否打出过持枪要挟（原版=不含持枪的最优线）
     std::shared_ptr<vector<string>> path_buf;  // 路径共享存储（克隆 O(1)，写时复制）
 
     const vector<string>& path() const {
@@ -343,6 +344,7 @@ struct State {
         c.etc_band_provided = etc_band_provided;
         c.forced_discover_choice = forced_discover_choice;
         c.quickdraw_choice = quickdraw_choice;
+        c.used_quickdraw = used_quickdraw;
         c.path_buf = path_buf;
         return c;
     }
@@ -799,6 +801,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
             if (forced && choice != base.forced_discover_choice) continue;
             State s = base.clone_reserved();
             if (s.quickdraw_choice < 0) s.quickdraw_choice = (int)ci;
+            s.used_quickdraw = true;
             add_card_to_hand_or_burn(s, make_card(choice));
             // 路径标注“（X）”：持枪要挟只是把快枪牌置入手牌，X 由玩家后续打出
             if (!s.path().empty()) {
@@ -1609,6 +1612,12 @@ static void add_best_choice(const State& s, unordered_map<int, State>& best) {
     if (it == best.end() || path_sort_better(s, it->second)) best[s.quickdraw_choice] = s;
 }
 
+// 原版：不含持枪要挟的最优路径（不考虑分支节点，即之前的计算逻辑）
+static void add_best_no_qd(const State& s, State& best) {
+    if (s.used_quickdraw) return;
+    if (best.path().empty() || path_sort_better(s, best)) best = s;
+}
+
 // 束搜索模拟：从给定状态快速搜到深度上限，返回途中发现的最高奖励状态（含完整路径）
 // 束内保留评分 = 当前伤害 + 瓶颈可达龙数×16（简单启发函数，无子链库）；
 // 并按当前龙数分桶，保住正在蓄力的低龙数分支。
@@ -1854,6 +1863,7 @@ static double heuristic_value(const State& s, int h) {
 struct ThreadOut {
     unordered_map<int, State> best;   // 各龙数最优路径
     unordered_map<int, State> best_by_choice;  // 持枪要挟按发现牌分组的最优路径
+    State best_no_qd;                 // 原版：不含持枪要挟的最优路径
     int expansions = 0;
     int reached_depth = 0;
     double work_sec = 0.0;            // 该线程实际计算耗时（秒）
@@ -1930,6 +1940,7 @@ struct BeamMergeArgs {
     vector<Cand>* cands;
     unordered_map<int, State>* best;
     unordered_map<int, State>* best_choice;
+    State* best_no_qd;
     std::atomic<int>* best_damage = nullptr;
 };
 
@@ -1960,6 +1971,7 @@ static void merge_shard_work(BeamMergeArgs* a) {
         }
         add_best((*a->cands)[cand_index[rc.key]].s, *a->best, a->p->min_alex);
         add_best_choice(rc.s, *a->best_choice);
+        add_best_no_qd(rc.s, *a->best_no_qd);
         if (a->best_damage) {
             int d = rc.s.alex_damage;
             int cur = a->best_damage->load();
@@ -2052,6 +2064,7 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
     vector<unordered_map<uint64_t, int>> seen_shards(shards);
     seen_shards[dedup_key(start) % shards][dedup_key(start)] = start.mana;
     add_best(start, out.best, p.min_alex);
+    add_best_no_qd(start, out.best_no_qd);
 
     for (int depth = 1; depth <= p.depth; depth++) {
         if (budget.over()) break;
@@ -2110,6 +2123,7 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
         vector<vector<Cand>> shard_cands(shards);
         vector<unordered_map<int, State>> shard_best(shards);
         vector<unordered_map<int, State>> shard_best_choice(shards);
+        vector<State> shard_best_no_qd(shards);
         vector<BeamMergeArgs> margs(shards);
         for (int sh = 0; sh < shards; sh++) {
             margs[sh].raws = &shard_raws[sh];
@@ -2118,6 +2132,7 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
             margs[sh].cands = &shard_cands[sh];
             margs[sh].best = &shard_best[sh];
             margs[sh].best_choice = &shard_best_choice[sh];
+            margs[sh].best_no_qd = &shard_best_no_qd[sh];
             margs[sh].best_damage = best_damage;
         }
 #ifdef _WIN32
@@ -2146,6 +2161,7 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
             for (Cand& c : shard_cands[sh]) cands.push_back(std::move(c));
             for (auto& kv : shard_best[sh]) add_best(kv.second, out.best, p.min_alex);
             for (auto& kv : shard_best_choice[sh]) add_best_choice(kv.second, out.best_by_choice);
+            add_best_no_qd(shard_best_no_qd[sh], out.best_no_qd);
         }
         if (cands.empty()) break;
         // 分桶：按当前龙数，避免高龙数分支挤掉正在蓄力的低龙数高分分支
@@ -2228,6 +2244,7 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
 struct BeamResult {
     unordered_map<int, State> best_by_dragons;
     unordered_map<int, State> best_by_choice;  // 持枪要挟按发现牌分组的最优路径
+    State best_no_qd;                 // 原版：不含持枪要挟的最优路径
     int expansions = 0;
     int reached_depth = 0;
     double wall_sec = 0.0;
@@ -2345,6 +2362,7 @@ static BeamResult run_beam_search(const State& start, const SearchParams& p, Pro
         for (const auto& kv : outs[t].best) add_best(kv.second, res.best_by_dragons, p.min_alex);
         for (const auto& kv : outs[t].best_by_choice)
             add_best_choice(kv.second, res.best_by_choice);
+        add_best_no_qd(outs[t].best_no_qd, res.best_no_qd);
     }
     res.wall_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     // FOUND 实时上报（龙数创新高）
@@ -2428,7 +2446,20 @@ static void print_json_result(const BeamResult& res, const SearchParams& p) {
         }
         printf("]}%s\n", i + 1 < choices.size() ? "," : "");
     }
-    printf("  ]\n}\n");
+    printf("  ],\n");
+    // 原版：不含持枪要挟的最优路径（不考虑分支节点，即之前的计算逻辑）
+    if (res.best_no_qd.path().empty()) {
+        printf("  \"original\": null\n}\n");
+    } else {
+        const State& pst = res.best_no_qd;
+        printf("  \"original\": {\"dragons\": %d, \"damage\": %d, \"mana\": %d, \"path\": [",
+               pst.alex_play_count, pst.alex_damage, pst.mana);
+        for (size_t j = 0; j < pst.path().size(); j++) {
+            if (j) printf(", ");
+            printf("\"%s\"", json_escape(pst.path()[j]).c_str());
+        }
+        printf("]}\n}\n");
+    }
 }
 
 // ===================== 输入解析 =====================
