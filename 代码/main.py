@@ -2293,10 +2293,6 @@ class MiniWindow(QWidget):
 
         for i, (card_name, label) in enumerate(COMBO_MINION_CHECKS):
             box = QCheckBox(label)
-            box.setStyleSheet(
-                "QCheckBox{margin:0;padding:0;font-size:11px;}"
-                "QCheckBox::indicator{width:12px;height:12px;}"
-            )
             # 默认勾选 鱼狐刀暗牛晦；腾武默认不勾（与主窗口一致，玩家手动勾选）
             box.setChecked(card_name != "赤烟·腾武")
             box.setToolTip(card_name)
