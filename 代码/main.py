@@ -536,8 +536,10 @@ def _wb_tree_lines(wb: Dict[str, object]) -> List[str]:
     for ni, node in enumerate(nodes):
         card = node.get("card") or ""
         kind = node.get("kind") or ""
+        play = node.get("play") or "直接"
         branches = node.get("branches") or []
-        label = f"抽随从卡分支「{card}」" if kind == "draw" else f"持枪要挟分支"
+        label = f"抽随从卡分支「{card}」" if kind == "draw" else "持枪要挟分支"
+        label += f"·{play}"
         lines.append(f"\t{label}（{len(branches)} 个分支）")
 
         for bi, br in enumerate(branches, start=1):
@@ -735,21 +737,13 @@ class CalculationWorker(QThread):
                 wb = engine.compute_wb_tree(
                     self.snapshot,
                     self.options,
+                    node_top_k=max(1, node_top_k),
                     draw_top_k=max(1, draw_top_k),
                     quickdraw_top_k=max(1, quickdraw_top_k),
                 )
 
                 if wb:
                     nodes = wb.get("nodes") or []
-
-                    # 分支节点 TOP-K：按各节点最佳分支增量分排序，取前 node_top_k 个
-                    nodes.sort(
-                        key=lambda node: max(
-                            (b.get("delta") or 0) for b in (node.get("branches") or [])
-                        ),
-                        reverse=True,
-                    )
-                    nodes = nodes[:node_top_k]
 
                     # 主结果最优路径含持枪要挟时提取分支前缀（供 quickdraw 回溯）
                     branch_prefix: List[str] = []
@@ -818,18 +812,6 @@ class CalculationWorker(QThread):
                                 br["dragons"] = int(best2.get("dragons") or 0)
                                 br["mana_left"] = int(best2.get("mana") or 0)
                                 br["path"] = best2.get("path") or []
-
-                    # 只保留单张分叉卡造成最大伤害的分叉树（其余节点不再展示）
-                    if nodes:
-                        best_node = max(
-                            nodes,
-                            key=lambda node: max(
-                                (b.get("damage") or 0)
-                                for b in (node.get("branches") or [])
-                            ),
-                        )
-                        nodes = [best_node]
-                        wb["nodes"] = nodes
 
             result["wb"] = wb
             result["draw_whatif"] = None
@@ -2716,8 +2698,10 @@ class MiniWindow(QWidget):
         for node in wb.get("nodes") or []:
             kind = node.get("kind") or ""
             card = node.get("card") or ""
+            play = node.get("play") or "直接"
             branches = node.get("branches") or []
             label = f"抽随从卡分支「{card}」" if kind == "draw" else "持枪要挟分支"
+            label += f"·{play}"
             lines.append("\u3000" + label + f"（{len(branches)}）")
 
             for bi, br in enumerate(branches, start=1):

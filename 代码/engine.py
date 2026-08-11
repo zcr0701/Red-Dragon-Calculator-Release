@@ -1484,50 +1484,70 @@ def _draw_combinations(missing: List[str], count: int) -> List[List[str]]:
     return result
 
 
-def _build_draw_variant(
-    snapshot: Dict[str, object],
-    draw_card: str,
-    drawn_minions: List[str],
-) -> Dict[str, object]:
-    """抽随从卡分支的干净变体：只把 draw_card（+省费来源伺机/狐）当作已打出，
-    抽到的随从加入手牌，法力扣减实付费用。"""
-    hand = snapshot.get("hand") or []
-    hand_names = [str(h.get("name", "")) for h in hand]
-    cost, _count = DRAW_MINION_SPELLS.get(draw_card, (0, 0))
-    discount = 0
-    remove_names = {draw_card}
+def _draw_play_variants(
+    snapshot: Dict[str, object], draw_card: str
+) -> List[Tuple[str, List[str], int, bool]]:
+    """分支卡的不同打法（= 分支节点）：直接 / 伺机 / 币 / 伺机+币。
+    返回 [(打法名, 移除卡, 实付费用, 是否打了幸运币(+1法力))]。"""
+    hand_names = [str(h.get("name", "")) for h in snapshot.get("hand") or []]
+    cost = 1 if draw_card == "持枪要挟" else DRAW_MINION_SPELLS.get(draw_card, (0, 0))[0]
+    variants: List[Tuple[str, List[str], int, bool]] = [("直接", [], cost, False)]
 
     if "伺机待发" in hand_names:
-        discount += 2
-        remove_names.add("伺机待发")
+        variants.append(("伺机", ["伺机待发"], max(0, cost - 2), False))
 
-    if "狐人老千" in hand_names:
-        discount += 2
-        remove_names.add("狐人老千")
+    if "幸运币" in hand_names:
+        variants.append(("币", ["幸运币"], cost, True))
+
+    if "伺机待发" in hand_names and "幸运币" in hand_names:
+        variants.append(("伺机+币", ["伺机待发", "幸运币"], max(0, cost - 2), True))
+
+    return variants
+
+
+def wb_play_delta(mana_after: int) -> float:
+    """打法节点增量分：剩余法力越多，后续场面价值越高（增量，不重复评估前后）。"""
+    return float(mana_after) * 0.3
+
+
+def _build_play_variant(
+    snapshot: Dict[str, object],
+    draw_card: str,
+    remove_cards: List[str],
+    eff_cost: int,
+    coin_played: bool,
+) -> Dict[str, object]:
+    """分支卡打出后的基础变体：移除分支卡与省费来源，法力按实付扣减（币 +1）。"""
+    hand = snapshot.get("hand") or []
+    mana = int(snapshot.get("mana") or 0)
+
+    if coin_played:
+        mana += 1
 
     variant = dict(snapshot)
-    variant["hand"] = [h for h in hand if str(h.get("name", "")) not in remove_names]
-
-    for mn in drawn_minions:
-        variant["hand"].append({"name": mn})
-
-    variant["mana"] = max(0, int(snapshot.get("mana") or 0) - max(0, cost - discount))
+    variant["hand"] = [
+        h for h in hand
+        if str(h.get("name", "")) not in (set(remove_cards) | {draw_card})
+    ]
+    variant["mana"] = max(0, mana - eff_cost)
     return variant
 
 
 def compute_wb_tree(
     snapshot: Dict[str, object],
     options: Optional[Dict[str, object]] = None,
+    node_top_k: int = 3,
     draw_top_k: int = 3,
     quickdraw_top_k: int = 5,
 ) -> Optional[Dict[str, object]]:
-    """统一 W-B 机制：识别手牌中的分支卡，按 [场面变化] 增量评分对可能分支取 top-K，
-    生成分支树。返回 {"kind":"wb", "nodes":[分支卡节点]} 或 None。
+    """统一 W-B 机制：分支节点 = 分支卡的不同打法（直接/伺机/币/伺机+币），
+    节点内展开其分支（抽随从组合 C（无序）/ 持枪发现牌），按 [场面变化] 增量评分
+    取 top-K。返回 {"kind":"wb", "nodes":[打法节点]} 或 None。
 
     每个节点：
-      {"card": 分支卡, "kind": "draw"|"quickdraw",
-       "branches": [{"drawn": 抽到的随从组合 | "card": 持枪发现牌,
-                     "delta": 增量分, "variant": 干净变体(仅 draw)}]}
+      {"card": 分支卡, "kind": "draw"|"quickdraw", "play": 打法名,
+       "branches": [{"drawn": 抽到的随从组合(无序) | "card": 持枪发现牌,
+                     "delta": 增量分, "variant": 打法+抽牌后的变体(仅 draw)}]}
     """
     hand = snapshot.get("hand") or []
     board = snapshot.get("board") or []
@@ -1542,48 +1562,79 @@ def compute_wb_tree(
     missing.sort(key=lambda n: -DRAW_PRIORITY.get(n, 0))
     nodes: List[Dict[str, object]] = []
 
-    # 抽随从卡节点：每个分支 = 一种可能抽到的随从组合（按增量分取 top-K）
+    # 抽随从卡：每个打法（直接/伺机/币/伺机+币）= 一个分支节点；
+    # 节点内分支 = 抽到的随从组合（无序 C，如 潜伏帷幕 抽2 从3 剩余 → C(3,2)=3）
     for dcard in DRAW_MINION_SPELLS:
         if dcard not in hand_names:
             continue
 
         count = DRAW_MINION_SPELLS[dcard][1]
-        combos = _draw_combinations(missing, count)
+        combos = list(_draw_combinations(missing, count))
 
         if not combos:
             continue
 
-        scored = sorted(
-            ((wb_draw_delta(drawn), drawn) for drawn in combos),
-            key=lambda x: -x[0],
-        )
-        branches = []
+        # 分支按增量分排序（无序组合，取 top-K）
+        combos.sort(key=wb_draw_delta, reverse=True)
+        combos = combos[:draw_top_k]
 
-        for delta, drawn in scored[:draw_top_k]:
-            variant = _build_draw_variant(snapshot, dcard, drawn)
-            branches.append(
+        for play, remove, eff_cost, coin in _draw_play_variants(snapshot, dcard):
+            base = _build_play_variant(snapshot, dcard, remove, eff_cost, coin)
+            play_score = wb_play_delta(int(base.get("mana") or 0))
+            branches = []
+
+            for drawn in combos:
+                br_variant = dict(base)
+                br_variant["hand"] = list(base["hand"]) + [
+                    {"name": mn} for mn in drawn
+                ]
+                delta = play_score + wb_draw_delta(drawn)
+                branches.append(
+                    {
+                        "drawn": drawn,
+                        "delta": round(delta, 2),
+                        "variant": br_variant,
+                    }
+                )
+
+            nodes.append(
+                {"card": dcard, "kind": "draw", "play": play, "branches": branches}
+            )
+
+    # 持枪要挟：不同打法 = 分支节点；分支 = 发现牌（按增量分取 top-K）
+    if "持枪要挟" in hand_names:
+        choices = sorted(QUICKDRAW_CHOICES, key=lambda c: -wb_quickdraw_delta(snapshot, c))
+        choices = choices[:quickdraw_top_k]
+
+        for play, remove, eff_cost, coin in _draw_play_variants(snapshot, "持枪要挟"):
+            base = _build_play_variant(snapshot, "持枪要挟", remove, eff_cost, coin)
+            play_score = wb_play_delta(int(base.get("mana") or 0))
+            branches = [
                 {
-                    "drawn": drawn,
-                    "delta": round(delta, 2),
-                    "variant": variant,
+                    "card": choice,
+                    "delta": round(play_score + wb_quickdraw_delta(snapshot, choice), 2),
+                }
+                for choice in choices
+            ]
+            nodes.append(
+                {
+                    "card": "持枪要挟",
+                    "kind": "quickdraw",
+                    "play": play,
+                    "branches": branches,
                 }
             )
 
-        nodes.append({"card": dcard, "kind": "draw", "branches": branches})
-
-    # 持枪要挟节点：每个分支 = 一种发现牌（按增量分取 top-K）
-    if "持枪要挟" in hand_names:
-        scored = sorted(
-            ((wb_quickdraw_delta(snapshot, choice), choice) for choice in QUICKDRAW_CHOICES),
-            key=lambda x: -x[0],
-        )
-        branches = [
-            {"card": choice, "delta": round(delta, 2)}
-            for delta, choice in scored[:quickdraw_top_k]
-        ]
-        nodes.append({"card": "持枪要挟", "kind": "quickdraw", "branches": branches})
-
     if not nodes:
         return None
+
+    # 分支节点 top-K：按各节点最佳分支增量分排序，取前 node_top_k 个
+    nodes.sort(
+        key=lambda node: max(
+            (b.get("delta") or 0) for b in (node.get("branches") or [])
+        ),
+        reverse=True,
+    )
+    nodes = nodes[:node_top_k]
 
     return {"kind": "wb", "nodes": nodes}
