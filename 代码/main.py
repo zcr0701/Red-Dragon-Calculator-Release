@@ -2288,7 +2288,7 @@ class MiniWindow(QWidget):
 
         band_note = QLabel("会自动同步不用管，不一样时再手动标记")
         band_note.setWordWrap(True)
-        band_note.setStyleSheet("font-size:11px;color:#888;")
+        band_note.setStyleSheet("font-size:13px;color:#888;")
         band_row.addWidget(band_note, 1)
         root.addLayout(band_row)
 
@@ -2310,7 +2310,7 @@ class MiniWindow(QWidget):
 
         combo_note = QLabel("换卡组时再手动更改，WhatIf计算需要用到")
         combo_note.setWordWrap(True)
-        combo_note.setStyleSheet("font-size:11px;color:#888;")
+        combo_note.setStyleSheet("font-size:13px;color:#888;")
         combo_row.addWidget(combo_note, 1)
         root.addLayout(combo_row)
 
