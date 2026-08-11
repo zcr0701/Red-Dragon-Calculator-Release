@@ -460,7 +460,7 @@ def _format_whatif_branch_lines(
     else:
         abbr_fn = abbreviate_step
 
-    lines = ["如果机制分支（持枪要挟）："]
+    lines = ["Branch："]
 
     if full_names and prefix:
         lines.append(prefix + " -> 持枪要挟")
@@ -670,15 +670,23 @@ class CalculationWorker(QThread):
                     **common_kwargs,
                 )
 
-            if bool(self.options.get("draw_whatif", True)):
-                # 独立的“如果机制”：省费打出抽随从卡、抽缺失组合随从后的最高伤害推演。
-                # 在干净变体（只打了抽卡）上跑真实搜索，得到 WhatIf 的完整路径与真实伤害。
-                whatif = engine.compute_draw_whatif(self.snapshot, self.options)
+            whatif_top_k = int(self.options.get("whatif_branch_top_k", 3))
+            whatif = None
+
+            if bool(self.options.get("draw_whatif", True)) and whatif_top_k > 0:
+                # 独立的 WhatIf：牌库剩余多张可能抽到的随从时生成多个分支（top-K），
+                # 每个分支独立评估（强制首抽为该随从），再各自在干净变体上跑真实搜索。
+                whatif = engine.compute_whatif_branches(
+                    self.snapshot, self.options, top_k=whatif_top_k
+                )
 
                 if whatif:
-                    variant = whatif.pop("variant", None)
+                    for sc in whatif.get("branches") or []:
+                        variant = sc.pop("variant", None)
 
-                    if variant:
+                        if not variant:
+                            continue
+
                         res2 = engine.compute(
                             variant,
                             exchanges=best_exchange,
@@ -694,16 +702,16 @@ class CalculationWorker(QThread):
                         cont = best2.get("path") or []
                         real_damage = int(res2.get("max_damage") or 0)
                         # 真实搜索结果总是覆盖预估：0 伤时清空路径（避免显示无龙的假路径）
-                        whatif["damage"] = real_damage
-                        whatif["dragons"] = int(res2.get("max_dragons") or 0)
-                        whatif["mana_left"] = int(best2.get("mana") or 0)
+                        sc["damage"] = real_damage
+                        sc["dragons"] = int(res2.get("max_dragons") or 0)
+                        sc["mana_left"] = int(best2.get("mana") or 0)
 
                         if real_damage > 0:
-                            whatif["path"] = (
-                                list(whatif.get("pre_path") or []) + list(cont)
+                            sc["path"] = (
+                                list(sc.get("pre_path") or []) + list(cont)
                             )
                         else:
-                            whatif["path"] = []
+                            sc["path"] = []
 
                 result["draw_whatif"] = whatif
 
@@ -724,10 +732,12 @@ class CalculationWorker(QThread):
                 if has_branch_path:
                     break
 
-            if has_branch_path:
+            branch_top_k = int(self.options.get("branch_top_k", 3))
+
+            if has_branch_path and branch_top_k > 0:
                 branches: List[Dict[str, object]] = []
 
-                for choice in QUICKDRAW_BRANCH_ORDER:
+                for choice in QUICKDRAW_BRANCH_ORDER[:branch_top_k]:
                     if self._stop:
                         break
 
@@ -1245,6 +1255,23 @@ class MainWindow(QWidget):
             "抽到预写组合缺失的随从，能达到的最高伤害"
         )
         param_grid.addWidget(self.draw_whatif_check, 10, 0, 1, 2)
+        # 持枪要挟分支 top-K：主结果与 WhatIf 各自独立设置（默认 3，0=不计算分支）
+        branch_top_row = QHBoxLayout()
+        branch_top_row.addWidget(QLabel("可能分支top-K："))
+        self.branch_top_k = self._spin(3, 0, 5)
+        self.branch_top_k.setToolTip(
+            "持枪要挟可能分支按优先级（补水>脱水>误炸>袋底藏沙>不许乱动）"
+            "计算前 K 个；0=不计算分支"
+        )
+        branch_top_row.addWidget(self.branch_top_k)
+        branch_top_row.addWidget(QLabel("WhatIf分支top-K："))
+        self.whatif_branch_top_k = self._spin(3, 0, 5)
+        self.whatif_branch_top_k.setToolTip(
+            "WhatIf 分支 top-K：牌库剩余多张可能抽到的随从时，每个可能抽到 = 一个分支，"
+            "按优先级取前 K 个分别计算；0=不计算 WhatIf"
+        )
+        branch_top_row.addWidget(self.whatif_branch_top_k)
+        param_grid.addLayout(branch_top_row, 11, 0, 1, 2)
         # 精确截断：伤害 ≥ 敌方血量+护甲 即停（加速计算）
         trunc_row = QHBoxLayout()
         trunc_row.addWidget(QLabel("精确截断加速："))
@@ -1268,7 +1295,7 @@ class MainWindow(QWidget):
         trunc_row.addWidget(self.truncate_branch_check)
         trunc_row.addWidget(self.truncate_exchange_check)
         trunc_row.addStretch(1)
-        param_grid.addLayout(trunc_row, 11, 0, 1, 2)
+        param_grid.addLayout(trunc_row, 12, 0, 1, 2)
         right_layout.addWidget(param_box)
 
         run_row = QHBoxLayout()
@@ -1879,6 +1906,8 @@ class MainWindow(QWidget):
             "only_best_damage": self.best_only_check.isChecked(),
             "draw_whatif": self.draw_whatif_check.isChecked(),
             "whatif_combo": [name for name, box in self.combo_checks if box.isChecked()],
+            "branch_top_k": self.branch_top_k.value(),
+            "whatif_branch_top_k": self.whatif_branch_top_k.value(),
             "truncate_normal": self.truncate_normal_check.isChecked(),
             "truncate_branch": self.truncate_branch_check.isChecked(),
             "truncate_exchange": self.truncate_exchange_check.isChecked(),
@@ -2156,26 +2185,51 @@ class MainWindow(QWidget):
             lines.append("")
             lines.append("WhatIf：")
             cards = whatif.get("cards") or []
-            drawn = whatif.get("drawn") or []
+            possible = whatif.get("possible") or []
+            branches = whatif.get("branches") or []
 
             if cards:
                 lines.append("如果使用：[" + "][".join(cards) + "];")
 
-            if drawn:
-                lines.append("将抽到：[" + "][".join(drawn) + "]")
-
-            lines.append(
-                f"预计最大伤害：{whatif.get('damage', 0)}，龙数：{whatif.get('dragons', 0)}，"
-                f"余：{whatif.get('mana_left', 0)}费"
-            )
-            path = whatif.get("path") or []
-
-            if path:
-                for index, rnd in enumerate(split_path_rounds(path), start=1):
+            if possible:
+                if len(possible) == 1:
+                    lines.append("将抽到：[" + "][".join(possible) + "]")
+                else:
                     lines.append(
-                        f"[第{chinese_round_number(index)}轮]："
-                        + " → ".join(str(step) for step in rnd)
+                        f"将抽到（牌库剩余{len(possible)}）：["
+                        + "][".join(possible)
+                        + "]"
                     )
+
+            if len(branches) <= 1:
+                sc = branches[0] if branches else {}
+                lines.append(
+                    f"预计最大伤害：{sc.get('damage', 0)}，龙数：{sc.get('dragons', 0)}，"
+                    f"余：{sc.get('mana_left', 0)}费"
+                )
+                path = sc.get("path") or []
+
+                if path:
+                    for index, rnd in enumerate(split_path_rounds(path), start=1):
+                        lines.append(
+                            f"[第{chinese_round_number(index)}轮]："
+                            + " → ".join(str(step) for step in rnd)
+                        )
+            else:
+                for i, sc in enumerate(branches, start=1):
+                    lines.append(
+                        f"Branch{i} 抽到[{']['.join(sc.get('drawn') or [])}]："
+                        f"最大伤害：{sc.get('damage', 0)}，龙数：{sc.get('dragons', 0)}，"
+                        f"余：{sc.get('mana_left', 0)}费"
+                    )
+                    path = sc.get("path") or []
+
+                    if path:
+                        for index, rnd in enumerate(split_path_rounds(path), start=1):
+                            lines.append(
+                                f"[第{chinese_round_number(index)}轮]："
+                                + " → ".join(str(step) for step in rnd)
+                            )
 
         branch_lines = _format_whatif_branch_lines(
             results, data.get("quickdraw_branches"), full_names=True
@@ -2637,7 +2691,7 @@ class MiniWindow(QWidget):
     def _mini_whatif_block(
         self, whatif: Dict[str, object], colors: bool
     ) -> str:
-        """WhatIf 显示块：如果使用/将抽到/预计最大伤害/分轮完整路径（缩写+颜色框）。"""
+        """WhatIf 显示块：如果使用/将抽到（牌库剩余池）/各分支最大伤害与分轮路径。"""
         if colors:
             box_fn = _card_box_html
             sep = "<br>"
@@ -2646,27 +2700,44 @@ class MiniWindow(QWidget):
             sep = "\n"
 
         cards = whatif.get("cards") or []
-        drawn = whatif.get("drawn") or []
-        path = whatif.get("path") or []
+        possible = whatif.get("possible") or []
+        branches = whatif.get("branches") or []
         lines = ["WhatIf："]
 
         if cards:
             lines.append("如果使用：" + "".join(box_fn(str(c)) for c in cards) + ";")
 
-        if drawn:
-            lines.append("将抽到：" + "".join(box_fn(str(c)) for c in drawn))
+        if possible:
+            if len(possible) == 1:
+                lines.append("将抽到：" + "".join(box_fn(str(c)) for c in possible))
+            else:
+                lines.append(
+                    f"将抽到（牌库剩余{len(possible)}）："
+                    + "".join(box_fn(str(c)) for c in possible)
+                )
 
-        lines.append(
-            f"预计最大伤害：{whatif.get('damage', 0)}，龙数：{whatif.get('dragons', 0)}，"
-            f"余：{whatif.get('mana_left', 0)}费"
-        )
+        abbr_fn = abbreviate_step_html if colors else abbreviate_step
 
-        if path:
-            abbr_fn = abbreviate_step_html if colors else abbreviate_step
+        def _branch_lines(sc: Dict[str, object], head: str) -> List[str]:
+            out = [
+                f"{head}最大伤害：{sc.get('damage', 0)}，"
+                f"龙数：{sc.get('dragons', 0)}，余：{sc.get('mana_left', 0)}费"
+            ]
+            path = sc.get("path") or []
 
             for index, rnd in enumerate(split_path_rounds(path), start=1):
                 abbr = "-".join(abbr_fn(str(s)) for s in rnd)
-                lines.append(f"[第{chinese_round_number(index)}轮]：{abbr}")
+                out.append(f"[第{chinese_round_number(index)}轮]：{abbr}")
+
+            return out
+
+        if len(branches) <= 1:
+            sc = branches[0] if branches else {}
+            lines.extend(_branch_lines(sc, "预计"))
+        else:
+            for i, sc in enumerate(branches, start=1):
+                drawn = "".join(box_fn(str(c)) for c in (sc.get("drawn") or []))
+                lines.extend(_branch_lines(sc, f"Branch{i} 抽到{drawn}："))
 
         return sep.join(lines)
 

@@ -1111,6 +1111,7 @@ def _combo_completeness(snapshot: Dict[str, object]) -> int:
 def compute_draw_whatif(
     snapshot: Dict[str, object],
     options: Optional[Dict[str, object]] = None,
+    forced_draw: Optional[str] = None,
 ) -> Optional[Dict[str, object]]:
     """独立的“如果机制”：毫秒级递归预评估，返回最优假设情形，或 None（无抽随从卡 / 组合已齐）。
 
@@ -1144,6 +1145,7 @@ def compute_draw_whatif(
         if n not in have and n not in missing:
             missing.append(n)
     missing.sort(key=lambda n: -DRAW_PRIORITY.get(n, 0))
+    possible_draws = list(missing)  # 牌库剩余可能抽到的随从池（供 WhatIf 分支）
     draw_cards = [n for n in hand_names if n in DRAW_MINION_SPELLS]
     if not missing or not draw_cards:
         return None
@@ -1281,7 +1283,14 @@ def compute_draw_whatif(
             for _ in range(DRAW_MINION_SPELLS[dcard][1]):
                 if not missing:
                     break
-                mn = missing.pop(0)
+
+                if forced_draw and not drawn_minions and forced_draw in missing:
+                    # WhatIf 分支：强制首抽为该随从（其余可能性仍按优先级）
+                    mn = forced_draw
+                    missing.remove(mn)
+                else:
+                    mn = missing.pop(0)
+
                 drawn_minions.append(mn)
                 cards_in_hand.add(mn)
                 if mn == "斯卡布斯·刀油":
@@ -1360,6 +1369,7 @@ def compute_draw_whatif(
     return {
         "cards": list(draw_cards_used),
         "drawn": drawn_minions,
+        "possible_draws": possible_draws,
         "discounts": discounts,
         "completeness": _combo_completeness(variant),
         "completeness_total": len(combo),
@@ -1370,4 +1380,43 @@ def compute_draw_whatif(
         "pre_path": list(draw_cards_used),
         "path": list(draw_cards_used),
         "variant": variant,
+    }
+
+
+def compute_whatif_branches(
+    snapshot: Dict[str, object],
+    options: Optional[Dict[str, object]] = None,
+    top_k: int = 3,
+) -> Optional[Dict[str, object]]:
+    """WhatIf 多分支：牌库剩余多张可能抽到的随从时，每个可能抽到 = 一个独立分支。
+
+    每个分支强制首抽为该随从，独立走 compute_draw_whatif 的评估与剪枝逻辑
+    （与 Branch/持枪要挟 完全独立）。返回：
+    {"cards": 用到的抽随从卡, "possible": 可能抽到池, "branches": [完整 whatif 分支]}
+    """
+    base = compute_draw_whatif(snapshot, options)
+
+    if not base:
+        return None
+
+    possible = base.get("possible_draws") or []
+
+    if not possible:
+        return None
+
+    branches: List[Dict[str, object]] = []
+
+    for mn in possible[:top_k]:
+        sc = compute_draw_whatif(snapshot, options, forced_draw=mn)
+
+        if sc:
+            branches.append(sc)
+
+    if not branches:
+        return None
+
+    return {
+        "cards": base.get("cards") or [],
+        "possible": possible,
+        "branches": branches,
     }
