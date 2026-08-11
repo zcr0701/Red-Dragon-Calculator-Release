@@ -283,6 +283,7 @@ struct State {
     int alex_damage = 0;
     vector<string> etc_band;
     bool etc_band_provided = false;   // JSON 显式传了 etc_band（空数组=牛池已空）
+    string forced_discover_choice;    // 可能分支机制：强制持枪要挟发现某张牌（空=全部展开）
     std::shared_ptr<vector<string>> path_buf;  // 路径共享存储（克隆 O(1)，写时复制）
 
     const vector<string>& path() const {
@@ -337,6 +338,7 @@ struct State {
         c.alex_play_count = alex_play_count;
         c.alex_damage = alex_damage;
         c.etc_band_provided = etc_band_provided;
+        c.forced_discover_choice = forced_discover_choice;
         c.path_buf = path_buf;
         return c;
     }
@@ -785,8 +787,11 @@ static vector<State> apply_search_effect(State base, const Card& card,
     if (e == "discover_quickdraw") {
         // 持枪要挟：发现一张另一职业快枪牌（牌池固定，只展开已建模的快枪牌；
         // 未建模的牌先纳入备注忽略）。发现牌本回合进入手牌 → 快枪可用。
+        // forced_discover_choice 非空时（可能分支机制单独计算）只展开该牌。
         vector<State> states;
+        const bool forced = !base.forced_discover_choice.empty();
         for (const string& choice : QUICKDRAW_MODELED_POOL) {
+            if (forced && choice != base.forced_discover_choice) continue;
             State s = base.clone_reserved();
             add_card_to_hand_or_burn(s, make_card(choice));
             // 路径标注“（如果X）”：持枪要挟只是把快枪牌置入手牌，X 由玩家后续打出
@@ -2342,6 +2347,8 @@ static State state_from_json(const JVal& root) {
         // 牛池最多三张：防御性截断，避免错误输入把乐队撑大
         if (st.etc_band.size() > 3) st.etc_band.resize(3);
     }
+    const JVal* qd = root.find("discover_quickdraw_choice");
+    if (qd && qd->type == JVal::STR) st.forced_discover_choice = qd->str;
     const JVal* deck = root.find("deck");
     if (deck && deck->type == JVal::ARR) {
         for (const auto& item : deck->arr) {

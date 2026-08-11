@@ -364,6 +364,10 @@ def _whatif_path_text(whatif: Dict[str, object]) -> str:
     return " → ".join(steps)
 
 
+# 可能分支机制：持枪要挟发现牌单独计算的优先级（补水 > 脱水 > 误炸 > 袋底藏沙 > 不许乱动）
+QUICKDRAW_BRANCH_ORDER = ("补水", "脱水", "误炸", "袋底藏沙", "不许乱动")
+
+
 def _whatif_branch_data(
     results: List[Dict[str, object]],
 ) -> Tuple[str, Dict[str, Tuple[int, int, int, List[str]]]]:
@@ -407,23 +411,63 @@ def _whatif_branch_data(
     return prefix, branches
 
 
-def _format_whatif_branch_lines(results: List[Dict[str, object]]) -> List[str]:
-    """持枪要挟分支显示：路径前半部分 -> 持枪要挟 + 可能分支（按 补水>脱水>误炸>袋底藏沙>不许乱动）。"""
-    prefix, branches = _whatif_branch_data(results)
+def _format_whatif_branch_lines(
+    results: List[Dict[str, object]],
+    branches: Optional[List[Dict[str, object]]] = None,
+) -> List[str]:
+    """持枪要挟分支显示：路径前半部分 -> 持枪要挟 + 可能分支。
+
+    优先使用“单独完整计算”的 quickdraw_branches（已按优先级排序）；
+    无该数据时退化为从主搜索结果解析（_whatif_branch_data）。
+    """
+    if not branches:
+        _prefix, bmap = _whatif_branch_data(results)
+
+        if not bmap:
+            return []
+
+        branches = [
+            {"card": x, "damage": d, "dragons": g, "mana_left": m, "path": p}
+            for x, (d, g, m, p) in bmap.items()
+        ]
+        branches.sort(
+            key=lambda b: QUICKDRAW_BRANCH_ORDER.index(b["card"])
+            if b["card"] in QUICKDRAW_BRANCH_ORDER
+            else 99
+        )
 
     if not branches:
         return []
+
+    prefix = ""
+
+    for b in branches:
+        path = b.get("path") or []
+
+        for i, step in enumerate(path):
+            if "持枪要挟" in str(step or ""):
+                if i > 0 and not prefix:
+                    prefix = " -> ".join(path[:i])
+                break
 
     lines = ["如果机制分支（持枪要挟）："]
     lines.append(("路径前半部分 -> " if prefix else "") + "持枪要挟")
     lines.append("可能分支：")
 
-    for x in ("补水", "脱水", "误炸", "袋底藏沙", "不许乱动"):
-        if x not in branches:
-            continue
+    for b in branches:
+        x = b.get("card") or ""
+        path = b.get("path") or []
+        cont: List[str] = []
 
-        dmg, drg, mana, cont = branches[x]
-        lines.append(f"最大伤害：{dmg}；龙数：{drg}；余：{mana}；")
+        for i, step in enumerate(path):
+            if "持枪要挟" in str(step or ""):
+                cont = path[i + 1:]
+                break
+
+        lines.append(
+            f"最大伤害：{b.get('damage', 0)}；龙数：{b.get('dragons', 0)}；"
+            f"余：{b.get('mana_left', 0)}；"
+        )
 
         if any(str(c).startswith(x) for c in cont):
             lines.append(f"持枪要挟(可能{x}) -> …… -> {x}")
@@ -541,26 +585,62 @@ class CalculationWorker(QThread):
                 default_widths = [1100, 1500, 1100, 3000]
                 wide_widths = [max(beam, w) for w in default_widths]
                 heuristics = [6, 1, 2, 2]
+            common_kwargs = {
+                "min_alex": int(self.options["min_alex"]),
+                "max_alex": int(self.options["max_alex"]),
+                "depth": int(self.options["depth"]),
+                "max_paths": int(self.options["max_paths"]),
+                "threads": int(self.options.get("threads", 4)),
+                "time_budget_sec": float(self.options.get("time_budget_sec", 3.0)),
+                "wide_widths": wide_widths,
+                "heuristics": heuristics,
+                "etc_band": list(self.options.get("etc_band") or []),
+                "exchanges": list(self.options.get("exchanges") or []),
+                "only_best_damage": bool(self.options.get("only_best_damage", True)),
+            }
             result = engine.compute(
                 self.snapshot,
-                min_alex=int(self.options["min_alex"]),
-                max_alex=int(self.options["max_alex"]),
-                depth=int(self.options["depth"]),
-                max_paths=int(self.options["max_paths"]),
-                threads=int(self.options.get("threads", 4)),
-                time_budget_sec=float(self.options.get("time_budget_sec", 3.0)),
-                wide_widths=wide_widths,
-                heuristics=heuristics,
-                etc_band=list(self.options.get("etc_band") or []),
-                exchanges=list(self.options.get("exchanges") or []),
-                only_best_damage=bool(self.options.get("only_best_damage", True)),
                 progress_callback=self.progress.emit,
                 found_callback=self.found.emit,
                 should_stop=lambda: self._stop,
+                **common_kwargs,
             )
             if bool(self.options.get("draw_whatif", True)):
                 # 独立的“如果机制”：省费打出抽随从卡、抽缺失组合随从后的最高伤害推演
                 result["draw_whatif"] = engine.compute_draw_whatif(self.snapshot, self.options)
+
+            # 可能分支机制：持枪要挟在手时，对每张已建模发现牌按优先级单独完整计算一遍
+            hand_names = {str(h.get("name", "")) for h in (self.snapshot.get("hand") or [])}
+
+            if "持枪要挟" in hand_names:
+                branches: List[Dict[str, object]] = []
+
+                for choice in QUICKDRAW_BRANCH_ORDER:
+                    if self._stop:
+                        break
+
+                    br = engine.compute(
+                        self.snapshot,
+                        discover_quickdraw_choice=choice,
+                        should_stop=lambda: self._stop,
+                        **common_kwargs,
+                    )
+                    dmg = int(br.get("max_damage") or 0)
+
+                    if dmg > 0:
+                        best = (br.get("results") or [{}])[0]
+                        branches.append(
+                            {
+                                "card": choice,
+                                "damage": dmg,
+                                "dragons": int(br.get("max_dragons") or 0),
+                                "mana_left": int(best.get("mana") or 0),
+                                "path": best.get("path") or [],
+                            }
+                        )
+
+                result["quickdraw_branches"] = branches
+
             self.finished_ok.emit(result)
         except InterruptedError as exc:
             self.failed.emit(str(exc))
@@ -1828,7 +1908,9 @@ class MainWindow(QWidget):
                 )
             lines.append(f"预计伤害：{whatif['damage']}，龙数：{whatif['dragons']}，余：{whatif['mana_left']}费")
 
-        branch_lines = _format_whatif_branch_lines(results)
+        branch_lines = _format_whatif_branch_lines(
+            results, data.get("quickdraw_branches")
+        )
 
         if branch_lines:
             lines.append("")
@@ -2200,7 +2282,7 @@ class MiniWindow(QWidget):
         data = self._last_data
         results = data.get("results") or []
         has_preprocess = data.get("draw_whatif") is not None
-        has_branch = any(
+        has_branch = bool(data.get("quickdraw_branches")) or any(
             "持枪要挟" in str(step or "")
             for item in results
             for step in (item.get("path") or [])
@@ -2256,7 +2338,11 @@ class MiniWindow(QWidget):
 
     def _mini_whatif_branch_text(self, data: Dict[str, object]) -> str:
         """持枪要挟分支显示文本（路径前半部分 + 可能分支）。"""
-        return "\n".join(_format_whatif_branch_lines(data.get("results") or []))
+        return "\n".join(
+            _format_whatif_branch_lines(
+                data.get("results") or [], data.get("quickdraw_branches")
+            )
+        )
 
     def refresh_result(self) -> None:
         """小窗颜色开关切换后重绘已显示的结果。"""
