@@ -2128,12 +2128,7 @@ class MainWindow(QWidget):
             drawn = whatif.get("drawn") or []
 
             if cards:
-                note = ""
-
-                if whatif.get("discounts"):
-                    note = f"（因为{cards[-1]}后就没有减费状态了）"
-
-                lines.append("如果使用：[" + "][".join(cards) + "]" + note + ";")
+                lines.append("如果使用：[" + "][".join(cards) + "];")
 
             if drawn:
                 lines.append("将抽到：[" + "][".join(drawn) + "]")
@@ -2605,12 +2600,7 @@ class MiniWindow(QWidget):
         lines = ["WhatIf："]
 
         if cards:
-            note = ""
-
-            if whatif.get("discounts"):
-                note = f"（因为{cards[-1]}后就没有减费状态了）"
-
-            lines.append("如果使用：" + "".join(box_fn(str(c)) for c in cards) + note + ";")
+            lines.append("如果使用：" + "".join(box_fn(str(c)) for c in cards) + ";")
 
         if drawn:
             lines.append("将抽到：" + "".join(box_fn(str(c)) for c in drawn))
