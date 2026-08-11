@@ -2181,7 +2181,7 @@ class IntroDialog(QDialog):
         # “给一点支持”之后的变色鼓励语：你的支持就是我的动力~
         self.support_dynamic = QLabel(
             '<span style="font-size:36px; font-weight:bold; color:#DC2626;">'
-            '　　你的支持就是我的动力~'
+            '　　你的支持就是我更新的动力~'
             '</span>'
         )
         self.support_dynamic.setWordWrap(True)
@@ -2312,7 +2312,7 @@ class IntroDialog(QDialog):
         color = self._support_colors[self._support_color_idx]
         self.support_dynamic.setText(
             f'<span style="font-size:36px; font-weight:bold; color:{color};">'
-            "　　你的支持就是我的动力~"
+            "　　你的支持就是我更新的动力~"
             "</span>"
         )
 
