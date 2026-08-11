@@ -280,6 +280,7 @@ def _keep_value(
     etc_band: Optional[List[str]],
     hand: Optional[List[dict]] = None,
     health: Optional[int] = None,
+    fish_on_board: bool = False,
 ) -> float:
     """随从保留分：结合手牌与牛池动态判断（场面上的随从价值随持有情况变化）。
 
@@ -321,6 +322,10 @@ def _keep_value(
             return 110.0
 
         if set(etc_band) == {"幻觉药水"}:
+            if any(str(h.get("name", "")) == "舞动全场（ft.迦罗娜）" for h in (hand or [])):
+                # 牛池只剩幻 且 手牌已有舞：舞已覆盖整场回手，牛只能提供幻（被舞替代），
+                # 价值降低。180257：保牛不交换=0伤，送牛腾格=32伤。
+                return 40.0
             return 110.0  # 只剩幻：牛本体仍可舞动回手/占位，保留价值高
 
         return 90.0  # 其他组合（如 幻+其他）
@@ -339,7 +344,17 @@ def _keep_value(
         return 0.0
 
     if name == "晦鳞巢母":
-        return 8.0 if in_hand else 20.0
+        if in_hand:
+            if fish_on_board:
+                # 手上有晦 且 场上有鱼：晦是伤害引擎（战吼1伤×鱼翻倍×多轮回手）。
+                # 215306：保晦送刀=96伤>保刀送晦=80伤（鱼在场时晦价值高于刀）。
+                return 70.0
+            return 8.0
+        # 原版晦（health>1）且场上有鱼：晦是伤害引擎（战吼1伤×鱼翻倍×多轮回手），
+        # 保留价值高。173736：保晦送狐=80伤>送晦=64伤；180257：保晦送牛=32伤。
+        if health and health > 1 and fish_on_board:
+            return 110.0
+        return 20.0
 
     if name == "狐人老千":
         return 0.0
@@ -351,6 +366,7 @@ def exchange_heuristic(
     board: List[dict],
     hand: Optional[List[dict]] = None,
     etc_band: Optional[List[str]] = None,
+    free_slot_linear: bool = False,
 ) -> Tuple[float, int, int]:
     """场面交换阶段的启发函数：只看我方随从栏（敌方场面完全不参与）。
 
@@ -362,11 +378,17 @@ def exchange_heuristic(
     """
     hand = hand or []
     hand_names = {item.get("name") for item in hand}
+    fish_on_board = any(item.get("name") == "鲨鱼之灵" for item in board)
     free_slots = max(0, MAX_BOARD_SLOTS - len(board))
-    # 空位饱和：前 4 个空位每个价值 100，之后边际价值骤降为 15。
-    # 依据 102544：场上仅 3 随从（空 4 格）时最优是“不交换”保留腾武+刀（128伤），
-    # 旧评分给第 5/6 个空位也按 100/格，导致“送掉腾武+刀换多余空位”的计划反超。
-    free_value = 100.0 * min(free_slots, 4) + 15.0 * max(0, free_slots - 4)
+    # 空位价值是条件式的：
+    # - 场面有原版腾武（回手引擎，可弹回随从循环空位）→ 空位饱和：前4格 100/格，
+    #   之后边际 15（102544：保留腾武+刀不交换=128伤，多余空位无价值）；
+    # - 无腾武（无回手引擎，连招靠堆格子）→ 线性 100/格（213918/185407/051204 等
+    #   13 个漏解场面都是“送随从腾第5格换更高伤”，旧饱和值把最优线压出前3）。
+    if free_slot_linear:
+        free_value = 100.0 * free_slots
+    else:
+        free_value = 100.0 * min(free_slots, 4) + 15.0 * max(0, free_slots - 4)
     keep_score = 0.0
     position_bonus = 0.0
 
@@ -378,6 +400,7 @@ def exchange_heuristic(
             etc_band,
             hand,
             int(item.get("health") or 0),
+            fish_on_board,
         )
         keep_score += keep
 
@@ -437,6 +460,23 @@ def plan_exchanges_top(
     if not friend_indices:
         return []
 
+    # 空位线性/饱和的条件式规则（每条对应 logs 里的具体漏解）：
+    # - 场上原版腾武（回手引擎）→ 饱和：保留引擎优先（102544/085526/081102）；
+    # - 手牌 < 6 张 → 饱和：牌太少，腾格无牌可打（050857，手牌5张，送刀后0伤）；
+    # - 舞动全场+暗影步 都在手 → 饱和：双回手在手，引擎会被弹回重打（173736）；
+    # - 其余（手牌≥6 且非双回手）→ 线性：连招靠堆格子，送随从腾第5/6格有价值
+    #   （213918/185407/004634/051204 等 13 个漏解场面）。
+    hand = hand or []
+    tenwu_scene = any(b.get("name") == "赤烟·腾武" for b in board)
+    hand_names = {str(h.get("name", "")) for h in hand}
+    has_wu = "舞动全场（ft.迦罗娜）" in hand_names
+    has_shadowstep = "暗影步" in hand_names
+    free_slot_linear = (
+        (not tenwu_scene)
+        and len(hand) >= 6
+        and not (has_wu and has_shadowstep)
+    )
+
     plans: List[tuple] = [()]
 
     # 单交换
@@ -471,7 +511,10 @@ def plan_exchanges_top(
         if score is None:
             # 大量候选交换会得到相同的我方随从栏，按结果指纹缓存启发分数，
             # 减少复杂交换情况下的重复计算
-            score = exchange_heuristic(traded_board, hand=hand, etc_band=etc_band)
+            score = exchange_heuristic(
+                traded_board, hand=hand, etc_band=etc_band,
+                free_slot_linear=free_slot_linear,
+            )
             score_cache[board_key] = score
 
         score_val = score[0]
@@ -632,7 +675,11 @@ def plan_exchanges(
     )
 
     if not ranked:
-        base_score = exchange_heuristic(board, hand=hand, etc_band=etc_band)
+        tenwu_scene = any(b.get("name") == "赤烟·腾武" for b in board)
+        base_score = exchange_heuristic(
+            board, hand=hand, etc_band=etc_band,
+            free_slot_linear=not tenwu_scene,
+        )
         return [], list(board), base_score
 
     plan, rboard, score = ranked[0]
