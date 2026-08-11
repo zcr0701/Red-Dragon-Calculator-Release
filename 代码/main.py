@@ -1281,11 +1281,8 @@ class MainWindow(QWidget):
         self.update_button = QPushButton("立即更新")
         self.update_button.setToolTip("点击跳转到发布仓库页面")
         self.update_button.clicked.connect(self._on_update_clicked)
-        btn_size = self.calc_button.sizeHint()
-        self.calc_button.setFixedSize(btn_size)
-        self.update_button.setFixedSize(btn_size)
+        self.update_button.setFixedSize(160, 36)
         run_row.addWidget(self.calc_button)
-        run_row.addWidget(self.update_button)
         # 免责声明：计算完成后静默上传公式到云端公式库（紧挨开始计算）
         self.disclaimer_label = QLabel(
             '<span style="font-size:11px;color:#888;">'
@@ -1296,6 +1293,8 @@ class MainWindow(QWidget):
         run_row.addWidget(self.disclaimer_label)
         run_row.addWidget(self.progress_bar, 1)
         run_row.addWidget(self.engine_label)
+        # 更新按钮：大一点，放到最右侧空白区域
+        run_row.addWidget(self.update_button)
         right_layout.addLayout(run_row)
 
         result_box = QGroupBox("计算结果")
