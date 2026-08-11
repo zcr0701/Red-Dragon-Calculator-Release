@@ -872,6 +872,69 @@ static vector<State> apply_search_effect(State base, const Card& card,
         }
         return states;
     }
+    // 脱水：造成 4 点伤害（基础效果，快枪仅减费为 1）→ 可击杀血量 <= 4 的己方随从腾格子
+    if (e == "dehydrate") {
+        vector<State> states;
+        states.push_back(base.clone_reserved());  // 无目标
+        for (size_t i = 0; i < base.board.size(); i++) {
+            const Card& target = base.board[i];
+            if (target.health >= 0 && target.health <= 4) {
+                State s = base.clone_reserved();
+                s.board.erase(s.board.begin() + i);
+                if (!s.path().empty()) {
+                    s.path_mut().back() += "（" + target.name() + "）";
+                }
+                states.push_back(std::move(s));
+            }
+        }
+        for (State& rs : states) {
+            if (card.is_spell_like()) transform_deadly_shadows(rs, card);
+            rs.cards_played_this_turn++;
+        }
+        return states;
+    }
+    // 袋底藏沙：造成 3 点伤害（基础效果）→ 可击杀血量 <= 3 的己方随从腾格子
+    if (e == "pocket_sand") {
+        vector<State> states;
+        states.push_back(base.clone_reserved());  // 无目标
+        for (size_t i = 0; i < base.board.size(); i++) {
+            const Card& target = base.board[i];
+            if (target.health >= 0 && target.health <= 3) {
+                State s = base.clone_reserved();
+                s.board.erase(s.board.begin() + i);
+                if (!s.path().empty()) {
+                    s.path_mut().back() += "（" + target.name() + "）";
+                }
+                states.push_back(std::move(s));
+            }
+        }
+        for (State& rs : states) {
+            if (card.is_spell_like()) transform_deadly_shadows(rs, card);
+            rs.cards_played_this_turn++;
+        }
+        return states;
+    }
+    // 不许乱动：快枪时先变 1/1 再造成 1 点伤害 → 可击杀任意己方随从腾格子
+    if (e == "lay_down_the_law" && card.entered_hand_this_turn) {
+        vector<State> states;
+        states.push_back(base.clone_reserved());  // 无目标
+        for (size_t i = 0; i < base.board.size(); i++) {
+            const Card& target = base.board[i];
+            if (target.health >= 0) {
+                State s = base.clone_reserved();
+                s.board.erase(s.board.begin() + i);
+                if (!s.path().empty()) {
+                    s.path_mut().back() += "（" + target.name() + "）";
+                }
+                states.push_back(std::move(s));
+            }
+        }
+        for (State& rs : states) {
+            if (card.is_spell_like()) transform_deadly_shadows(rs, card);
+            rs.cards_played_this_turn++;
+        }
+        return states;
+    }
     // 普通单分支效果（幸运彗星同样走此路径：置入随从杂牌 + 一次性连击双触发标记）
     for (int m = 0; m < multiplier; m++) {
         if (!apply_effect_inplace(base, e, card, target_friendly_index, target_enemy_is_killed)) {
