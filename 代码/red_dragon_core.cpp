@@ -786,7 +786,10 @@ static vector<State> apply_search_effect(State base, const Card& card,
         for (const string& choice : QUICKDRAW_MODELED_POOL) {
             State s = base.clone_reserved();
             add_card_to_hand_or_burn(s, make_card(choice));
-            append_choice_to_last_path(s, choice);
+            // 路径标注“（如果X）”：持枪要挟只是把快枪牌置入手牌，X 由玩家后续打出
+            if (!s.path().empty()) {
+                s.path_mut().back() += "（如果" + choice + "）";
+            }
             states.push_back(std::move(s));
         }
         for (State& rs : states) {
