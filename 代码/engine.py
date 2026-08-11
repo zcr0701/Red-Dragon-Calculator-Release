@@ -1539,15 +1539,20 @@ def compute_wb_tree(
     node_top_k: int = 3,
     draw_top_k: int = 3,
     quickdraw_top_k: int = 5,
+    depth: int = 0,
+    max_depth: int = 3,
 ) -> Optional[Dict[str, object]]:
-    """统一 W-B 机制：分支节点 = 分支卡的不同打法（直接/伺机/币/伺机+币），
+    """递归统一 W-B 机制：分支节点 = 分支卡的不同打法（直接/伺机/币/伺机+币），
     节点内展开其分支（抽随从组合 C（无序）/ 持枪发现牌），按 [场面变化] 增量评分
-    取 top-K。返回 {"kind":"wb", "nodes":[打法节点]} 或 None。
+    取 top-K；每个分支内再递归识别新出现的分支卡并展开子节点（深度受 max_depth 限制）。
+    返回 {"kind":"wb", "nodes":[打法节点]} 或 None。
 
     每个节点：
       {"card": 分支卡, "kind": "draw"|"quickdraw", "play": 打法名,
+       "path": 分支前打牌路径（如 伺机待发->潜伏帷幕）,
        "branches": [{"drawn": 抽到的随从组合(无序) | "card": 持枪发现牌,
-                     "delta": 增量分, "variant": 打法+抽牌后的变体(仅 draw)}]}
+                     "delta": 增量分, "variant": 打法+抽牌后的变体(仅 draw),
+                     "children": 该分支内递归展开的新分支节点}]}
     """
     hand = snapshot.get("hand") or []
     board = snapshot.get("board") or []
@@ -1598,7 +1603,13 @@ def compute_wb_tree(
                 )
 
             nodes.append(
-                {"card": dcard, "kind": "draw", "play": play, "branches": branches}
+                {
+                    "card": dcard,
+                    "kind": "draw",
+                    "play": play,
+                    "path": list(remove) + [dcard],
+                    "branches": branches,
+                }
             )
 
     # 持枪要挟：不同打法 = 分支节点；分支 = 发现牌（按增量分取 top-K）
@@ -1621,6 +1632,7 @@ def compute_wb_tree(
                     "card": "持枪要挟",
                     "kind": "quickdraw",
                     "play": play,
+                    "path": list(remove) + ["持枪要挟"],
                     "branches": branches,
                 }
             )
@@ -1636,5 +1648,25 @@ def compute_wb_tree(
         reverse=True,
     )
     nodes = nodes[:node_top_k]
+
+    # 分支内递归：每个分支的变体里若还有新的分支卡，展开为子节点
+    if depth < max_depth:
+        for node in nodes:
+            for br in node.get("branches") or []:
+                variant = br.get("variant")
+
+                if not variant:
+                    continue
+
+                children = compute_wb_tree(
+                    variant,
+                    options,
+                    node_top_k=node_top_k,
+                    draw_top_k=draw_top_k,
+                    quickdraw_top_k=quickdraw_top_k,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                )
+                br["children"] = children
 
     return {"kind": "wb", "nodes": nodes}
