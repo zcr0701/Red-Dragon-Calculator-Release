@@ -532,43 +532,53 @@ def _format_exchange_line(exchanges: List[Tuple[int, int]]) -> str:
 
 
 def _wb_tree_lines(wb: Dict[str, object]) -> List[str]:
-    """统一 W-B 机制分支树（制表符缩进表示层级，节点 = 分支前打牌路径）。"""
+    """统一 W-B 机制分支树（制表符缩进，节点 = 分支卡 → 打法 → 分支 → 递归分支卡）。"""
     lines = ["W-B机制（分支树）："]
 
     def walk(nodes: List[Dict[str, object]], level: int) -> None:
+        # 按分支卡分组：分支卡作为树的节点
+        groups: Dict[str, List[Dict[str, object]]] = {}
+
         for node in nodes:
-            branches = node.get("branches") or []
+            groups.setdefault(str(node.get("card") or ""), []).append(node)
+
+        for card, card_nodes in groups.items():
             lines.append(
-                "\t" * level + _wb_node_label(node) + f"（{len(branches)}）"
+                "\t" * level + f"「{card}」"
             )
 
-            for bi, br in enumerate(branches, start=1):
-                drawn = br.get("drawn") or []
-                drawn_txt = (
-                    "{" + "、".join(drawn) + "}"
-                    if drawn
-                    else str(br.get("card", ""))
-                )
-                lines.append(
-                    "\t" * (level + 1)
-                    + f"Branch{bi} 抽到{drawn_txt} "
-                    + f"增量{br.get('delta', 0)}：最大伤害：{br.get('damage', 0)}，"
-                    + f"龙数：{br.get('dragons', 0)}，余：{br.get('mana_left', 0)}费"
-                )
-                path = br.get("path") or []
+            for node in card_nodes:
+                play = node.get("play") or "直接"
+                branches = node.get("branches") or []
+                lines.append("\t" * (level + 1) + f"{play}（{len(branches)}）")
 
-                if path:
-                    for index, rnd in enumerate(split_path_rounds(path), start=1):
-                        lines.append(
-                            "\t" * (level + 1)
-                            + f"[第{chinese_round_number(index)}轮]："
-                            + " → ".join(str(step) for step in rnd)
-                        )
+                for bi, br in enumerate(branches, start=1):
+                    drawn = br.get("drawn") or []
+                    drawn_txt = (
+                        "{" + "、".join(drawn) + "}"
+                        if drawn
+                        else str(br.get("card", ""))
+                    )
+                    lines.append(
+                        "\t" * (level + 2)
+                        + f"Branch{bi} 抽到{drawn_txt} "
+                        + f"增量{br.get('delta', 0)}：最大伤害：{br.get('damage', 0)}，"
+                        + f"龙数：{br.get('dragons', 0)}，余：{br.get('mana_left', 0)}费"
+                    )
+                    path = br.get("path") or []
 
-                children = br.get("children") or {}
+                    if path:
+                        for index, rnd in enumerate(split_path_rounds(path), start=1):
+                            lines.append(
+                                "\t" * (level + 2)
+                                + f"[第{chinese_round_number(index)}轮]："
+                                + " → ".join(str(step) for step in rnd)
+                            )
 
-                if children.get("nodes"):
-                    walk(children.get("nodes") or [], level + 2)
+                    children = br.get("children") or {}
+
+                    if children.get("nodes"):
+                        walk(children.get("nodes") or [], level + 3)
 
     walk(wb.get("nodes") or [], 1)
 
@@ -2336,43 +2346,52 @@ class MainWindow(QWidget):
         self.wb_tree.addTopLevelItem(root_item)
 
         def walk(nodes: List[Dict[str, object]], parent: QTreeWidgetItem) -> None:
+            # 按分支卡分组：分支卡作为树的节点
+            groups: Dict[str, List[Dict[str, object]]] = {}
+
             for node in nodes:
-                branches = node.get("branches") or []
-                node_item = QTreeWidgetItem(
-                    [f"{_wb_node_label(node)}（{len(branches)} 个分支）"]
-                )
-                parent.addChild(node_item)
+                groups.setdefault(str(node.get("card") or ""), []).append(node)
 
-                for bi, br in enumerate(branches, start=1):
-                    drawn = br.get("drawn") or []
-                    drawn_txt = (
-                        "{" + "、".join(drawn) + "}"
-                        if drawn
-                        else str(br.get("card", ""))
-                    )
-                    br_item = QTreeWidgetItem(
-                        [
-                            f"Branch{bi} 抽到{drawn_txt} 增量{br.get('delta', 0)}："
-                            f"最大伤害：{br.get('damage', 0)}，"
-                            f"龙数：{br.get('dragons', 0)}，余：{br.get('mana_left', 0)}费"
-                        ]
-                    )
-                    node_item.addChild(br_item)
-                    path = br.get("path") or []
+            for card, card_nodes in groups.items():
+                card_item = QTreeWidgetItem([f"「{card}」"])
+                parent.addChild(card_item)
 
-                    for index, rnd in enumerate(split_path_rounds(path), start=1):
-                        step_item = QTreeWidgetItem(
+                for node in card_nodes:
+                    play = node.get("play") or "直接"
+                    branches = node.get("branches") or []
+                    play_item = QTreeWidgetItem([f"{play}（{len(branches)}）"])
+                    card_item.addChild(play_item)
+
+                    for bi, br in enumerate(branches, start=1):
+                        drawn = br.get("drawn") or []
+                        drawn_txt = (
+                            "{" + "、".join(drawn) + "}"
+                            if drawn
+                            else str(br.get("card", ""))
+                        )
+                        br_item = QTreeWidgetItem(
                             [
-                                f"[第{chinese_round_number(index)}轮]："
-                                + " → ".join(str(step) for step in rnd)
+                                f"Branch{bi} 抽到{drawn_txt} "
+                                f"增量{br.get('delta', 0)}：最大伤害：{br.get('damage', 0)}，"
+                                f"龙数：{br.get('dragons', 0)}，余：{br.get('mana_left', 0)}费"
                             ]
                         )
-                        br_item.addChild(step_item)
+                        play_item.addChild(br_item)
+                        path = br.get("path") or []
 
-                    children = br.get("children") or {}
+                        for index, rnd in enumerate(split_path_rounds(path), start=1):
+                            step_item = QTreeWidgetItem(
+                                [
+                                    f"[第{chinese_round_number(index)}轮]："
+                                    + " → ".join(str(step) for step in rnd)
+                                ]
+                            )
+                            br_item.addChild(step_item)
 
-                    if children.get("nodes"):
-                        walk(children.get("nodes") or [], br_item)
+                        children = br.get("children") or {}
+
+                        if children.get("nodes"):
+                            walk(children.get("nodes") or [], br_item)
 
         walk(wb.get("nodes") or [], root_item)
 
@@ -2818,40 +2837,49 @@ class MiniWindow(QWidget):
         lines = ["W-B机制（分支树）："]
 
         def walk(nodes: List[Dict[str, object]], level: int) -> None:
+            # 按分支卡分组：分支卡作为树的节点
+            groups: Dict[str, List[Dict[str, object]]] = {}
+
             for node in nodes:
-                branches = node.get("branches") or []
-                path_txt = " - ".join(
-                    box_fn(str(p)) for p in (node.get("path") or [])
-                )
-                lines.append("\u3000" * level + path_txt + f"（{len(branches)}）")
+                groups.setdefault(str(node.get("card") or ""), []).append(node)
 
-                for bi, br in enumerate(branches, start=1):
-                    drawn = br.get("drawn") or []
+            for card, card_nodes in groups.items():
+                lines.append("\u3000" * level + f"「{card}」")
 
-                    if drawn:
-                        drawn_txt = "".join(box_fn(str(c)) for c in drawn)
-                    else:
-                        drawn_txt = box_fn(str(br.get("card", "")))
-
+                for node in card_nodes:
+                    play = node.get("play") or "直接"
+                    branches = node.get("branches") or []
                     lines.append(
-                        "\u3000" * (level + 1)
-                        + f"Branch{bi} 抽到{drawn_txt} 增量{br.get('delta', 0)}："
-                        + f"最大伤害：{br.get('damage', 0)}，"
-                        + f"龙数：{br.get('dragons', 0)}，余：{br.get('mana_left', 0)}费"
+                        "\u3000" * (level + 1) + f"{play}（{len(branches)}）"
                     )
-                    path = br.get("path") or []
 
-                    for index, rnd in enumerate(split_path_rounds(path), start=1):
-                        abbr = "-".join(abbr_fn(str(s)) for s in rnd)
+                    for bi, br in enumerate(branches, start=1):
+                        drawn = br.get("drawn") or []
+
+                        if drawn:
+                            drawn_txt = "".join(box_fn(str(c)) for c in drawn)
+                        else:
+                            drawn_txt = box_fn(str(br.get("card", "")))
+
                         lines.append(
-                            "\u3000" * (level + 1)
-                            + f"[第{chinese_round_number(index)}轮]：{abbr}"
+                            "\u3000" * (level + 2)
+                            + f"Branch{bi} 抽到{drawn_txt} 增量{br.get('delta', 0)}："
+                            + f"最大伤害：{br.get('damage', 0)}，"
+                            + f"龙数：{br.get('dragons', 0)}，余：{br.get('mana_left', 0)}费"
                         )
+                        path = br.get("path") or []
 
-                    children = br.get("children") or {}
+                        for index, rnd in enumerate(split_path_rounds(path), start=1):
+                            abbr = "-".join(abbr_fn(str(s)) for s in rnd)
+                            lines.append(
+                                "\u3000" * (level + 2)
+                                + f"[第{chinese_round_number(index)}轮]：{abbr}"
+                            )
 
-                    if children.get("nodes"):
-                        walk(children.get("nodes") or [], level + 2)
+                        children = br.get("children") or {}
+
+                        if children.get("nodes"):
+                            walk(children.get("nodes") or [], level + 3)
 
         walk(wb.get("nodes") or [], 1)
 
