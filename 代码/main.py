@@ -425,7 +425,7 @@ def _format_whatif_branch_lines(results: List[Dict[str, object]]) -> List[str]:
         dmg, drg, mana, cont = branches[x]
         lines.append(f"最大伤害：{dmg}；龙数：{drg}；余：{mana}；")
 
-        if any(c == x for c in cont):
+        if any(str(c).startswith(x) for c in cont):
             lines.append(f"持枪要挟(可能{x}) -> …… -> {x}")
         else:
             lines.append(f"持枪要挟(可能{x})")
