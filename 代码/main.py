@@ -22,7 +22,10 @@ import ipaddress  # noqa: F401 - PyInstaller 打包必需（frozen urllib.parse 
 import json
 import re
 import sys
+import threading
 import time
+import urllib.request
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -2912,6 +2915,73 @@ def _center_on_screen(window: QWidget) -> None:
     window.move(frame.topLeft())
 
 
+# ===================== 版本与更新检测 =====================
+
+# 当前程序版本（与已发布版本一致；发布新版时更新此值）
+APP_VERSION = "1.2.1"
+# 发布仓库：立即更新时跳转到此页面
+RELEASE_URL = "https://github.com/zcr0701/Red-Dragon-Calculator-Release"
+RELEASE_API = "https://api.github.com/repos/zcr0701/Red-Dragon-Calculator-Release/releases/latest"
+
+
+def _version_tuple(version: str) -> tuple:
+    """版本字符串转可比较元组（支持 v/V 前缀与 . _ - 分隔，如 V1.2.1）。"""
+    text = str(version or "").strip().lstrip("vV")
+    parts = []
+
+    for part in re.split(r"[._\-]+", text):
+        if part.isdigit():
+            parts.append(int(part))
+        else:
+            parts.append(part)
+
+    return tuple(parts)
+
+
+def is_newer_version(latest: str, current: str) -> bool:
+    """latest 是否比 current 新。"""
+    return _version_tuple(latest) > _version_tuple(current)
+
+
+def check_latest_version() -> Optional[str]:
+    """查询发布仓库最新 release 的 tag 版本号；失败或非预期返回 None（静默）。"""
+    try:
+        req = urllib.request.Request(
+            RELEASE_API,
+            headers={
+                "User-Agent": "RedDragonCalculator",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+
+        tag = str(data.get("tag_name") or "").strip()
+        return tag or None
+
+    except Exception:  # noqa: BLE001 - 静默失败，不影响使用
+        return None
+
+
+def _prompt_update(parent: QWidget, latest: str) -> None:
+    """发现新版本：弹窗提示，点击“立即更新”跳转发布仓库页面。"""
+    box = QMessageBox(parent)
+    box.setWindowTitle("发现新版本")
+    box.setIcon(QMessageBox.Information)
+    box.setText(
+        f"检测到新版本 {latest}\n"
+        f"当前版本：{APP_VERSION}\n"
+        "点击“立即更新”将跳转到发布页面下载。"
+    )
+    update_btn = box.addButton("立即更新", QMessageBox.AcceptRole)
+    box.addButton("稍后再说", QMessageBox.RejectRole)
+    box.exec_()
+
+    if box.clickedButton() is update_btn:
+        webbrowser.open(RELEASE_URL)
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     demo = "--demo" in sys.argv
@@ -2936,7 +3006,20 @@ def main() -> int:
     _center_on_screen(window)
 
     if not smoke and not selftest and not bench:
+        # 后台检查更新（与介绍弹窗并行，不阻塞）
+        update_result: Dict[str, object] = {}
+
+        def _check_update() -> None:
+            update_result["latest"] = check_latest_version()
+
+        check_thread = threading.Thread(target=_check_update, daemon=True)
+        check_thread.start()
         IntroDialog(window).exec_()
+        check_thread.join(timeout=6)
+        latest = update_result.get("latest")
+
+        if latest and is_newer_version(str(latest), APP_VERSION):
+            _prompt_update(window, str(latest))
 
     if bench:
         # 性能基准：连续跑 3 次固定预算计算（默认 3 秒/次，--bench N 可改预算，
