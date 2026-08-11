@@ -625,15 +625,15 @@ class CalculationWorker(QThread):
                         should_stop=lambda: self._stop,
                         **common_kwargs,
                     )
-                    dmg = int(br.get("max_damage") or 0)
+                    best = (br.get("results") or [{}])[0]
+                    dmg = int(best.get("damage") or 0)
 
                     if dmg > 0:
-                        best = (br.get("results") or [{}])[0]
                         branches.append(
                             {
                                 "card": choice,
                                 "damage": dmg,
-                                "dragons": int(br.get("max_dragons") or 0),
+                                "dragons": int(best.get("dragons") or 0),
                                 "mana_left": int(best.get("mana") or 0),
                                 "path": best.get("path") or [],
                             }
