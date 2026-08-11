@@ -53,7 +53,10 @@ from PyQt5.QtWidgets import (
     QSizeGrip,
     QSpinBox,
     QSplitter,
+    QTabWidget,
     QTextBrowser,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -1380,10 +1383,17 @@ class MainWindow(QWidget):
 
         result_box = QGroupBox("计算结果")
         result_layout = QVBoxLayout(result_box)
+        self.result_tabs = QTabWidget()
         self.result_text = QPlainTextEdit()
         self.result_text.setReadOnly(True)
         self.result_text.setMaximumBlockCount(5000)
-        result_layout.addWidget(self.result_text)
+        self.wb_tree = QTreeWidget()
+        self.wb_tree.setHeaderLabel("W-B机制分支树")
+        self.wb_tree.setColumnCount(1)
+        self.wb_tree.setAlternatingRowColors(True)
+        self.result_tabs.addTab(self.result_text, "结果")
+        self.result_tabs.addTab(self.wb_tree, "W-B分支树")
+        result_layout.addWidget(self.result_tabs)
         right_layout.addWidget(result_box, 1)
 
         top.addWidget(right)
@@ -2254,7 +2264,55 @@ class MainWindow(QWidget):
 
         # 静默上传计算记录到云端公式库（后台线程，不阻塞、不弹窗）
         cloud_report.upload_async(data.get("upload_payload"))
+        self._populate_wb_tree(data.get("wb"))
         self._sync_mini_result(data)
+
+    def _populate_wb_tree(self, wb: Optional[Dict[str, object]]) -> None:
+        """用 PyQt 内置树控件展示 W-B 分支树。"""
+        self.wb_tree.clear()
+
+        if not wb:
+            return
+
+        root_item = QTreeWidgetItem(["W-B机制（分支树）"])
+        self.wb_tree.addTopLevelItem(root_item)
+
+        for node in wb.get("nodes") or []:
+            card = node.get("card") or ""
+            kind = node.get("kind") or ""
+            play = node.get("play") or "直接"
+            branches = node.get("branches") or []
+            label = (
+                f"抽随从卡分支「{card}」·{play}"
+                if kind == "draw"
+                else f"持枪要挟分支·{play}"
+            )
+            node_item = QTreeWidgetItem([f"{label}（{len(branches)} 个分支）"])
+            root_item.addChild(node_item)
+
+            for bi, br in enumerate(branches, start=1):
+                drawn = br.get("drawn") or []
+                drawn_txt = "{" + "、".join(drawn) + "}" if drawn else str(br.get("card", ""))
+                br_item = QTreeWidgetItem(
+                    [
+                        f"Branch{bi} 抽到{drawn_txt} 增量{br.get('delta', 0)}："
+                        f"最大伤害：{br.get('damage', 0)}，"
+                        f"龙数：{br.get('dragons', 0)}，余：{br.get('mana_left', 0)}费"
+                    ]
+                )
+                node_item.addChild(br_item)
+                path = br.get("path") or []
+
+                for index, rnd in enumerate(split_path_rounds(path), start=1):
+                    step_item = QTreeWidgetItem(
+                        [
+                            f"[第{chinese_round_number(index)}轮]："
+                            + " → ".join(str(step) for step in rnd)
+                        ]
+                    )
+                    br_item.addChild(step_item)
+
+        self.wb_tree.expandAll()
 
     def _on_error(self, message: str) -> None:
         self.result_text.setPlainText(f"计算失败：\n{message}")
