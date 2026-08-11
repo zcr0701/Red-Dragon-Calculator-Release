@@ -692,14 +692,18 @@ class CalculationWorker(QThread):
                         )
                         best2 = (res2.get("results") or [{}])[0]
                         cont = best2.get("path") or []
+                        real_damage = int(res2.get("max_damage") or 0)
+                        # 真实搜索结果总是覆盖预估：0 伤时清空路径（避免显示无龙的假路径）
+                        whatif["damage"] = real_damage
+                        whatif["dragons"] = int(res2.get("max_dragons") or 0)
+                        whatif["mana_left"] = int(best2.get("mana") or 0)
 
-                        if cont or (res2.get("max_damage") or 0) > 0:
-                            whatif["damage"] = int(res2.get("max_damage") or 0)
-                            whatif["dragons"] = int(res2.get("max_dragons") or 0)
-                            whatif["mana_left"] = int(best2.get("mana") or 0)
+                        if real_damage > 0:
                             whatif["path"] = (
                                 list(whatif.get("pre_path") or []) + list(cont)
                             )
+                        else:
+                            whatif["path"] = []
 
                 result["draw_whatif"] = whatif
 

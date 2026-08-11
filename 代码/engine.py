@@ -1043,9 +1043,11 @@ COMBO_MINION_SETS = [
 DRAW_MINION_SPELLS = {
     "挖掘宝藏": (1, 1),
     "潜伏帷幕": (3, 2),
-    "行骗": (2, 1),
+    "行骗": (2, 1),  # 连击牌：必须先出过一张牌才能触发抽牌
     "垂钓时光": (1, 1),
 }
+# 需要连击才能触发的抽随从卡（未先出牌时不能抽）
+DRAW_COMBO_REQUIRED = {"行骗"}
 # “可能抽到”的随从优先级：鱼 > 刀 > 腾 > 牛 > 暗 > 晦 > 狐（其余最低）
 DRAW_PRIORITY = {
     "鲨鱼之灵": 6,
@@ -1149,6 +1151,7 @@ def compute_draw_whatif(
     mana = int(snapshot.get("mana") or 0)
     crystals = int(snapshot.get("crystals") or 0)
     cards_in_hand = set(hand_names)
+    combo_ready = int(snapshot.get("cards_played_this_turn") or 0) > 0
     prep_used = "伺机待发" in cards_in_hand
     foxy_used = "狐人老千" in cards_in_hand
     shark = "鲨鱼之灵" in board_names  # 只有场上的鱼才让战吼触发两次
@@ -1257,6 +1260,9 @@ def compute_draw_whatif(
 
         # 2) 抽随从卡（法术）：享受减费、不消耗刀油槽位，优先最省费的
         for dcard in sorted(draw_cards_in_hand, key=lambda n: DRAW_MINION_SPELLS[n][0]):
+            # 连击抽卡（如行骗）：必须先出过一张牌才能触发
+            if dcard in DRAW_COMBO_REQUIRED and not (combo_ready or bool(used_cards)):
+                continue
             eff = max(0, DRAW_MINION_SPELLS[dcard][0] - _spell_discount())
             if eff > mana:
                 continue
@@ -1264,6 +1270,7 @@ def compute_draw_whatif(
             draw_cost_total += eff
             used_cards.append(dcard)
             draw_cards_used.append(dcard)
+            combo_ready = True
             _remove_hand_card(dcard)
             if prep_used:
                 prep_used = False
