@@ -550,70 +550,137 @@ def _format_exchange_line(exchanges: List[Tuple[int, int]]) -> str:
     return f"场面交换处理：{plan}。其中X为随从在board中的序号"
 
 
+def _wb_step_abbr(step: str) -> str:
+    """路径步骤缩写（伺/币/鱼/刀/龙…）。"""
+    return abbreviate_card_name(str(step))
+
+
+def _wb_branch_label(
+    lvl_char: str,
+    choice: int,
+    card: str,
+    outcome: List[str],
+) -> str:
+    """分支段标签：A1潜伏帷幕(刀狐) / B1持枪要挟(补水)。"""
+    abbr = [_wb_step_abbr(o) for o in outcome]
+    return f"{lvl_char}{choice}{card}({'、'.join(abbr)})"
+
+
+def _wb_cont_steps(path: List[str], card: str) -> List[str]:
+    """分支后的路径关键步骤（跳过分支卡本身，取前 3，长则加 ……）。"""
+    cont = [s for s in path if s != card]
+    steps = [_wb_step_abbr(s) for s in cont[:3]]
+
+    if len(cont) > 3:
+        steps.append("……")
+
+    return steps
+
+
 def _wb_tree_lines(wb: Dict[str, object]) -> List[str]:
-    """统一 W-B 机制分支树（制表符缩进，节点 = 分支卡 → 打法 → 分支 → 递归分支卡）。"""
+    """W-B 机制文本树：主干横排，分支点下方用 │/└ 挂出替代路径，
+    每条路径带唯一标识符（如 A1B1 = 第一层选A1、第二层选B1）。"""
+    nodes = wb.get("nodes") or []
+
+    if not nodes:
+        return []
+
     lines = ["W-B机制（分支树）："]
-
-    def walk(nodes: List[Dict[str, object]], level: int) -> None:
-        # 按分支卡分组：分支卡作为树的节点
-        groups: Dict[str, List[Dict[str, object]]] = {}
-
-        for node in nodes:
-            groups.setdefault(str(node.get("card") or ""), []).append(node)
-
-        for card, card_nodes in groups.items():
-            lines.append(
-                "\t" * level + f"「{card}」"
-            )
-
-            for node in card_nodes:
-                play = node.get("play") or "直接"
-                branches = node.get("branches") or []
-                lines.append("\t" * (level + 1) + f"{play}（{len(branches)}）")
-
-                for bi, br in enumerate(branches, start=1):
-                    drawn = br.get("drawn") or []
-                    drawn_txt = (
-                        "{" + "、".join(drawn) + "}"
-                        if drawn
-                        else str(br.get("card", ""))
-                    )
-                    lines.append(
-                        "\t" * (level + 2)
-                        + f"Branch{bi} 抽到{drawn_txt} "
-                        + f"增量{br.get('delta', 0)}：最大伤害：{br.get('damage', 0)}，"
-                        + f"龙数：{br.get('dragons', 0)}，余：{br.get('mana_left', 0)}费"
-                    )
-                    path = br.get("path") or []
-
-                    if path:
-                        for index, rnd in enumerate(split_path_rounds(path), start=1):
-                            lines.append(
-                                "\t" * (level + 2)
-                                + f"[第{chinese_round_number(index)}轮]："
-                                + " → ".join(str(step) for step in rnd)
-                            )
-
-                    children = br.get("children") or {}
-
-                    if children.get("nodes"):
-                        walk(children.get("nodes") or [], level + 3)
-
-    walk(wb.get("nodes") or [], 1)
-
+    _wb_render_chain(lines, nodes, "A", 1, [], [])
     return lines
 
 
-def _wb_node_label(node: Dict[str, object]) -> str:
-    """分支节点标签 = 分支前打牌路径（如 伺 - 潜伏帷幕）。"""
-    path = node.get("path") or []
+def _wb_render_chain(
+    lines: List[str],
+    nodes: List[Dict[str, object]],
+    lvl_char: str,
+    choice: int,
+    path_id: List[str],
+    ancestor_cols: List[int],
+) -> None:
+    """渲染一条链（主干或替代）：横排文本 + 分支点下方挂替代路径。"""
+    pairs: List[tuple] = []
+    cur = list(nodes)
 
-    if path:
-        return " - ".join(abbreviate_card_name(str(p)) for p in path)
+    while cur:
+        best_node = max(
+            cur,
+            key=lambda n: max(
+                (b.get("damage") or 0) or (b.get("delta") or 0)
+                for b in (n.get("branches") or [{}])
+            ),
+        )
+        branches = sorted(
+            best_node.get("branches") or [],
+            key=lambda b: -(b.get("damage") or 0),
+        )
 
-    card = node.get("card") or ""
-    play = node.get("play") or "直接"
-    return f"{play}-{card}" if play and play != "直接" else card
+        if not branches:
+            break
+
+        pairs.append((best_node, branches[0], branches[1:]))
+        children = branches[0].get("children") or {}
+        cur = children.get("nodes") or []
+
+    if not pairs:
+        return
+
+    # 主干字符串 + 分支点列 + 路径 ID
+    parts: List[str] = []
+    cols: List[tuple] = []
+    pid = list(path_id)
+    lc = lvl_char
+    ci = choice
+
+    for node, best_br, alts in pairs:
+        card = str(node.get("card") or "")
+
+        for s in (node.get("path") or []):
+            if s != card:
+                parts.append(_wb_step_abbr(s))
+
+        outcome = best_br.get("drawn") or ([best_br.get("card", "")] if best_br.get("card") else [])
+        col = sum(len(p) + 1 for p in parts) if parts else 0
+        parts.append(_wb_branch_label(lc, ci, card, outcome))
+        pid.append(f"{lc}{ci}")
+        cols.append((col, lc, ci, alts, list(pid), card))
+        parts.append("……")
+        parts.extend(_wb_cont_steps(best_br.get("path") or [], card))
+        lc = chr(ord(lc) + 1)
+        ci = 1
+
+    lines.append("-".join(parts) + f"(路径唯一标识符{''.join(pid)})")
+
+    # 从最深分支点开始挂替代路径（先 B 层、后 A 层）
+    for depth in range(len(cols) - 1, -1, -1):
+        col, lc_i, ci_i, alts, pid_i, node_card = cols[depth]
+        ancestors = cols[:depth]
+
+        for ai, alt_br in enumerate(alts, start=1):
+            alt_pid = list(pid_i)
+            alt_id = f"{lc_i}{ci_i + ai}"
+            # 替代分支替换该层的选择：A1B2 而非 A1B1B2
+            alt_pid[-1] = alt_id
+            outcome = alt_br.get("drawn") or ([alt_br.get("card", "")] if alt_br.get("card") else [])
+            segs = [_wb_branch_label(lc_i, ci_i + ai, node_card, outcome)]
+            segs.append("……")
+            segs.extend(_wb_cont_steps(alt_br.get("path") or [], node_card))
+            alt_text = "-".join(segs) + f"(路径唯一标识符{''.join(alt_pid)})"
+            prefix = _wb_tree_prefix(ancestors, col)
+            lines.append(prefix + "└（可展开）" + alt_text)
+
+
+def _wb_tree_prefix(ancestors: List[tuple], col: int) -> str:
+    """构建替代行的前缀：祖先分支点列画竖线 │，当前列之前补空格（└ 由调用方加）。"""
+    chars = []
+
+    for i in range(col + 1):
+        if any(a_col == i for a_col, _lc, _ci, _a, _p, _c in ancestors):
+            chars.append("│")
+        else:
+            chars.append(" ")
+
+    return "".join(chars)
 
 
 # 小窗段落（每轮路径行）开头缩进两个全角空格
