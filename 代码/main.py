@@ -794,17 +794,48 @@ def format_mini_results(
     return "\n".join(lines)
 
 
-def _branch_tree_indent(prefix_steps: List[str], colors: bool) -> str:
-    """├─ 同级分支缩进：对齐主路径中分支卡所在轮次的前缀缩写宽度。"""
-    rounds = split_path_rounds(prefix_steps)
-    last_round = rounds[-1] if rounds else []
-    abbr_fn = abbreviate_step_html if colors else abbreviate_step
-    prefix_abbr = "-".join(abbr_fn(s, compact=False) for s in last_round)
+def _display_width(text: str) -> int:
+    """显示宽度：CJK/全角字符按 2 列，其余按 1 列（等宽字体下的列数）。"""
+    width = 0
 
-    if not prefix_abbr:
-        return ""
+    for ch in text:
+        width += 2 if ord(ch) >= 0x2E80 else 1
 
-    return ("&nbsp;" * (len(prefix_abbr) + 1)) if colors else (" " * (len(prefix_abbr) + 1))
+    return width
+
+
+def _round_context(
+    main_path: List[str], idx: int
+) -> Tuple[str, List[str]]:
+    """返回分支卡所在轮次的标题（如 [第一轮]：）与轮内该卡之前的步骤。"""
+    pos = 0
+
+    for r, rnd in enumerate(split_path_rounds(main_path), start=1):
+        if idx < pos + len(rnd):
+            return (
+                f"[第{chinese_round_number(r)}轮]：",
+                [str(s) for s in rnd[: idx - pos]],
+            )
+
+        pos += len(rnd)
+
+    return "", []
+
+
+def _branch_tree_indent(
+    round_header: str, before_steps: List[str], colors: bool
+) -> str:
+    """├─ 同级分支缩进：按可见宽度对齐到主路径中分支卡的起始列。
+
+    行 = 轮次头 + 段首缩进 + 前缀缩写（- 连接）。分支卡从该行“前缀 + '-'”之后开始，
+    因此 ├─ 前导宽度 = 轮次头 + 段首缩进 + 前缀 + 1。彩色模式同样按纯文本宽度，
+    而不是按 HTML 源码长度（否则会缩进几百个空格）。
+    """
+    prefix_abbr = "-".join(abbreviate_step(s, compact=False) for s in before_steps)
+    width = _display_width(round_header) + _display_width(PARA_INDENT) + _display_width(
+        prefix_abbr
+    ) + 1
+    return ("&nbsp;" * width) if colors else (" " * width)
 
 
 def format_whatif_tree(data: Dict[str, object], colors: bool = False) -> str:
@@ -859,8 +890,9 @@ def format_whatif_tree(data: Dict[str, object], colors: bool = False) -> str:
     draw_branches = data.get("draw_branches") or []
 
     if draw_branches:
+        header, before = _round_context(main_path, di) if di > 0 else ("", [])
         indent = (
-            _branch_tree_indent([str(s) for s in main_path[:di]], colors)
+            _branch_tree_indent(header, before, colors)
             if di > 0
             else (("&nbsp;" * 4) if colors else (" " * 4))
         )
@@ -899,8 +931,9 @@ def format_whatif_tree(data: Dict[str, object], colors: bool = False) -> str:
     qd_branches = data.get("quickdraw_branches") or []
 
     if qd_branches:
+        header, before = _round_context(main_path, qi) if qi > 0 else ("", [])
         indent = (
-            _branch_tree_indent([str(s) for s in main_path[:qi]], colors)
+            _branch_tree_indent(header, before, colors)
             if qi > 0
             else (("&nbsp;" * 4) if colors else (" " * 4))
         )
