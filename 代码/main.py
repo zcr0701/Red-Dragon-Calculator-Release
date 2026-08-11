@@ -595,23 +595,59 @@ class CalculationWorker(QThread):
                 "wide_widths": wide_widths,
                 "heuristics": heuristics,
                 "etc_band": list(self.options.get("etc_band") or []),
-                "exchanges": list(self.options.get("exchanges") or []),
                 "only_best_damage": bool(self.options.get("only_best_damage", True)),
             }
-            result = engine.compute(
-                self.snapshot,
-                lethal_threshold=(
-                    _lethal_threshold(
-                        self.snapshot, self.options.get("exchanges")
-                    )
-                    if bool(self.options.get("truncate_normal", False))
-                    else -1
-                ),
-                progress_callback=self.progress.emit,
-                found_callback=self.found.emit,
-                should_stop=lambda: self._stop,
-                **common_kwargs,
+            # 场面交换：按价值取前 N 个场面（默认3）分别计算，保留最高伤害的结果
+            top_n = max(1, int(self.options.get("exchange_top_n", 3)))
+            exchange_plans = self.current_exchange_plans(top_n)
+
+            if not exchange_plans:
+                exchange_plans = [[]]
+
+            result: Optional[Dict[str, object]] = None
+            best_exchange: List[Tuple[int, int]] = list(exchange_plans[0])
+            # 框3：需要场面交换调用多个场面分别计算时启用精确截断（框1 也照样生效）
+            multi_scene = len(exchange_plans) > 1
+            use_exchange_trunc = multi_scene and bool(
+                self.options.get("truncate_exchange", True)
             )
+
+            for ex in exchange_plans:
+                if self._stop:
+                    break
+
+                ex_list = list(ex)
+                res = engine.compute(
+                    self.snapshot,
+                    lethal_threshold=(
+                        _lethal_threshold(self.snapshot, ex_list)
+                        if (
+                            bool(self.options.get("truncate_normal", False))
+                            or use_exchange_trunc
+                        )
+                        else -1
+                    ),
+                    progress_callback=self.progress.emit,
+                    found_callback=self.found.emit,
+                    should_stop=lambda: self._stop,
+                    exchanges=ex_list,
+                    **common_kwargs,
+                )
+
+                if result is None or (res.get("max_damage") or 0) > (result.get("max_damage") or 0):
+                    result = res
+                    best_exchange = ex_list
+
+            if result is None:
+                result = engine.compute(
+                    self.snapshot,
+                    progress_callback=self.progress.emit,
+                    found_callback=self.found.emit,
+                    should_stop=lambda: self._stop,
+                    exchanges=[],
+                    **common_kwargs,
+                )
+
             if bool(self.options.get("draw_whatif", True)):
                 # 独立的“如果机制”：省费打出抽随从卡、抽缺失组合随从后的最高伤害推演
                 result["draw_whatif"] = engine.compute_draw_whatif(self.snapshot, self.options)
@@ -645,13 +681,12 @@ class CalculationWorker(QThread):
                         discover_quickdraw_choice=choice,
                         branch_prefix=branch_prefix,
                         lethal_threshold=(
-                            _lethal_threshold(
-                                self.snapshot, self.options.get("exchanges")
-                            )
+                            _lethal_threshold(self.snapshot, best_exchange)
                             if bool(self.options.get("truncate_branch", True))
                             else -1
                         ),
                         should_stop=lambda: self._stop,
+                        exchanges=best_exchange,
                         **common_kwargs,
                     )
                     best = (br.get("results") or [{}])[0]
@@ -1146,8 +1181,15 @@ class MainWindow(QWidget):
         self.truncate_branch_check.setToolTip(
             "框2=可能机制：持枪要挟各可能分支计算与可能机制预处理搜到 伤害 ≥ 敌方英雄血量+护甲 即停（加速分支计算）"
         )
+        self.truncate_exchange_check = QCheckBox("框3")
+        self.truncate_exchange_check.setChecked(True)
+        self.truncate_exchange_check.setToolTip(
+            "框3=场面交换：需要场面交换调用多个场面分别计算时，"
+            "每个场面搜到 伤害 ≥ 敌方英雄血量+护甲 即停（加速多场面计算）"
+        )
         trunc_row.addWidget(self.truncate_normal_check)
         trunc_row.addWidget(self.truncate_branch_check)
+        trunc_row.addWidget(self.truncate_exchange_check)
         trunc_row.addStretch(1)
         param_grid.addLayout(trunc_row, 11, 0, 1, 2)
         right_layout.addWidget(param_box)
@@ -1255,6 +1297,26 @@ class MainWindow(QWidget):
         self.exchange_edit = QLineEdit()
         self.exchange_edit.setPlaceholderText("如 1->1, 2->2；按攻击/血量结算，B≤0 死亡移除")
         exchange_row.addWidget(self.exchange_edit, 1)
+        exchange_row.addWidget(QLabel("计算场面数："))
+        self.exchange_count = QSpinBox()
+        self.exchange_count.setRange(1, 10)
+        self.exchange_count.setValue(3)
+        self.exchange_count.setToolTip(
+            "调试选项：场面交换按价值排序，取前 N 个场面分别计算取最优（默认 3；"
+            "调大更全面但计算更慢）"
+        )
+        exchange_row.addWidget(self.exchange_count)
+        exchange_row.addWidget(QLabel("差异化："))
+        self.exchange_diversity = QDoubleSpinBox()
+        self.exchange_diversity.setRange(0.0, 1.0)
+        self.exchange_diversity.setSingleStep(0.1)
+        self.exchange_diversity.setValue(0.6)
+        self.exchange_diversity.setToolTip(
+            "调试选项（temperature）：0=纯按价值取前 N 个场面；"
+            ">0 时鼓励覆盖不同的随从栏空位/英雄血量档/存活随从，"
+            "让可能产生最优解的异质场面也有机会入选（默认 0.6）"
+        )
+        exchange_row.addWidget(self.exchange_diversity)
         manual_layout.addLayout(exchange_row)
 
         main_splitter.addWidget(self.manual_panel)
@@ -1720,17 +1782,21 @@ class MainWindow(QWidget):
             "etc_band": band,
             "beam_width": self.beam_width.value(),
             "exchanges": self.current_exchange_pairs(),
+            "exchange_top_n": self.exchange_count.value(),
+            "exchange_diversity": self.exchange_diversity.value(),
             "only_best_damage": self.best_only_check.isChecked(),
             "draw_whatif": self.draw_whatif_check.isChecked(),
             "truncate_normal": self.truncate_normal_check.isChecked(),
             "truncate_branch": self.truncate_branch_check.isChecked(),
+            "truncate_exchange": self.truncate_exchange_check.isChecked(),
         }
 
-    def current_exchange_pairs(self) -> List[Tuple[int, int]]:
-        """场面交换方案：手动输入优先；留空时用独立的场面交换搜索自动选。
+    def current_exchange_plans(self, top_n: int) -> List[List[Tuple[int, int]]]:
+        """场面交换方案：手动输入优先；留空时用独立的场面交换搜索按价值取前 top_n 个。
 
-        场面交换搜索与路径搜索分离——它只看我方随从栏（空位数/序号位置），
-        由 engine.plan_exchanges 按 exchange_heuristic 选最优，结果按场面指纹缓存。
+        场面交换搜索与路径搜索分离——评分含我方随从栏（空位数/序号位置）与
+        敌方英雄血量（剩余总血量所需龙数越少越好），按价值排序取前 top_n 个场面，
+        结果按场面指纹缓存。
         """
         board_len = len(self.snapshot.get("board") or [])
         enemy_len = len(self.snapshot.get("enemy_board") or [])
@@ -1741,11 +1807,12 @@ class MainWindow(QWidget):
             board = self.snapshot.get("board") or []
 
             # 0 攻随从无法主动攻击（以场面当前攻击为准），交换不生效
-            return [
+            manual = [
                 (friend_index, enemy_index)
                 for friend_index, enemy_index in pairs
                 if int(board[friend_index - 1].get("attack") or 0) >= 1
             ]
+            return [manual]
 
         board = self.snapshot.get("board") or []
         enemy = self.snapshot.get("enemy_board") or []
@@ -1779,11 +1846,21 @@ class MainWindow(QWidget):
         if self._auto_exchange_cache is not None and self._auto_exchange_cache[0] == fingerprint:
             return list(self._auto_exchange_cache[1])
 
-        plan, _result_board, _score = engine.plan_exchanges(
-            board, enemy, hand=hand, etc_band=etc_band, hero=hero
+        # 一次算全量排序清单（上限 1000 个计划），按需切片 top_n；
+        # 不能只取默认 top_n=3，否则 N=4~10 的调试框拿不到更多场面。
+        diversity = float(self.exchange_diversity.value())
+        ranked = engine.plan_exchanges_top(
+            board, enemy, hand=hand, etc_band=etc_band, hero=hero,
+            top_n=1000, diversity=diversity,
         )
-        self._auto_exchange_cache = (fingerprint, list(plan))
-        return list(plan)
+        plans = [list(plan) for plan, _rb, _sc, _feat in ranked]
+        self._auto_exchange_cache = (fingerprint, plans)
+        return plans[:top_n]
+
+    def current_exchange_pairs(self) -> List[Tuple[int, int]]:
+        """最优单个场面交换方案（供显示/手动路径使用）。"""
+        plans = self.current_exchange_plans(1)
+        return list(plans[0]) if plans else []
 
     def _update_calc_enabled(self) -> None:
         has_state = bool(self.snapshot.get("hand")) or bool(self.snapshot.get("board"))

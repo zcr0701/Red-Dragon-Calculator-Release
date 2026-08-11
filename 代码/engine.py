@@ -359,28 +359,44 @@ def exchange_heuristic(
     return (total, free_slots, len(board))
 
 
-# 场面交换：把敌方英雄总血量（血量+护甲）扣到 ≤16 的倍数时的加分
-# （红龙每条 16 伤，血线对齐到 16 倍数可少打龙）
-HERO_ALIGN_BONUS = 80.0
+# 场面交换：敌方英雄剩余总血量（血+甲）需要的红龙数（每条 16 伤）
+def _hero_dragons_needed(total: int) -> int:
+    if total <= 0:
+        return 0
+    return (total + 15) // 16
 
 
-def plan_exchanges(
+# 每少打一条龙的价值（≈ 一个随从栏格子）：血量 31(2龙) > 33(3龙)，46(3龙) > 48+2甲(4龙)
+HERO_DRAGON_WEIGHT = 100.0
+
+# 牺牲 1/1 复制体加分：腾手牌时优先送掉 1/1 复制体（殒命暗影/暗影施法者造的复制），
+# 保留原版随从。依据 20260807_081102 场面：牺牲两个 1/1 复制体腾 2 格（80伤）的
+# 最优交换原评分排第 4，被“牺牲原版随从”的计划挤出前 3。
+EXCHANGE_SAC_1_1_BONUS = 18.0
+
+
+def plan_exchanges_top(
     board: List[dict],
     enemy_board: List[dict],
     hand: Optional[List[dict]] = None,
     etc_band: Optional[List[str]] = None,
     hero: Optional[dict] = None,
+    top_n: int = 3,
+    diversity: float = 0.0,
     max_trades: int = 2,
     max_plans: int = 4000,
-) -> Tuple[List[Tuple[int, int]], List[dict], Tuple[float, int, int]]:
-    """场面交换搜索（独立于路径搜索，单独的启发函数）。
+) -> List[Tuple[List[Tuple[int, int]], List[dict], Tuple[float, int, int]]]:
+    """场面交换搜索（独立于路径搜索，单独的启发函数），按价值排序返回前 top_n 个场面。
 
     枚举候选交换方案（每个我方随从最多主动攻击一次；敌方随从只要没死，
     可被多个我方随从选为目标；enemy_index == 0 表示攻击敌方英雄；
     最多 max_trades 个交换；枚举量受 max_plans 硬上限保护，不影响性能），
-    把敌方英雄总血量扣到 ≤16 的倍数（(原总血量 mod 16) <= 攻击和）的交换加分，
-    按 exchange_heuristic（只看我方随从栏）选最优，返回
-    (最优交换计划, 交换后的我方随从栏, 启发分数)。
+    评分 = exchange_heuristic（我方随从栏） + 敌方英雄血量评分
+    （剩余总血量所需龙数越少越好：31 血(2龙) > 33 血(3龙)，46 血(3龙) > 48血+2甲(4龙)）
+    + 送牛且暗在手惩罚。返回 [(交换计划, 交换后随从栏, (分数,空位,随从数))] 按分数降序。
+    diversity（temperature，0~1）：>0 时在做 top_n 截取前加入差异化——优先覆盖
+    “不同的随从栏空位 / 不同英雄血量档 / 不同存活随从”，让可能产生最优解的
+    异质场面也有机会入选（0=纯按分数取前 top_n）。
     """
     # 只有攻击力 >= 1 的我方随从能主动发起交换（0 攻随从不能攻击）
     friend_indices = [
@@ -389,18 +405,8 @@ def plan_exchanges(
         if int(item.get("attack") or 0) >= 1
     ]
     enemy_indices = [0] + list(range(1, len(enemy_board) + 1))  # 0 = 敌方英雄
-    hero_total = 0
-
-    if hero:
-        hero_total = int(hero.get("health") or 0) + int(hero.get("armor") or 0)
-
-    base_score = exchange_heuristic(board, hand=hand, etc_band=etc_band)
-    best_plan: List[Tuple[int, int]] = []
-    best_board = list(board)
-    best_score = base_score
-
     if not friend_indices:
-        return best_plan, best_board, best_score
+        return []
 
     plans: List[tuple] = [()]
 
@@ -419,14 +425,11 @@ def plan_exchanges(
         plans = plans[:max_plans]
 
     score_cache: Dict[tuple, Tuple[float, int, int]] = {}
+    ranked: List[Tuple[float, List[Tuple[int, int]], List[dict], tuple]] = []
+    seen_boards: set = set()
 
     for plan in plans:
         pairs = [(plan[k], plan[k + 1]) for k in range(0, len(plan), 2)]
-        hero_attack = sum(
-            int(board[fi - 1].get("attack") or 0)
-            for fi, ei in pairs
-            if ei == 0 and 1 <= fi <= len(board)
-        )
         traded_board, _traded_enemy, _traded_hero = apply_board_exchanges(
             board, enemy_board, exchanges=pairs, hero=hero
         )
@@ -444,9 +447,14 @@ def plan_exchanges(
 
         score_val = score[0]
 
-        # 精确对齐加分：敌方英雄总血量被扣到 ≤16 的倍数（16/32/48/64/…）
-        if hero_attack > 0 and hero_total > 0 and hero_total % 16 <= hero_attack:
-            score_val += HERO_ALIGN_BONUS
+        # 敌方英雄血量评分：剩余总血量所需龙数越少越好
+        # （血量 31(2龙) > 33(3龙)；46(3龙) > 48血+2甲=50(4龙)）
+        # 不交换的空场面也承担同样的英雄血量惩罚，使“攻击英雄”与“不交换”可比
+        after_total = None
+
+        if _traded_hero is not None:
+            after_total = int(_traded_hero.get("health") or 0) + int(_traded_hero.get("armor") or 0)
+            score_val -= _hero_dragons_needed(after_total) * HERO_DRAGON_WEIGHT
 
         # 送牛且暗在手：暗影施法者失去牛头人酋长目标
         # （先暗(牛)再送牛 = 复制价值还在；但牛被牺牲后暗无法再选牛为目标）
@@ -466,12 +474,140 @@ def plan_exchanges(
             else:
                 score_val -= 20.0  # 只剩幻：暗复制牛的价值本来就低
 
-        if score_val > best_score[0]:
-            best_score = (score_val, score[1], score[2])
-            best_plan = pairs
-            best_board = traded_board
+        # 新维度：牺牲 1/1 复制体加分——只对“与敌方随从交换后死亡”的 1/1 随从生效；
+        # 打英雄（ei==0）我方不掉血不计；高价值随从（牛/龙等）的保留分仍主导，不会误伤。
+        sac_1_1 = 0
 
-    return best_plan, best_board, best_score
+        for fi, ei in pairs:
+            if ei == 0 or not (1 <= fi <= len(board)) or not (1 <= ei <= len(enemy_board)):
+                continue
+            f = board[fi - 1]
+            e = enemy_board[ei - 1]
+            f_health = int(f.get("health") or 0)
+            e_atk = int(e.get("attack") or 0)
+
+            if f_health == 1 and f_health <= e_atk:
+                sac_1_1 += 1
+
+        if sac_1_1:
+            score_val += sac_1_1 * EXCHANGE_SAC_1_1_BONUS
+
+        # 去重键仍以我方随从栏为主，但把英雄剩余血量也纳入：
+        # 攻击英雄不改变随从栏，但会把英雄血量打到不同档位，不能被“不交换”去重掉
+        dedup_key = (board_key, after_total)
+
+        if dedup_key in seen_boards:
+            continue  # 相同随从栏且英雄血量相同的只保留一个（按价值最高的）
+
+        seen_boards.add(dedup_key)
+        # 差异化特征：(空位数, 英雄血量档(所需龙数+mod16), 存活随从牌名集合)
+        # 存活随从按“牌名”而不是“牌名+血量+攻击”聚类，避免同类型不同身材的
+        # 复制体（如 3/3 刀 vs 1/1 刀）被误当成两个完全不同的场面
+        free_slots = score[1]
+        hero_bucket = None
+        if after_total is not None:
+            hero_bucket = (
+                _hero_dragons_needed(after_total),
+                after_total % 16,
+            )
+        surv_names = tuple(sorted(str(item.get("name", "")) for item in traded_board))
+        feat = (free_slots, hero_bucket, surv_names)
+        ranked.append((score_val, pairs, traded_board, feat))
+
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    if diversity > 0 and top_n > 1:
+        ranked = _diversify_ranked(ranked, top_n, diversity)
+    return [
+        (plan, rboard, (score_val, score[1], score[2]))
+        for score_val, plan, rboard, _feat in ranked[:top_n]
+    ]
+
+
+def _diversify_ranked(
+    ranked: List[Tuple[float, List[Tuple[int, int]], List[dict], tuple]],
+    top_n: int,
+    diversity: float,
+) -> List[Tuple[float, List[Tuple[int, int]], List[dict], tuple]]:
+    """temperature 多样化截取：优先覆盖不同的 (空位数, 英雄血量档, 存活随从)。
+
+    第一个永远取全局最高分；之后按分数降序扫描，只要候选在三个维度中任一与
+    已选不同（novel），且分数不低于 best - diversity*分数跨度 就纳入；
+    若仍未满 top_n，先按 novel 补足（不限分），再按分数补足。
+    """
+    if diversity <= 0 or top_n <= 1 or len(ranked) <= top_n:
+        return ranked[:top_n]
+
+    best_score = ranked[0][0]
+    span = max(1e-9, ranked[0][0] - ranked[-1][0])
+    gate = best_score - diversity * span
+    selected = [ranked[0]]
+    used = {0}
+    seen_free = {ranked[0][3][0]}
+    seen_hero = {ranked[0][3][1]}
+    seen_surv = {ranked[0][3][2]}
+
+    def _accept(item: tuple) -> bool:
+        free, hero_b, surv = item[3]
+        novel = free not in seen_free or hero_b not in seen_hero or surv not in seen_surv
+        if not novel:
+            return False
+        seen_free.add(free)
+        seen_hero.add(hero_b)
+        seen_surv.add(surv)
+        return True
+
+    # 第一轮：分数过门限的新维度场面
+    for i, item in enumerate(ranked[1:], start=1):
+        if len(selected) >= top_n:
+            break
+        if i in used or item[0] < gate:
+            continue
+        if _accept(item):
+            selected.append(item)
+            used.add(i)
+
+    # 第二轮：不限分，只补新维度
+    for i, item in enumerate(ranked):
+        if len(selected) >= top_n:
+            break
+        if i in used:
+            continue
+        if _accept(item):
+            selected.append(item)
+            used.add(i)
+
+    # 第三轮：仍不足则按分数补足
+    for i, item in enumerate(ranked):
+        if len(selected) >= top_n:
+            break
+        if i not in used:
+            selected.append(item)
+            used.add(i)
+
+    return selected
+
+
+def plan_exchanges(
+    board: List[dict],
+    enemy_board: List[dict],
+    hand: Optional[List[dict]] = None,
+    etc_band: Optional[List[str]] = None,
+    hero: Optional[dict] = None,
+    max_trades: int = 2,
+    max_plans: int = 4000,
+) -> Tuple[List[Tuple[int, int]], List[dict], Tuple[float, int, int]]:
+    """返回最优单个交换计划（plan_exchanges_top 的 top_n=1 便捷包装）。"""
+    ranked = plan_exchanges_top(
+        board, enemy_board, hand=hand, etc_band=etc_band, hero=hero,
+        top_n=1, max_trades=max_trades, max_plans=max_plans,
+    )
+
+    if not ranked:
+        base_score = exchange_heuristic(board, hand=hand, etc_band=etc_band)
+        return [], list(board), base_score
+
+    plan, rboard, score = ranked[0]
+    return plan, rboard, score
 
 
 def find_engine(exe_path: Optional[str] = None) -> Optional[str]:
