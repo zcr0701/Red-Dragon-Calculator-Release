@@ -1084,9 +1084,6 @@ class MainWindow(QWidget):
         self.mini_color_check.setChecked(self.mini_color_enabled())
         self.mini_color_check.setToolTip("小窗公式缩写字用颜色区分（默认勾选）")
         self.mini_color_check.toggled.connect(self.apply_mini_color)
-        self.update_button = QPushButton("立即更新")
-        self.update_button.setToolTip("检测最新版本；发现新版本时点击跳转到发布仓库页面")
-        self.update_button.clicked.connect(self._on_update_clicked)
         self.manual_button = QPushButton("▸ 手动输入")
         self.manual_button.setCheckable(True)
         self.manual_button.setChecked(True)
@@ -1098,7 +1095,6 @@ class MainWindow(QWidget):
         status.addWidget(self.mini_font_label)
         status.addWidget(self.mini_font_spin)
         status.addWidget(self.mini_color_check)
-        status.addWidget(self.update_button)
         root.addLayout(status)
 
         main_splitter = QSplitter(Qt.Vertical)
@@ -1282,7 +1278,14 @@ class MainWindow(QWidget):
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setVisible(False)
         self.engine_label = QLabel("")
+        self.update_button = QPushButton("立即更新")
+        self.update_button.setToolTip("点击跳转到发布仓库页面")
+        self.update_button.clicked.connect(self._on_update_clicked)
+        btn_size = self.calc_button.sizeHint()
+        self.calc_button.setFixedSize(btn_size)
+        self.update_button.setFixedSize(btn_size)
         run_row.addWidget(self.calc_button)
+        run_row.addWidget(self.update_button)
         # 免责声明：计算完成后静默上传公式到云端公式库（紧挨开始计算）
         self.disclaimer_label = QLabel(
             '<span style="font-size:11px;color:#888;">'
@@ -1960,34 +1963,19 @@ class MainWindow(QWidget):
     # ---------- 更新检测 ----------
 
     def set_latest_version(self, latest: Optional[str]) -> None:
-        """后台检测到最新版本后更新按钮文字（主线程调用）。"""
+        """后台检测到最新版本后更新按钮提示（主线程调用）。"""
         self._latest_version = latest
 
         if latest:
-            self.update_button.setText(f"立即更新 v{latest.lstrip('vV')}")
+            self.update_button.setToolTip(
+                f"最新版本 v{latest.lstrip('vV')}；点击跳转到发布仓库页面"
+            )
         else:
-            self.update_button.setText("立即更新")
+            self.update_button.setToolTip("点击跳转到发布仓库页面")
 
     def _on_update_clicked(self) -> None:
-        """立即更新按钮：有缓存版本直接用，否则实时查询；发现新版本跳转发布仓库。"""
-        latest = self._latest_version
-
-        if not latest:
-            latest = check_latest_version()
-            self._latest_version = latest
-
-        if latest:
-            self.update_button.setText(f"立即更新 v{latest.lstrip('vV')}")
-
-        if latest and is_newer_version(latest, APP_VERSION):
-            webbrowser.open(RELEASE_URL)
-        else:
-            QMessageBox.information(
-                self,
-                "版本信息",
-                f"当前已是最新版本 v{APP_VERSION}"
-                + (f"（最新 {latest}）" if latest else ""),
-            )
+        """立即更新按钮：无论当前是否最新版本，都跳转到发布仓库页面。"""
+        webbrowser.open(RELEASE_URL)
 
     def on_calc_toggle(self) -> None:
         if self.worker is not None:
