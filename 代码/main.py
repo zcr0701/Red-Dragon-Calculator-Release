@@ -27,12 +27,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import cloud_report
 from PyQt5.QtCore import QEventLoop, QPoint, QSettings, QThread, QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QCursor, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -599,7 +601,8 @@ class CalculationWorker(QThread):
             }
             # 场面交换：按价值取前 N 个场面（默认3）分别计算，保留最高伤害的结果
             top_n = max(1, int(self.options.get("exchange_top_n", 3)))
-            exchange_plans = self.current_exchange_plans(top_n)
+            # 计划列表由主窗口预计算后传入（含手动输入/自动排序+差异化）
+            exchange_plans = list(self.options.get("exchange_plans") or [])
 
             if not exchange_plans:
                 exchange_plans = [[]]
@@ -705,6 +708,10 @@ class CalculationWorker(QThread):
 
                 result["quickdraw_branches"] = branches
 
+            # 静默云端上报数据：场面数据 + 最高伤路径（含交换/预处理/分支完整记录）
+            result["upload_payload"] = cloud_report.build_payload(
+                self.snapshot, result, best_exchange
+            )
             self.finished_ok.emit(result)
         except InterruptedError as exc:
             self.failed.emit(str(exc))
@@ -1784,6 +1791,7 @@ class MainWindow(QWidget):
             "exchanges": self.current_exchange_pairs(),
             "exchange_top_n": self.exchange_count.value(),
             "exchange_diversity": self.exchange_diversity.value(),
+            "exchange_plans": self.current_exchange_plans(self.exchange_count.value()),
             "only_best_damage": self.best_only_check.isChecked(),
             "draw_whatif": self.draw_whatif_check.isChecked(),
             "truncate_normal": self.truncate_normal_check.isChecked(),
@@ -2080,6 +2088,8 @@ class MainWindow(QWidget):
         except OSError as exc:
             self.engine_label.setText(f"结果保存失败：{exc}")
 
+        # 静默上传计算记录到云端公式库（后台线程，不阻塞、不弹窗）
+        cloud_report.upload_async(data.get("upload_payload"))
         self._sync_mini_result(data)
 
     def _on_error(self, message: str) -> None:
@@ -2573,6 +2583,15 @@ class IntroDialog(QDialog):
         author_body.setWordWrap(True)
         author_body.setStyleSheet("font-size:36px; color:#374151;")
         layout.addWidget(author_body)
+
+        # 免责声明：计算完成后静默上传公式到云端公式库
+        disclaimer = QLabel(
+            '<span style="font-size:36px; color:#6B7280;">'
+            '免责声明：计算出的公式将上传云端公式库造福更多人喵~'
+            '</span>'
+        )
+        disclaimer.setWordWrap(True)
+        layout.addWidget(disclaimer)
 
         # “给一点支持”之后的变色鼓励语：你的支持就是我的动力~
         self.support_dynamic = QLabel(
