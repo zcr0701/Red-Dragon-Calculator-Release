@@ -364,6 +364,75 @@ def _whatif_path_text(whatif: Dict[str, object]) -> str:
     return " → ".join(steps)
 
 
+def _whatif_branch_data(
+    results: List[Dict[str, object]],
+) -> Tuple[str, Dict[str, Tuple[int, int, int, List[str]]]]:
+    """从搜索结果提取持枪要挟分支：返回 (路径前半部分, {发现牌: (伤害,龙数,余费,后半段)})。
+
+    只保留伤害 > 0 的分支；同一发现牌取最高伤害路径；发现牌不进入“如果机制预处理”，
+    只作为搜索路径里的分支（持枪要挟（如果X））。
+    """
+    prefix = ""
+    branches: Dict[str, Tuple[int, int, int, List[str]]] = {}
+
+    for item in results:
+        path = item.get("path") or []
+        dmg = int(item.get("damage") or 0)
+
+        if dmg <= 0:
+            continue
+
+        for i, step in enumerate(path):
+            m = re.search(r"持枪要挟[（(]如果(.+?)[）)]", str(step or ""))
+
+            if not m:
+                continue
+
+            x = m.group(1)
+
+            if not prefix and i > 0:
+                prefix = " -> ".join(path[:i])
+
+            cont = path[i + 1:]
+
+            if x not in branches or dmg > branches[x][0]:
+                branches[x] = (
+                    dmg,
+                    int(item.get("dragons") or 0),
+                    int(item.get("mana") or 0),
+                    cont,
+                )
+            break
+
+    return prefix, branches
+
+
+def _format_whatif_branch_lines(results: List[Dict[str, object]]) -> List[str]:
+    """持枪要挟分支显示：路径前半部分 -> 持枪要挟 + 可能分支（按 补水>脱水>误炸>袋底藏沙>不许乱动）。"""
+    prefix, branches = _whatif_branch_data(results)
+
+    if not branches:
+        return []
+
+    lines = ["如果机制分支（持枪要挟）："]
+    lines.append(("路径前半部分 -> " if prefix else "") + "持枪要挟")
+    lines.append("可能分支：")
+
+    for x in ("补水", "脱水", "误炸", "袋底藏沙", "不许乱动"):
+        if x not in branches:
+            continue
+
+        dmg, drg, mana, cont = branches[x]
+        lines.append(f"最大伤害：{dmg}；龙数：{drg}；余：{mana}；")
+
+        if any(c == x for c in cont):
+            lines.append(f"持枪要挟(可能{x}) -> …… -> {x}")
+        else:
+            lines.append(f"持枪要挟(可能{x})")
+
+    return lines
+
+
 def _format_exchange_line(exchanges: List[Tuple[int, int]]) -> str:
     """场面交换处理行：[我方随从X]->[敌方随从X]，……。X 为 board 序号。"""
     if not exchanges:
@@ -1743,7 +1812,7 @@ class MainWindow(QWidget):
         whatif = data.get("draw_whatif")
         if whatif:
             lines.append("")
-            lines.append("如果机制：")
+            lines.append("如果机制预处理：")
             lines.append("如果路径：" + _whatif_path_text(whatif))
             lines.append("如果使用：[" + "][".join(whatif["cards"]) + "]")
             drawn = whatif.get("drawn") or []
@@ -1758,6 +1827,12 @@ class MainWindow(QWidget):
                     f"（法力 {whatif.get('mana_left')} / 水晶 {whatif.get('crystals')}）"
                 )
             lines.append(f"预计伤害：{whatif['damage']}，龙数：{whatif['dragons']}，余：{whatif['mana_left']}费")
+
+        branch_lines = _format_whatif_branch_lines(results)
+
+        if branch_lines:
+            lines.append("")
+            lines.extend(branch_lines)
 
         text = "\n".join(lines)
         self.result_text.setPlainText(text)
@@ -2110,36 +2185,78 @@ class MiniWindow(QWidget):
         self._render_result()
 
     def _render_result(self) -> None:
-        """按当前“小窗颜色”开关渲染最近一次结果（HTML 上色 / 纯文本）。"""
+        """按当前“小窗颜色”开关渲染最近一次结果。
+
+        四种显示情形（标题随之切换）：
+        1) 无如果机制 → 原始结果（分轮路径）；
+        2) 仅如果机制预处理 → 递归最优场面（例：鲨鱼之灵-潜伏帷幕）；
+        3) 路径中含如果机制分支（持枪要挟）→ 分支显示；
+        4) 预处理与分支都用到了 → 两者并显。
+        """
         if self._last_data is None:
             return
 
         exchanges = self.main.current_exchange_pairs()
-        whatif_text = self._mini_whatif_text()
+        data = self._last_data
+        results = data.get("results") or []
+        has_preprocess = data.get("draw_whatif") is not None
+        has_branch = any(
+            "持枪要挟" in str(step or "")
+            for item in results
+            for step in (item.get("path") or [])
+        )
 
-        if self.main.mini_color_enabled():
-            html_out = format_mini_results(
-                self._last_data, colors=True, exchanges=exchanges
-            )
+        pre_text = self._mini_whatif_preprocess_text()
+        branch_text = self._mini_whatif_branch_text(data)
 
-            if whatif_text:
-                html_out += "<br><br>" + html.escape(whatif_text)
-
-            self.mini_result.setHtml(html_out)
+        if has_preprocess and has_branch:
+            title = "既用到了如果机制预处理又用到了如果机制分支的显示结果："
+            body = "\n\n".join(x for x in (pre_text, branch_text) if x)
+        elif has_preprocess:
+            title = "如果机制预处理的显示结果："
+            body = pre_text
+        elif has_branch:
+            title = "路径中含如果机制分支的显示结果："
+            body = branch_text
         else:
-            plain = format_mini_results(self._last_data, exchanges=exchanges)
+            title = "无如果机制的原始结果："
+            body = ""
 
-            if whatif_text:
-                plain += "\n\n" + whatif_text
+        colors = self.main.mini_color_enabled()
 
-            self.mini_result.setPlainText(plain)
+        if body:
+            if colors:
+                self.mini_result.setHtml(
+                    html.escape(title + "\n" + body).replace("\n", "<br>")
+                )
+            else:
+                self.mini_result.setPlainText(title + "\n" + body)
+            return
 
-    def _mini_whatif_text(self) -> str:
-        """解析主窗口结果文本里的“如果机制”段落（主窗口已拼出完整路径）。"""
+        # 无如果机制：原始分轮结果
+        if colors:
+            html_out = format_mini_results(data, colors=True, exchanges=exchanges)
+            self.mini_result.setHtml(html.escape(title) + "<br>" + html_out)
+        else:
+            plain = format_mini_results(data, exchanges=exchanges)
+            self.mini_result.setPlainText(title + "\n" + plain)
+
+    def _mini_whatif_preprocess_text(self) -> str:
+        """解析主窗口结果文本里的“如果机制预处理”段落（不含分支段）。"""
         text = self.main.result_text.toPlainText()
-        marker = "如果机制："
+        marker = "如果机制预处理："
         idx = text.find(marker)
-        return text[idx:].rstrip() if idx >= 0 else ""
+
+        if idx < 0:
+            return ""
+
+        end_marker = "如果机制分支（持枪要挟）："
+        end = text.find(end_marker, idx)
+        return text[idx:end if end >= 0 else len(text)].rstrip()
+
+    def _mini_whatif_branch_text(self, data: Dict[str, object]) -> str:
+        """持枪要挟分支显示文本（路径前半部分 + 可能分支）。"""
+        return "\n".join(_format_whatif_branch_lines(data.get("results") or []))
 
     def refresh_result(self) -> None:
         """小窗颜色开关切换后重绘已显示的结果。"""
