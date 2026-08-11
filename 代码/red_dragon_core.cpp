@@ -2555,9 +2555,29 @@ int main(int argc, char** argv) {
         return ok ? 0 : 1;
     }
 
+    // 可能分支优化：branch_prefix 非空时先重放前缀到“分支点”（持枪要挟打出前一刻），
+    // 再从此状态开始搜索——各分支只回溯到分支点往后计算，不再重复搜索整个前缀。
+    const JVal* bp = root.find("branch_prefix");
+    vector<string> branch_prefix;
+    if (bp && bp->type == JVal::ARR) {
+        for (const auto& item : bp->arr)
+            if (item.type == JVal::STR) branch_prefix.push_back(item.str);
+    }
+
+    State search_start = st;
+
+    if (!branch_prefix.empty()) {
+        State final_state;
+        int fail_step = -1;
+        if (verify_path(st, branch_prefix, final_state, &fail_step)) {
+            search_start = final_state;  // 前缀重放成功：从分支点继续
+        }
+        // 重放失败则退回从初始状态搜索（功能兜底，结果不变）
+    }
+
     Progress prog;
     prog.enabled = true;
-    BeamResult res = run_beam_search(st, p, &prog);
+    BeamResult res = run_beam_search(search_start, p, &prog);
     if (prog.enabled) {
         fprintf(stderr, "PROGRESS %d %d %d\n", res.expansions, res.wide_expansions, res.reached_depth);
     }

@@ -609,10 +609,24 @@ class CalculationWorker(QThread):
                 # 独立的“如果机制”：省费打出抽随从卡、抽缺失组合随从后的最高伤害推演
                 result["draw_whatif"] = engine.compute_draw_whatif(self.snapshot, self.options)
 
-            # 可能分支机制：持枪要挟在手时，对每张已建模发现牌按优先级单独完整计算一遍
-            hand_names = {str(h.get("name", "")) for h in (self.snapshot.get("hand") or [])}
+            # 可能分支机制：主结果最优路径含持枪要挟时，提取分支点前缀，
+            # 各发现牌只“回溯到分支点往后”单独计算（前缀由引擎重放，不重复搜索）。
+            branch_prefix: List[str] = []
+            has_branch_path = False
 
-            if "持枪要挟" in hand_names:
+            for item in (result.get("results") or []):
+                path = item.get("path") or []
+
+                for i, step in enumerate(path):
+                    if "持枪要挟" in str(step or ""):
+                        branch_prefix = list(path[:i])
+                        has_branch_path = True
+                        break
+
+                if has_branch_path:
+                    break
+
+            if has_branch_path:
                 branches: List[Dict[str, object]] = []
 
                 for choice in QUICKDRAW_BRANCH_ORDER:
@@ -622,6 +636,7 @@ class CalculationWorker(QThread):
                     br = engine.compute(
                         self.snapshot,
                         discover_quickdraw_choice=choice,
+                        branch_prefix=branch_prefix,
                         should_stop=lambda: self._stop,
                         **common_kwargs,
                     )

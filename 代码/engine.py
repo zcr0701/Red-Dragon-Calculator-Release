@@ -442,6 +442,7 @@ def build_payload(
     exchanges: Optional[List[tuple]] = None,
     only_best_damage: bool = False,
     discover_quickdraw_choice: Optional[str] = None,
+    branch_prefix: Optional[List[str]] = None,
 ) -> Dict[str, object]:
     """把日志快照转成 C++ JSON 局面（纯束宽搜索）。
 
@@ -553,6 +554,7 @@ def build_payload(
         "heuristic": heuristic,
         "only_best_damage": 1 if only_best_damage else 0,
         "discover_quickdraw_choice": discover_quickdraw_choice or "",
+        "branch_prefix": branch_prefix or [],
         # 默认四通道：H6/1100（8水晶十龙深线）、H1/1500（4水晶十龙/紧线）、
         # H2/1100（96 伤线）、H2/3000（6水晶紧 48 伤线）
         "wide_widths": wide_widths or [1100, 1500, 1100, 3000],
@@ -692,6 +694,7 @@ def compute(
     exchanges: Optional[List[tuple]] = None,
     only_best_damage: bool = False,
     discover_quickdraw_choice: Optional[str] = None,
+    branch_prefix: Optional[List[str]] = None,
     exe_path: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
     found_callback: Optional[Callable[[int, int], None]] = None,
@@ -713,6 +716,7 @@ def compute(
         exchanges=exchanges,
         only_best_damage=only_best_damage,
         discover_quickdraw_choice=discover_quickdraw_choice,
+        branch_prefix=branch_prefix,
     )
     result = run_engine(
         payload,
