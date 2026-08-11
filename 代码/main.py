@@ -398,7 +398,15 @@ def _card_box_html(name: str) -> str:
         return "[" + _abbr_square(html.escape(abbr), color) + "]"
     return "[" + html.escape(abbr) + "]"
 # 可能分支机制：持枪要挟发现牌单独计算的优先级（补水 > 脱水 > 误炸 > 袋底藏沙 > 不许乱动）
-QUICKDRAW_BRANCH_ORDER = ("补水", "脱水", "误炸", "袋底藏沙", "不许乱动", "其他快枪牌")
+QUICKDRAW_BRANCH_ORDER = (
+    "补水",
+    "脱水",
+    "误炸",
+    "袋底藏沙",
+    "不许乱动",
+    "其他快枪牌·随从",
+    "其他快枪牌·法术",
+)
 
 
 def _whatif_branch_data(
@@ -908,11 +916,16 @@ class CalculationWorker(QThread):
 
                 if qi > 0 and self._stop is False:
                     # 记忆节点+回溯：重放主路径分支点前的公共前缀，从分支点一次搜完
-                    # 五张已建模快枪牌 + “其他快枪牌”杂牌分支（其余未建模牌按数量加权）
+                    # 五张已建模快枪牌 + “其他快枪牌·随从/·法术”两个杂牌分支
+                    # （其余未建模牌按类型与数量加权）
                     prefix = list(best_path[:qi])
                     branch_list: List[Dict[str, object]] = []
 
-                    for choice in (*engine.QUICKDRAW_CHOICES, engine.QUICKDRAW_OTHER):
+                    for choice in (
+                        *engine.QUICKDRAW_CHOICES,
+                        engine.QUICKDRAW_OTHER_MINION,
+                        engine.QUICKDRAW_OTHER_SPELL,
+                    ):
                         if self._stop:
                             break
 

@@ -184,10 +184,13 @@ static const unordered_map<string, int> QUICKDRAW_POOL_SCORE = {
     {"袋底藏沙", 2},
     {"不许乱动", 1},
 };
-// 其余未建模快枪牌（农场小助手/银蛇/热浪来袭/和善的银行职员/亮石旋岩虫/列车难题）
-// 统一视作“其他快枪牌”杂牌分支：置入一张未知法术杂牌，按数量加权（6/11）。
-static const string QUICKDRAW_OTHER_NAME = "其他快枪牌";
-static const int QUICKDRAW_OTHER_COUNT = 6;
+// 其余未建模快枪牌按类型分成两个杂牌分支（置入未知杂牌，按数量加权）：
+//   其他快枪牌·随从（4 张）：农场小助手/银蛇/和善的银行职员/亮石旋岩虫 → 随从杂牌（占随从栏）
+//   其他快枪牌·法术（2 张）：热浪来袭/列车难题 → 法术杂牌（不占随从栏）
+static const string QUICKDRAW_OTHER_MINION_NAME = "其他快枪牌·随从";
+static const int QUICKDRAW_OTHER_MINION_COUNT = 4;
+static const string QUICKDRAW_OTHER_SPELL_NAME = "其他快枪牌·法术";
+static const int QUICKDRAW_OTHER_SPELL_COUNT = 2;
 
 // 误炸快枪分支上限（3 点 + 2 点 + 1 点可击杀最多 3 个随从，组合数防止爆炸）
 static const size_t MAX_MISFIRE_BRANCHES = 80;
@@ -800,7 +803,8 @@ static vector<State> apply_search_effect(State base, const Card& card,
     }
     if (e == "discover_quickdraw") {
         // 持枪要挟：发现一张另一职业快枪牌（牌池固定，展开 5 张已建模牌；
-        // 其余未建模牌统一视作“其他快枪牌”杂牌分支，数量加权 6/11）。
+        // 其余未建模牌按类型拆成“其他快枪牌·随从（4）”/“其他快枪牌·法术（2）”
+        // 两个杂牌分支，数量加权 4/11、2/11）。
         // 发现牌本回合进入手牌 → 快枪可用。
         // forced_discover_choice 非空时（可能分支机制单独计算）只展开该牌。
         vector<State> states;
@@ -818,17 +822,33 @@ static vector<State> apply_search_effect(State base, const Card& card,
             }
             states.push_back(std::move(s));
         }
-        // 其余快枪牌：统一视作杂牌（未知法术，不占随从栏），按数量加权
-        if (!forced || base.forced_discover_choice == QUICKDRAW_OTHER_NAME) {
+        // 其余快枪牌·随从（农场小助手/银蛇/和善的银行职员/亮石旋岩虫）：
+        // 视作随从杂牌（占随从栏，身材未知），按数量加权 4/11
+        if (!forced || base.forced_discover_choice == QUICKDRAW_OTHER_MINION_NAME) {
             State s = base.clone_reserved();
             if (s.quickdraw_choice < 0)
-                s.quickdraw_choice = (int)QUICKDRAW_MODELED_POOL.size();  // 下标 5 = 其他快枪牌
+                s.quickdraw_choice = (int)QUICKDRAW_MODELED_POOL.size();  // 下标 5 = 其他快枪牌·随从
             s.used_quickdraw = true;
-            Card junk = make_card("未知快枪牌");
+            Card junk = make_card("未知快枪牌随从");
+            junk.card_type = "minion";
+            add_card_to_hand_or_burn(s, junk);
+            if (!s.path().empty()) {
+                s.path_mut().back() += "（" + QUICKDRAW_OTHER_MINION_NAME + "）";
+            }
+            states.push_back(std::move(s));
+        }
+        // 其余快枪牌·法术（热浪来袭/列车难题）：
+        // 视作法术杂牌（不占随从栏），按数量加权 2/11
+        if (!forced || base.forced_discover_choice == QUICKDRAW_OTHER_SPELL_NAME) {
+            State s = base.clone_reserved();
+            if (s.quickdraw_choice < 0)
+                s.quickdraw_choice = (int)QUICKDRAW_MODELED_POOL.size() + 1;  // 下标 6 = 其他快枪牌·法术
+            s.used_quickdraw = true;
+            Card junk = make_card("未知快枪牌法术");
             junk.card_type = "spell";
             add_card_to_hand_or_burn(s, junk);
             if (!s.path().empty()) {
-                s.path_mut().back() += "（" + QUICKDRAW_OTHER_NAME + "）";
+                s.path_mut().back() += "（" + QUICKDRAW_OTHER_SPELL_NAME + "）";
             }
             states.push_back(std::move(s));
         }
@@ -2496,19 +2516,23 @@ static void print_json_result(const BeamResult& res, const SearchParams& p) {
     }
     printf("  ],\n");
     // 持枪要挟按发现牌分组的最优路径（可能分支显示；按牌池优先级 补水>脱水>误炸>… 排序，
-    // 最后附“其他快枪牌”杂牌分支）
+    // 最后附“其他快枪牌·随从/·法术”两个杂牌分支）
     vector<const State*> choices;
-    for (size_t ci = 0; ci <= QUICKDRAW_MODELED_POOL.size(); ci++) {
+    for (size_t ci = 0; ci <= QUICKDRAW_MODELED_POOL.size() + 1; ci++) {
         auto it = res.best_by_choice.find((int)ci);
         if (it != res.best_by_choice.end()) choices.push_back(&it->second);
     }
     printf("  \"quickdraw_branches\": [\n");
     for (size_t i = 0; i < choices.size(); i++) {
         const State& pst = *choices[i];
-        const string card_name =
-            pst.quickdraw_choice < (int)QUICKDRAW_MODELED_POOL.size()
-                ? QUICKDRAW_MODELED_POOL[pst.quickdraw_choice]
-                : QUICKDRAW_OTHER_NAME;
+        string card_name;
+        if (pst.quickdraw_choice < (int)QUICKDRAW_MODELED_POOL.size()) {
+            card_name = QUICKDRAW_MODELED_POOL[pst.quickdraw_choice];
+        } else if (pst.quickdraw_choice == (int)QUICKDRAW_MODELED_POOL.size()) {
+            card_name = QUICKDRAW_OTHER_MINION_NAME;
+        } else {
+            card_name = QUICKDRAW_OTHER_SPELL_NAME;
+        }
         printf("    {\"card\": \"%s\", \"damage\": %d, \"dragons\": %d, \"mana_left\": %d, \"path\": [",
                json_escape(card_name).c_str(),
                pst.alex_damage, pst.alex_play_count, pst.mana);
