@@ -1031,6 +1031,7 @@ class MainWindow(QWidget):
         self._manual_mode = False
         self.etc_checks: List[Tuple[str, QCheckBox]] = []
         self._auto_exchange_cache: Optional[Tuple[str, List[Tuple[int, int]]]] = None
+        self._latest_version: Optional[str] = None
 
         self._build_ui()
 
@@ -1079,6 +1080,9 @@ class MainWindow(QWidget):
         self.mini_color_check.setChecked(self.mini_color_enabled())
         self.mini_color_check.setToolTip("小窗公式缩写字用颜色区分（默认勾选）")
         self.mini_color_check.toggled.connect(self.apply_mini_color)
+        self.update_button = QPushButton("立即更新")
+        self.update_button.setToolTip("检测最新版本；发现新版本时点击跳转到发布仓库页面")
+        self.update_button.clicked.connect(self._on_update_clicked)
         self.manual_button = QPushButton("▸ 手动输入")
         self.manual_button.setCheckable(True)
         self.manual_button.setChecked(True)
@@ -1090,6 +1094,7 @@ class MainWindow(QWidget):
         status.addWidget(self.mini_font_label)
         status.addWidget(self.mini_font_spin)
         status.addWidget(self.mini_color_check)
+        status.addWidget(self.update_button)
         root.addLayout(status)
 
         main_splitter = QSplitter(Qt.Vertical)
@@ -1947,6 +1952,38 @@ class MainWindow(QWidget):
     def _update_calc_enabled(self) -> None:
         has_state = bool(self.snapshot.get("hand")) or bool(self.snapshot.get("board"))
         self.calc_button.setEnabled(has_state and self.worker is None)
+
+    # ---------- 更新检测 ----------
+
+    def set_latest_version(self, latest: Optional[str]) -> None:
+        """后台检测到最新版本后更新按钮文字（主线程调用）。"""
+        self._latest_version = latest
+
+        if latest:
+            self.update_button.setText(f"立即更新 v{latest.lstrip('vV')}")
+        else:
+            self.update_button.setText("立即更新")
+
+    def _on_update_clicked(self) -> None:
+        """立即更新按钮：有缓存版本直接用，否则实时查询；发现新版本跳转发布仓库。"""
+        latest = self._latest_version
+
+        if not latest:
+            latest = check_latest_version()
+            self._latest_version = latest
+
+        if latest:
+            self.update_button.setText(f"立即更新 v{latest.lstrip('vV')}")
+
+        if latest and is_newer_version(latest, APP_VERSION):
+            webbrowser.open(RELEASE_URL)
+        else:
+            QMessageBox.information(
+                self,
+                "版本信息",
+                f"当前已是最新版本 v{APP_VERSION}"
+                + (f"（最新 {latest}）" if latest else ""),
+            )
 
     def on_calc_toggle(self) -> None:
         if self.worker is not None:
@@ -3025,6 +3062,7 @@ def main() -> int:
         IntroDialog(window).exec_()
         check_thread.join(timeout=6)
         latest = update_result.get("latest")
+        window.set_latest_version(str(latest) if latest else None)
 
         if latest and is_newer_version(str(latest), APP_VERSION):
             _prompt_update(window, str(latest))
