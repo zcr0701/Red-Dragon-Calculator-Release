@@ -293,8 +293,11 @@ struct State {
     vector<string> etc_band;
     bool etc_band_provided = false;   // JSON 显式传了 etc_band（空数组=牛池已空）
     string forced_discover_choice;    // 可能分支机制：强制持枪要挟发现某张牌（空=全部展开）
+    string forced_draw_choice;        // WhatIF 同级分支：强制抽随从卡抽到某张随从（空=全部展开）
     int quickdraw_choice = -1;        // 路径中第一张持枪要挟的发现牌（QUICKDRAW_MODELED_POOL 下标；-1=无）
     bool used_quickdraw = false;      // 路径中是否打出过持枪要挟（原版=不含持枪的最优线）
+    bool used_draw_branch = false;    // 路径中是否打出过抽随从分支卡（行骗/挖掘宝藏/潜伏帷幕/垂钓时光）
+    string last_draw_key;             // 最近一次抽随从分支卡抽到的随从集（如 “狐人老千”/“刀、狐”，空=未抽）
     std::shared_ptr<vector<string>> path_buf;  // 路径共享存储（克隆 O(1)，写时复制）
 
     const vector<string>& path() const {
@@ -351,8 +354,11 @@ struct State {
         c.alex_damage = alex_damage;
         c.etc_band_provided = etc_band_provided;
         c.forced_discover_choice = forced_discover_choice;
+        c.forced_draw_choice = forced_draw_choice;
         c.quickdraw_choice = quickdraw_choice;
         c.used_quickdraw = used_quickdraw;
+        c.used_draw_branch = used_draw_branch;
+        c.last_draw_key = last_draw_key;
         c.path_buf = path_buf;
         return c;
     }
@@ -1189,18 +1195,41 @@ static vector<State> generate_successors(const State& st) {
                 if (!missing.empty()) {
                     vector<vector<string>> drawn_sets;
 
-                    if ((int)missing.size() < draw_count) {
+                    const bool forced = !st.forced_draw_choice.empty();
+
+                    if (forced && draw_count == 1) {
+                        // WhatIF 同级分支：强制行骗/挖掘宝藏抽到指定随从
+                        if (std::find(missing.begin(), missing.end(),
+                                      st.forced_draw_choice) != missing.end()) {
+                            drawn_sets.push_back({st.forced_draw_choice});
+                        }
+                    } else if (forced) {
+                        // 潜伏帷幕抽 2 张：只保留包含指定随从的组合
+                        auto combs = combo_combinations(missing, draw_count);
+                        for (auto& comb : combs) {
+                            if (std::find(comb.begin(), comb.end(),
+                                          st.forced_draw_choice) != comb.end()) {
+                                drawn_sets.push_back(std::move(comb));
+                            }
+                        }
+                    } else if ((int)missing.size() < draw_count) {
                         // 剩余随从不足抽取张数：只抽剩余的全部（单个分支）
                         State base = st.clone_reserved();
                         if (play_card_base(base, hand_index, -1, false, false)) {
                             for (const string& mn : missing) {
                                 add_card_to_hand_or_burn(base, make_card(mn));
                             }
+                            base.last_draw_key = "";
+                            for (size_t k = 0; k < missing.size(); k++) {
+                                if (k) base.last_draw_key += "、";
+                                base.last_draw_key += missing[k];
+                            }
                             for (int k = 0; k < base_junk_spells; k++) {
                                 Card unknown_spell = make_card("未知法术");
                                 unknown_spell.card_type = "spell";
                                 add_card_to_hand_or_burn(base, unknown_spell);
                             }
+                            base.used_draw_branch = true;  // 抽到具体随从：不进正常线
                             // 分支展开跳过 apply_search_effect：补上施放法术的
                             // 殒命暗影变形与本回合已出牌计数（连击状态）。
                             if (card.is_spell_like()) transform_deadly_shadows(base, card);
@@ -1208,12 +1237,42 @@ static vector<State> generate_successors(const State& st) {
                             out.push_back(std::move(base));
                         }
                         continue;
-                    }
-
-                    if (draw_count == 1) {
+                    } else if (draw_count == 1) {
                         for (const string& mn : missing) drawn_sets.push_back({mn});
                     } else {
                         drawn_sets = combo_combinations(missing, draw_count);
+                    }
+
+                    if (forced && drawn_sets.empty()) {
+                        // 强制牌不在缺失池：退回常规全部展开（兜底）
+                        if ((int)missing.size() < draw_count) {
+                            State base = st.clone_reserved();
+                            if (play_card_base(base, hand_index, -1, false, false)) {
+                                for (const string& mn : missing) {
+                                    add_card_to_hand_or_burn(base, make_card(mn));
+                                }
+                                base.last_draw_key = "";
+                                for (size_t k = 0; k < missing.size(); k++) {
+                                    if (k) base.last_draw_key += "、";
+                                    base.last_draw_key += missing[k];
+                                }
+                                for (int k = 0; k < base_junk_spells; k++) {
+                                    Card unknown_spell = make_card("未知法术");
+                                    unknown_spell.card_type = "spell";
+                                    add_card_to_hand_or_burn(base, unknown_spell);
+                                }
+                                base.used_draw_branch = true;  // 抽到具体随从：不进正常线
+                                if (card.is_spell_like()) transform_deadly_shadows(base, card);
+                                base.cards_played_this_turn++;
+                                out.push_back(std::move(base));
+                            }
+                            continue;
+                        }
+                        if (draw_count == 1) {
+                            for (const string& mn : missing) drawn_sets.push_back({mn});
+                        } else {
+                            drawn_sets = combo_combinations(missing, draw_count);
+                        }
                     }
 
                     for (const auto& drawn : drawn_sets) {
@@ -1233,11 +1292,17 @@ static vector<State> generate_successors(const State& st) {
                         for (const string& mn : drawn) {
                             add_card_to_hand_or_burn(base, make_card(mn));
                         }
+                        base.last_draw_key = "";
+                        for (size_t k = 0; k < drawn.size(); k++) {
+                            if (k) base.last_draw_key += "、";
+                            base.last_draw_key += drawn[k];
+                        }
                         for (int k = 0; k < base_junk_spells; k++) {
                             Card unknown_spell = make_card("未知法术");
                             unknown_spell.card_type = "spell";
                             add_card_to_hand_or_burn(base, unknown_spell);
                         }
+                        base.used_draw_branch = true;  // 抽到具体随从：不进正常线
                         // 分支展开跳过 apply_search_effect：补上施放法术的
                         // 殒命暗影变形与本回合已出牌计数（连击状态）。
                         if (card.is_spell_like()) transform_deadly_shadows(base, card);
@@ -1245,6 +1310,30 @@ static vector<State> generate_successors(const State& st) {
 
                         out.push_back(std::move(base));
                     }
+
+                    // 正常线（与 V1.2.1 逻辑一致）：抽随从卡当“抽杂牌”打出——
+                    // 最终结果唯一确定，不依赖具体抽到什么/置入什么进手牌。
+                    // 行骗保底抽 1 张法术杂牌；垂钓时光连击抽 1 张未知杂牌；
+                    // 挖掘宝藏/潜伏帷幕不模拟抽牌（无后继杂牌）。
+                    // 该后继不标记 used_draw_branch → 可进入正常线（original）。
+                    // 强制抽牌搜索（WhatIF 同级分支）不加此后继，保证结果确为该抽取。
+                    if (!forced) {
+                        State junk = st.clone_reserved();
+                        if (play_card_base(junk, hand_index, -1, false, false)) {
+                            if (card.effect_id == "swindle") {
+                                Card unknown_spell = make_card("未知法术");
+                                unknown_spell.card_type = "spell";
+                                add_card_to_hand_or_burn(junk, unknown_spell);
+                            } else if (card.effect_id == "gone_fishin" && combo_active(st)) {
+                                Card unknown = make_card("未知抽牌");
+                                add_card_to_hand_or_burn(junk, unknown);
+                            }
+                            if (card.is_spell_like()) transform_deadly_shadows(junk, card);
+                            junk.cards_played_this_turn++;
+                            out.push_back(std::move(junk));
+                        }
+                    }
+
                     continue;  // 跳过下方常规展开
                 }
             }
@@ -1699,9 +1788,19 @@ static void add_best_choice(const State& s, unordered_map<int, State>& best) {
     if (it == best.end() || path_sort_better(s, it->second)) best[s.quickdraw_choice] = s;
 }
 
+// 抽随从分支卡按抽到随从集分组的最优路径（供 WhatIF 同级分支显示：
+// 行骗(狐)/行骗(牛) 各保留一条最高伤路径）
+static void add_best_draw(const State& s, unordered_map<string, State>& best) {
+    if (s.last_draw_key.empty()) return;
+    auto it = best.find(s.last_draw_key);
+    if (it == best.end() || path_sort_better(s, it->second)) best[s.last_draw_key] = s;
+}
+
 // 原版：不含持枪要挟的最优路径（不考虑分支节点，即之前的计算逻辑）
 static void add_best_no_qd(const State& s, State& best) {
-    if (s.used_quickdraw) return;
+    // 正常线 = 既不打持枪要挟、也不打抽随从分支卡（行骗/挖掘宝藏/潜伏帷幕/垂钓时光）：
+    // 直接不考虑这类可能带有分支的抽卡（禁抽），WhatIF 分支计算才展开它们。
+    if (s.used_quickdraw || s.used_draw_branch) return;
     if (best.path().empty() || path_sort_better(s, best)) best = s;
 }
 
@@ -1950,6 +2049,7 @@ static double heuristic_value(const State& s, int h) {
 struct ThreadOut {
     unordered_map<int, State> best;   // 各龙数最优路径
     unordered_map<int, State> best_by_choice;  // 持枪要挟按发现牌分组的最优路径
+    unordered_map<string, State> best_by_draw;  // 抽随从分支卡按抽到随从集分组的最优路径
     State best_no_qd;                 // 原版：不含持枪要挟的最优路径
     int expansions = 0;
     int reached_depth = 0;
@@ -2027,6 +2127,7 @@ struct BeamMergeArgs {
     vector<Cand>* cands;
     unordered_map<int, State>* best;
     unordered_map<int, State>* best_choice;
+    unordered_map<string, State>* best_draw;
     State* best_no_qd;
     std::atomic<int>* best_damage = nullptr;
 };
@@ -2058,6 +2159,7 @@ static void merge_shard_work(BeamMergeArgs* a) {
         }
         add_best((*a->cands)[cand_index[rc.key]].s, *a->best, a->p->min_alex);
         add_best_choice(rc.s, *a->best_choice);
+        add_best_draw(rc.s, *a->best_draw);
         add_best_no_qd(rc.s, *a->best_no_qd);
         if (a->best_damage) {
             int d = rc.s.alex_damage;
@@ -2210,6 +2312,7 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
         vector<vector<Cand>> shard_cands(shards);
         vector<unordered_map<int, State>> shard_best(shards);
         vector<unordered_map<int, State>> shard_best_choice(shards);
+        vector<unordered_map<string, State>> shard_best_draw(shards);
         vector<State> shard_best_no_qd(shards);
         vector<BeamMergeArgs> margs(shards);
         for (int sh = 0; sh < shards; sh++) {
@@ -2219,6 +2322,7 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
             margs[sh].cands = &shard_cands[sh];
             margs[sh].best = &shard_best[sh];
             margs[sh].best_choice = &shard_best_choice[sh];
+            margs[sh].best_draw = &shard_best_draw[sh];
             margs[sh].best_no_qd = &shard_best_no_qd[sh];
             margs[sh].best_damage = best_damage;
         }
@@ -2248,6 +2352,7 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
             for (Cand& c : shard_cands[sh]) cands.push_back(std::move(c));
             for (auto& kv : shard_best[sh]) add_best(kv.second, out.best, p.min_alex);
             for (auto& kv : shard_best_choice[sh]) add_best_choice(kv.second, out.best_by_choice);
+            for (auto& kv : shard_best_draw[sh]) add_best_draw(kv.second, out.best_by_draw);
             add_best_no_qd(shard_best_no_qd[sh], out.best_no_qd);
         }
         if (cands.empty()) break;
@@ -2331,6 +2436,7 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
 struct BeamResult {
     unordered_map<int, State> best_by_dragons;
     unordered_map<int, State> best_by_choice;  // 持枪要挟按发现牌分组的最优路径
+    unordered_map<string, State> best_by_draw;  // 抽随从分支卡按抽到随从集分组的最优路径
     State best_no_qd;                 // 原版：不含持枪要挟的最优路径
     int expansions = 0;
     int reached_depth = 0;
@@ -2449,6 +2555,8 @@ static BeamResult run_beam_search(const State& start, const SearchParams& p, Pro
         for (const auto& kv : outs[t].best) add_best(kv.second, res.best_by_dragons, p.min_alex);
         for (const auto& kv : outs[t].best_by_choice)
             add_best_choice(kv.second, res.best_by_choice);
+        for (const auto& kv : outs[t].best_by_draw)
+            add_best_draw(kv.second, res.best_by_draw);
         add_best_no_qd(outs[t].best_no_qd, res.best_no_qd);
     }
     res.wall_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -2513,6 +2621,29 @@ static void print_json_result(const BeamResult& res, const SearchParams& p) {
             printf("\"%s\"", json_escape(pst.path()[j]).c_str());
         }
         printf("]}%s\n", i + 1 < results.size() ? "," : "");
+    }
+    printf("  ],\n");
+    // 抽随从分支卡按抽到随从集分组的最优路径（WhatIF 同级分支：
+    // 行骗(狐)/行骗(牛) 等各保留一条最高伤路径）
+    vector<const State*> draw_choices;
+    for (const auto& kv : res.best_by_draw) draw_choices.push_back(&kv.second);
+    std::stable_sort(
+        draw_choices.begin(), draw_choices.end(),
+        [](const State* a, const State* b) {
+            if (a->alex_damage != b->alex_damage) return a->alex_damage > b->alex_damage;
+            return a->last_draw_key < b->last_draw_key;
+        });
+    printf("  \"draw_branches\": [\n");
+    for (size_t i = 0; i < draw_choices.size(); i++) {
+        const State& pst = *draw_choices[i];
+        printf("    {\"card\": \"%s\", \"damage\": %d, \"dragons\": %d, \"mana_left\": %d, \"path\": [",
+               json_escape(pst.last_draw_key).c_str(),
+               pst.alex_damage, pst.alex_play_count, pst.mana);
+        for (size_t j = 0; j < pst.path().size(); j++) {
+            if (j) printf(", ");
+            printf("\"%s\"", json_escape(pst.path()[j]).c_str());
+        }
+        printf("]}%s\n", i + 1 < draw_choices.size() ? "," : "");
     }
     printf("  ],\n");
     // 持枪要挟按发现牌分组的最优路径（可能分支显示；按牌池优先级 补水>脱水>误炸>… 排序，
@@ -2634,6 +2765,8 @@ static State state_from_json(const JVal& root) {
     }
     const JVal* qd = root.find("discover_quickdraw_choice");
     if (qd && qd->type == JVal::STR) st.forced_discover_choice = qd->str;
+    const JVal* fdc = root.find("forced_draw_choice");
+    if (fdc && fdc->type == JVal::STR) st.forced_draw_choice = fdc->str;
     const JVal* deck = root.find("deck");
     if (deck && deck->type == JVal::ARR) {
         for (const auto& item : deck->arr) {
