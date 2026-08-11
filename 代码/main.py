@@ -2268,9 +2268,9 @@ class MiniWindow(QWidget):
         self.board_label.setWordWrap(True)
         root.addWidget(self.board_label)
 
+        # 牛头人卡池：与主窗口双向同步，一般不用管；不一致时手动标记
         band_row = QHBoxLayout()
-        band_label = QLabel("牛池：")
-        band_label.setStyleSheet("font-size:11px;color:#555;")
+        band_label = QLabel("牛头人卡池：")
         band_row.addWidget(band_label)
         self.mini_etc_checks: List[Tuple[str, QCheckBox]] = []
         default_checked = {"舞动全场（ft.迦罗娜）", "幻觉药水", "生命的缚誓者阿莱克丝塔萨"}
@@ -2283,14 +2283,16 @@ class MiniWindow(QWidget):
             self.mini_etc_checks.append((card_name, box))
             band_row.addWidget(box)
 
-        band_row.addStretch(1)
+        band_note = QLabel("会自动同步不用管，不一样时再手动标记")
+        band_note.setWordWrap(True)
+        band_note.setStyleSheet("font-size:11px;color:#888;")
+        band_row.addWidget(band_note, 1)
         root.addLayout(band_row)
 
-        # 牌库剩余随从（如果机制抽牌池）：单行 卡组随从：[鱼][狐][刀][暗][牛][晦][腾]
+        # 卡组随从（如果机制抽牌池）：单行；换卡组时手动改，WhatIf 计算需要用到
         combo_row = QHBoxLayout()
         combo_row.setSpacing(3)
         combo_label = QLabel("卡组随从：")
-        combo_label.setStyleSheet("font-size:11px;color:#555;")
         combo_row.addWidget(combo_label)
         self.mini_combo_checks: List[Tuple[str, QCheckBox]] = []
 
@@ -2303,7 +2305,10 @@ class MiniWindow(QWidget):
             self.mini_combo_checks.append((card_name, box))
             combo_row.addWidget(box)
 
-        combo_row.addStretch(1)
+        combo_note = QLabel("换卡组时再手动更改，WhatIf计算需要用到")
+        combo_note.setWordWrap(True)
+        combo_note.setStyleSheet("font-size:11px;color:#888;")
+        combo_row.addWidget(combo_note, 1)
         root.addLayout(combo_row)
 
         deadly_row = QHBoxLayout()
