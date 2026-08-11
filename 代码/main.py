@@ -2269,6 +2269,9 @@ class MiniWindow(QWidget):
         root.addWidget(self.board_label)
 
         band_row = QHBoxLayout()
+        band_label = QLabel("牛池：")
+        band_label.setStyleSheet("font-size:11px;color:#555;")
+        band_row.addWidget(band_label)
         self.mini_etc_checks: List[Tuple[str, QCheckBox]] = []
         default_checked = {"舞动全场（ft.迦罗娜）", "幻觉药水", "生命的缚誓者阿莱克丝塔萨"}
 
