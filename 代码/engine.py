@@ -300,26 +300,21 @@ def _keep_value(
             return 0.0
 
         if etc_band is None:
-            return 50.0  # 牛池未知：按高价值
+            return 110.0  # 牛池未知：按高价值
 
         if not etc_band:
             return 0.0  # 牛内无卡 → 0 价值
 
         if "生命的缚誓者阿莱克丝塔萨" in etc_band:
-            return 50.0  # 牛内还有龙 → 巨大价值
+            return 130.0  # 牛内还有龙 → 巨大价值（可复制/回手拿龙）
 
         if "舞动全场（ft.迦罗娜）" in etc_band:
-            return 35.0  # 牛内还有舞 → 较高价值
+            return 120.0  # 牛内还有舞 → 高价值
 
         if set(etc_band) == {"幻觉药水"}:
-            # 牛内只剩余幻觉药水：手上暗影施法者 <= 1 时价值低，
-            # 不值得暗影施法者选择牛头人酋长作为目标
-            casters = sum(
-                1 for h in (hand or []) if str(h.get("name", "")) == "暗影施法者"
-            )
-            return 6.0 if casters <= 1 else 20.0
+            return 110.0  # 只剩幻：牛本体仍可舞动回手/占位，保留价值高
 
-        return 20.0  # 其他组合（如 幻+其他）
+        return 90.0  # 其他组合（如 幻+其他）
 
     if name == "暗影施法者":
         return 12.0 if in_hand else 30.0
@@ -452,6 +447,24 @@ def plan_exchanges(
         # 精确对齐加分：敌方英雄总血量被扣到 ≤16 的倍数（16/32/48/64/…）
         if hero_attack > 0 and hero_total > 0 and hero_total % 16 <= hero_attack:
             score_val += HERO_ALIGN_BONUS
+
+        # 送牛且暗在手：暗影施法者失去牛头人酋长目标
+        # （先暗(牛)再送牛 = 复制价值还在；但牛被牺牲后暗无法再选牛为目标）
+        if any(
+            b.get("name") == "乐队经理精英牛头人酋长" for b in board
+        ) and not any(
+            b.get("name") == "乐队经理精英牛头人酋长" for b in traded_board
+        ) and any(
+            str(h.get("name", "")) == "暗影施法者" for h in (hand or [])
+        ):
+            band = etc_band or []
+
+            if "生命的缚誓者阿莱克丝塔萨" in band:
+                score_val -= 60.0  # 失去 暗复制牛拿龙 的线路
+            elif "舞动全场（ft.迦罗娜）" in band:
+                score_val -= 50.0  # 失去 暗复制牛拿舞 的线路
+            else:
+                score_val -= 20.0  # 只剩幻：暗复制牛的价值本来就低
 
         if score_val > best_score[0]:
             best_score = (score_val, score[1], score[2])
