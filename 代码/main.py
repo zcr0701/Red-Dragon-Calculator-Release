@@ -805,7 +805,7 @@ class MainWindow(QWidget):
         state_grid.addWidget(self.weapon_label, 1, 1)
         state_grid.addWidget(self.secrets_label, 2, 0)
         state_grid.addWidget(self.hero_label, 2, 1)
-        state_grid.addWidget(self.effects_label, 2, 1)
+        state_grid.addWidget(self.effects_label, 3, 1)
         state_grid.addWidget(self.etc_summary_label, 3, 0)
 
         # 殒命暗影位置（手牌序号，可手动标记；日志 ghostly 自动标记会自动合并）
