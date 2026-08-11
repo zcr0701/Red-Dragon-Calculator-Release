@@ -53,7 +53,6 @@ from PyQt5.QtWidgets import (
     QSizeGrip,
     QSpinBox,
     QSplitter,
-    QTabWidget,
     QTextBrowser,
     QTreeWidget,
     QTreeWidgetItem,
@@ -1159,6 +1158,7 @@ class MainWindow(QWidget):
         self.snapshot: Dict[str, object] = {}
         self.worker: Optional[CalculationWorker] = None
         self.mini_window: Optional[MiniWindow] = None
+        self.wb_window: Optional["WBTreeWindow"] = None
         self._last_state_key = ""
         self._manual_mode = False
         self.etc_checks: List[Tuple[str, QCheckBox]] = []
@@ -1430,6 +1430,9 @@ class MainWindow(QWidget):
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setVisible(False)
         self.engine_label = QLabel("")
+        self.wb_window_button = QPushButton("W-B分支树")
+        self.wb_window_button.setToolTip("在独立大窗口查看 W-B 机制分支树")
+        self.wb_window_button.clicked.connect(self.open_wb_window)
         self.update_button = QPushButton("立即更新")
         self.update_button.setToolTip("点击跳转到发布仓库页面")
         self.update_button.clicked.connect(self._on_update_clicked)
@@ -1446,22 +1449,16 @@ class MainWindow(QWidget):
         run_row.addWidget(self.progress_bar, 1)
         run_row.addWidget(self.engine_label)
         # 更新按钮：大一点，放到最右侧空白区域
+        run_row.addWidget(self.wb_window_button)
         run_row.addWidget(self.update_button)
         right_layout.addLayout(run_row)
 
         result_box = QGroupBox("计算结果")
         result_layout = QVBoxLayout(result_box)
-        self.result_tabs = QTabWidget()
         self.result_text = QPlainTextEdit()
         self.result_text.setReadOnly(True)
         self.result_text.setMaximumBlockCount(5000)
-        self.wb_tree = QTreeWidget()
-        self.wb_tree.setHeaderLabel("W-B机制分支树")
-        self.wb_tree.setColumnCount(1)
-        self.wb_tree.setAlternatingRowColors(True)
-        self.result_tabs.addTab(self.result_text, "结果")
-        self.result_tabs.addTab(self.wb_tree, "W-B分支树")
-        result_layout.addWidget(self.result_tabs)
+        result_layout.addWidget(self.result_text)
         right_layout.addWidget(result_box, 1)
 
         top.addWidget(right)
@@ -2332,11 +2329,95 @@ class MainWindow(QWidget):
 
         # 静默上传计算记录到云端公式库（后台线程，不阻塞、不弹窗）
         cloud_report.upload_async(data.get("upload_payload"))
-        self._populate_wb_tree(data.get("wb"))
+        self._show_wb_tree(data.get("wb"))
         self._sync_mini_result(data)
 
-    def _populate_wb_tree(self, wb: Optional[Dict[str, object]]) -> None:
-        """用 PyQt 内置树控件展示 W-B 分支树。"""
+    def _show_wb_tree(self, wb: Optional[Dict[str, object]]) -> None:
+        """W-B 分支树在独立大窗口展示（有数据则填充并显示）。"""
+        if self.wb_window is None:
+            self.wb_window = WBTreeWindow(self)
+
+        self.wb_window.set_wb(wb)
+
+        if wb:
+            self.wb_window.show()
+            self.wb_window.raise_()
+            self.wb_window.activateWindow()
+
+    def open_wb_window(self) -> None:
+        """手动打开 W-B 分支树窗口。"""
+        if self.wb_window is None:
+            self.wb_window = WBTreeWindow(self)
+
+        self.wb_window.show()
+        self.wb_window.raise_()
+        self.wb_window.activateWindow()
+
+    def _on_error(self, message: str) -> None:
+        self.result_text.setPlainText(f"计算失败：\n{message}")
+
+    def _on_worker_done(self) -> None:
+        self.progress_bar.setVisible(False)
+        self.engine_label.setText("")
+        self.worker = None
+        self.calc_button.setText("开始计算")
+
+        if self.mini_window is not None:
+            self.mini_window.on_main_worker_done()
+
+        self._update_calc_enabled()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if self.worker is not None:
+            self.worker.stop()
+            self.worker.wait(3000)
+
+        if self.mini_window is not None:
+            self.mini_window.close()
+
+        event.accept()
+
+
+SNAP_DISTANCE = 14  # 吸附屏幕边缘的阈值（像素）
+
+# 小窗牛池勾选的短标签（对应卡牌缩写，节省竖条宽度）
+MINI_ETC_LABELS = {
+    "舞动全场（ft.迦罗娜）": "舞",
+    "幻觉药水": "幻",
+    "生命的缚誓者阿莱克丝塔萨": "龙",
+    "战略转移": "转",
+    "赤烟·腾武": "腾",
+}
+
+# 牌库剩余随从（如果机制抽牌池）：勾选 = 仍在牌库（可被抽随从卡抽到）
+COMBO_MINION_CHECKS = [
+    ("鲨鱼之灵", "鱼"),
+    ("狐人老千", "狐"),
+    ("斯卡布斯·刀油", "刀"),
+    ("暗影施法者", "暗"),
+    ("乐队经理精英牛头人酋长", "牛"),
+    ("晦鳞巢母", "晦"),
+    ("赤烟·腾武", "腾"),
+]
+
+
+class WBTreeWindow(QDialog):
+    """W-B 机制分支树独立大窗口：分支卡为树的节点，可展开查看全部可能。"""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("W-B机制分支树(CreATedBy此人乃天下绝响#5854)")
+        self.resize(1100, 800)
+
+        layout = QVBoxLayout(self)
+        self.wb_tree = QTreeWidget()
+        self.wb_tree.setHeaderLabel("W-B机制分支树")
+        self.wb_tree.setColumnCount(1)
+        self.wb_tree.setAlternatingRowColors(True)
+        layout.addWidget(self.wb_tree)
+
+    def set_wb(self, wb: Optional[Dict[str, object]]) -> None:
+        """填充 W-B 分支树。"""
         self.wb_tree.clear()
 
         if not wb:
@@ -2394,55 +2475,7 @@ class MainWindow(QWidget):
                             walk(children.get("nodes") or [], br_item)
 
         walk(wb.get("nodes") or [], root_item)
-
         self.wb_tree.expandAll()
-
-    def _on_error(self, message: str) -> None:
-        self.result_text.setPlainText(f"计算失败：\n{message}")
-
-    def _on_worker_done(self) -> None:
-        self.progress_bar.setVisible(False)
-        self.engine_label.setText("")
-        self.worker = None
-        self.calc_button.setText("开始计算")
-
-        if self.mini_window is not None:
-            self.mini_window.on_main_worker_done()
-
-        self._update_calc_enabled()
-
-    def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
-        if self.worker is not None:
-            self.worker.stop()
-            self.worker.wait(3000)
-
-        if self.mini_window is not None:
-            self.mini_window.close()
-
-        event.accept()
-
-
-SNAP_DISTANCE = 14  # 吸附屏幕边缘的阈值（像素）
-
-# 小窗牛池勾选的短标签（对应卡牌缩写，节省竖条宽度）
-MINI_ETC_LABELS = {
-    "舞动全场（ft.迦罗娜）": "舞",
-    "幻觉药水": "幻",
-    "生命的缚誓者阿莱克丝塔萨": "龙",
-    "战略转移": "转",
-    "赤烟·腾武": "腾",
-}
-
-# 牌库剩余随从（如果机制抽牌池）：勾选 = 仍在牌库（可被抽随从卡抽到）
-COMBO_MINION_CHECKS = [
-    ("鲨鱼之灵", "鱼"),
-    ("狐人老千", "狐"),
-    ("斯卡布斯·刀油", "刀"),
-    ("暗影施法者", "暗"),
-    ("乐队经理精英牛头人酋长", "牛"),
-    ("晦鳞巢母", "晦"),
-    ("赤烟·腾武", "腾"),
-]
 
 
 class MiniWindow(QWidget):
