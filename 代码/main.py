@@ -1330,6 +1330,15 @@ class MainWindow(QWidget):
         main_splitter.setSizes([560, 220])
         self.manual_button.toggled.connect(self.manual_panel.setVisible)
 
+        # 主窗口底部免责声明：计算完成后静默上传公式到云端公式库
+        self.disclaimer_label = QLabel(
+            '<span style="font-size:12px;color:#888;">'
+            '免责声明：计算出的公式将上传云端公式库造福更多人喵~'
+            '</span>'
+        )
+        self.disclaimer_label.setWordWrap(True)
+        root.addWidget(self.disclaimer_label)
+
         self._update_etc_summary()
         self._update_calc_enabled()
 
@@ -2583,15 +2592,6 @@ class IntroDialog(QDialog):
         author_body.setWordWrap(True)
         author_body.setStyleSheet("font-size:36px; color:#374151;")
         layout.addWidget(author_body)
-
-        # 免责声明：计算完成后静默上传公式到云端公式库
-        disclaimer = QLabel(
-            '<span style="font-size:36px; color:#6B7280;">'
-            '免责声明：计算出的公式将上传云端公式库造福更多人喵~'
-            '</span>'
-        )
-        disclaimer.setWordWrap(True)
-        layout.addWidget(disclaimer)
 
         # “给一点支持”之后的变色鼓励语：你的支持就是我的动力~
         self.support_dynamic = QLabel(
