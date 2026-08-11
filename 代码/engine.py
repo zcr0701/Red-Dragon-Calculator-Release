@@ -1620,13 +1620,22 @@ def compute_wb_tree(
         for play, remove, eff_cost, coin in _draw_play_variants(snapshot, "持枪要挟"):
             base = _build_play_variant(snapshot, "持枪要挟", remove, eff_cost, coin)
             play_score = wb_play_delta(int(base.get("mana") or 0))
-            branches = [
-                {
-                    "card": choice,
-                    "delta": round(play_score + wb_quickdraw_delta(snapshot, choice), 2),
-                }
-                for choice in choices
-            ]
+            branches = []
+
+            for choice in choices:
+                # 持枪要挟打出后的变体（发现牌入手），供分支内继续递归展开新分支卡
+                q_variant = dict(base)
+                q_variant["hand"] = list(base["hand"]) + [{"name": choice}]
+                branches.append(
+                    {
+                        "card": choice,
+                        "delta": round(
+                            play_score + wb_quickdraw_delta(snapshot, choice), 2
+                        ),
+                        "recursive_variant": q_variant,
+                    }
+                )
+
             nodes.append(
                 {
                     "card": "持枪要挟",
@@ -1653,7 +1662,8 @@ def compute_wb_tree(
     if depth < max_depth:
         for node in nodes:
             for br in node.get("branches") or []:
-                variant = br.get("variant")
+                # draw 分支用 variant，quickdraw 分支用 recursive_variant；任一存在都可继续递归
+                variant = br.get("variant") or br.get("recursive_variant")
 
                 if not variant:
                     continue
