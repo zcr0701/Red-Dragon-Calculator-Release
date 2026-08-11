@@ -601,7 +601,9 @@ class CalculationWorker(QThread):
             result = engine.compute(
                 self.snapshot,
                 lethal_threshold=(
-                    _lethal_threshold(self.snapshot)
+                    _lethal_threshold(
+                        self.snapshot, self.options.get("exchanges")
+                    )
                     if bool(self.options.get("truncate_normal", False))
                     else -1
                 ),
@@ -643,7 +645,9 @@ class CalculationWorker(QThread):
                         discover_quickdraw_choice=choice,
                         branch_prefix=branch_prefix,
                         lethal_threshold=(
-                            _lethal_threshold(self.snapshot)
+                            _lethal_threshold(
+                                self.snapshot, self.options.get("exchanges")
+                            )
                             if bool(self.options.get("truncate_branch", True))
                             else -1
                         ),
@@ -691,15 +695,28 @@ def _hero_text(hero: Optional[Dict[str, object]]) -> str:
     return f"{hp if hp is not None else '?'}血/{armor}甲"
 
 
-def _lethal_threshold(snapshot: Dict[str, object]) -> int:
-    """精确截断阈值 = 敌方英雄血量 + 护甲；无数据（-1）表示不截断。"""
+def _lethal_threshold(
+    snapshot: Dict[str, object],
+    exchanges: Optional[List[tuple]] = None,
+) -> int:
+    """精确截断阈值 = 敌方英雄血量 + 护甲（扣除场面交换里攻击英雄的伤害）；
+    无数据（-1）表示不截断。"""
     hero = snapshot.get("opponent_hero") or {}
     hp = hero.get("health")
 
     if not isinstance(hp, int) or hp <= 0:
         return -1
 
-    return hp + int(hero.get("armor") or 0)
+    total = hp + int(hero.get("armor") or 0)
+
+    if exchanges:
+        board = snapshot.get("board") or []
+
+        for fi, ei in exchanges:
+            if ei == 0 and 1 <= fi <= len(board):
+                total = max(0, total - int(board[fi - 1].get("attack") or 0))
+
+    return max(1, total) if total >= 0 else -1
 
 
 def parse_manual_zone_lines(
@@ -1734,6 +1751,7 @@ class MainWindow(QWidget):
         enemy = self.snapshot.get("enemy_board") or []
         hand = self.snapshot.get("hand") or []
         etc_band = self.snapshot.get("etc_band")
+        hero = self.snapshot.get("opponent_hero") or {}
         fingerprint = (
             json.dumps(
                 [(b.get("name"), b.get("health"), b.get("attack")) for b in board],
@@ -1754,13 +1772,15 @@ class MainWindow(QWidget):
             )
             + "|"
             + json.dumps(etc_band, ensure_ascii=False)
+            + "|"
+            + json.dumps(hero, ensure_ascii=False)
         )
 
         if self._auto_exchange_cache is not None and self._auto_exchange_cache[0] == fingerprint:
             return list(self._auto_exchange_cache[1])
 
         plan, _result_board, _score = engine.plan_exchanges(
-            board, enemy, hand=hand, etc_band=etc_band
+            board, enemy, hand=hand, etc_band=etc_band, hero=hero
         )
         self._auto_exchange_cache = (fingerprint, list(plan))
         return list(plan)

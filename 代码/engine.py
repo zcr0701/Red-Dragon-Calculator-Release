@@ -207,31 +207,55 @@ def apply_board_exchanges(
     board: List[dict],
     enemy_board: List[dict],
     exchanges: Optional[List[tuple]] = None,
-) -> Tuple[List[dict], List[dict]]:
+    hero: Optional[dict] = None,
+) -> Tuple[List[dict], List[dict], Optional[dict]]:
     """场面交换结算：我方随从B -= 敌方随从A，敌方随从B -= 我方随从A；
     B <= 0 的随从死亡并从 board 移除。索引按初始 board 顺序（1 起），
-    全部交换先按原始攻击力结算，再统一移除死亡随从。"""
+    全部交换先按原始攻击力结算，再统一移除死亡随从。
+
+    敌方英雄目标：enemy_index == 0 表示攻击敌方英雄——英雄攻击力视作 0，
+    我方随从不掉血；护甲先吸收，再扣血量。返回 (board, enemy_board, hero)。"""
     if not exchanges:
-        return board, enemy_board
+        return board, enemy_board, hero
 
     board = [dict(item) for item in board]
     enemy_board = [dict(item) for item in enemy_board]
+    hero_out = dict(hero) if hero else None
     friend_by_index = {i: item for i, item in enumerate(board, start=1)}
     enemy_by_index = {i: item for i, item in enumerate(enemy_board, start=1)}
 
     for friend_index, enemy_index in exchanges:
         friend = friend_by_index.get(friend_index)
-        enemy = enemy_by_index.get(enemy_index)
 
-        if friend is None or enemy is None:
+        if friend is None:
             continue
 
         friend_attack = int(friend.get("attack") or 0)
-        enemy_attack = int(enemy.get("attack") or 0)
 
         if friend_attack < 1:
             # 0 攻随从无法主动攻击（以场面当前攻击为准），该交换不生效
             continue
+
+        if enemy_index == 0:
+            # 攻击敌方英雄：英雄攻击力 0（我方不掉血），护甲先吸收再扣血量
+            if hero_out is not None:
+                armor = int(hero_out.get("armor") or 0)
+                hp = int(hero_out.get("health") or 0)
+
+                if armor >= friend_attack:
+                    hero_out["armor"] = armor - friend_attack
+                else:
+                    hero_out["health"] = max(0, hp - (friend_attack - armor))
+                    hero_out["armor"] = 0
+
+            continue
+
+        enemy = enemy_by_index.get(enemy_index)
+
+        if enemy is None:
+            continue
+
+        enemy_attack = int(enemy.get("attack") or 0)
 
         if friend.get("health") is not None:
             friend["health"] = friend["health"] - enemy_attack
@@ -247,19 +271,22 @@ def apply_board_exchanges(
         item for item in enemy_board
         if item.get("health") is None or item["health"] > 0
     ]
-    return board, enemy_board
+    return board, enemy_board, hero_out
 
 
 def _keep_value(
     name: str,
     in_hand: bool,
     etc_band: Optional[List[str]],
+    hand: Optional[List[dict]] = None,
 ) -> float:
     """随从保留分：结合手牌与牛池动态判断（场面上的随从价值随持有情况变化）。
 
     - 手上有的卡，场上的同名牌价值降低；手上没有的卡，场上的价值增高；
     - 手上有鱼 → 场上鱼无价值；手上有牛 → 场上牛无需保留；
-    - 牛内无卡 → 牛 0 价值；牛内有卡且手上无牛、场上有牛 → 牛巨大价值；
+    - 牛内按剩余内容评分：阿莱克丝塔萨 > 舞动全场 > 幻觉药水；
+    - 牛内只剩余幻觉药水且手上暗影施法者 <= 1 张时，牛价值低
+      （不值得暗影施法者选择牛头人酋长作为目标）；
     - 狐人老千：0 价值（无论手上有没有，场上狐不值得保留）。
     """
     if name == "鲨鱼之灵":
@@ -272,10 +299,27 @@ def _keep_value(
         if in_hand:
             return 0.0
 
-        if etc_band is not None and len(etc_band) == 0:
+        if etc_band is None:
+            return 50.0  # 牛池未知：按高价值
+
+        if not etc_band:
             return 0.0  # 牛内无卡 → 0 价值
 
-        return 50.0  # 牛内有卡且手上无牛 → 巨大价值
+        if "生命的缚誓者阿莱克丝塔萨" in etc_band:
+            return 50.0  # 牛内还有龙 → 巨大价值
+
+        if "舞动全场（ft.迦罗娜）" in etc_band:
+            return 35.0  # 牛内还有舞 → 较高价值
+
+        if set(etc_band) == {"幻觉药水"}:
+            # 牛内只剩余幻觉药水：手上暗影施法者 <= 1 时价值低，
+            # 不值得暗影施法者选择牛头人酋长作为目标
+            casters = sum(
+                1 for h in (hand or []) if str(h.get("name", "")) == "暗影施法者"
+            )
+            return 6.0 if casters <= 1 else 20.0
+
+        return 20.0  # 其他组合（如 幻+其他）
 
     if name == "暗影施法者":
         return 12.0 if in_hand else 30.0
@@ -310,7 +354,7 @@ def exchange_heuristic(
 
     for index, item in enumerate(board, start=1):
         name = item.get("name") or ""
-        keep = _keep_value(name, name in hand_names, etc_band)
+        keep = _keep_value(name, name in hand_names, etc_band, hand)
         keep_score += keep
 
         if keep:
@@ -320,19 +364,26 @@ def exchange_heuristic(
     return (total, free_slots, len(board))
 
 
+# 场面交换：把敌方英雄总血量（血量+护甲）扣到 ≤16 的倍数时的加分
+# （红龙每条 16 伤，血线对齐到 16 倍数可少打龙）
+HERO_ALIGN_BONUS = 80.0
+
+
 def plan_exchanges(
     board: List[dict],
     enemy_board: List[dict],
     hand: Optional[List[dict]] = None,
     etc_band: Optional[List[str]] = None,
+    hero: Optional[dict] = None,
     max_trades: int = 2,
     max_plans: int = 4000,
 ) -> Tuple[List[Tuple[int, int]], List[dict], Tuple[float, int, int]]:
     """场面交换搜索（独立于路径搜索，单独的启发函数）。
 
     枚举候选交换方案（每个我方随从最多主动攻击一次；敌方随从只要没死，
-    可被多个我方随从选为目标；最多 max_trades 个交换；枚举量受 max_plans
-    硬上限保护，不影响性能），
+    可被多个我方随从选为目标；enemy_index == 0 表示攻击敌方英雄；
+    最多 max_trades 个交换；枚举量受 max_plans 硬上限保护，不影响性能），
+    把敌方英雄总血量扣到 ≤16 的倍数（(原总血量 mod 16) <= 攻击和）的交换加分，
     按 exchange_heuristic（只看我方随从栏）选最优，返回
     (最优交换计划, 交换后的我方随从栏, 启发分数)。
     """
@@ -342,13 +393,18 @@ def plan_exchanges(
         for index, item in enumerate(board, start=1)
         if int(item.get("attack") or 0) >= 1
     ]
-    enemy_indices = list(range(1, len(enemy_board) + 1))
+    enemy_indices = [0] + list(range(1, len(enemy_board) + 1))  # 0 = 敌方英雄
+    hero_total = 0
+
+    if hero:
+        hero_total = int(hero.get("health") or 0) + int(hero.get("armor") or 0)
+
     base_score = exchange_heuristic(board, hand=hand, etc_band=etc_band)
     best_plan: List[Tuple[int, int]] = []
     best_board = list(board)
     best_score = base_score
 
-    if not friend_indices or not enemy_indices:
+    if not friend_indices:
         return best_plan, best_board, best_score
 
     plans: List[tuple] = [()]
@@ -371,8 +427,13 @@ def plan_exchanges(
 
     for plan in plans:
         pairs = [(plan[k], plan[k + 1]) for k in range(0, len(plan), 2)]
-        traded_board, _traded_enemy = apply_board_exchanges(
-            board, enemy_board, exchanges=pairs
+        hero_attack = sum(
+            int(board[fi - 1].get("attack") or 0)
+            for fi, ei in pairs
+            if ei == 0 and 1 <= fi <= len(board)
+        )
+        traded_board, _traded_enemy, _traded_hero = apply_board_exchanges(
+            board, enemy_board, exchanges=pairs, hero=hero
         )
         board_key = tuple(
             (item.get("name"), item.get("health"), item.get("attack"))
@@ -386,8 +447,14 @@ def plan_exchanges(
             score = exchange_heuristic(traded_board, hand=hand, etc_band=etc_band)
             score_cache[board_key] = score
 
-        if score[0] > best_score[0]:
-            best_score = score
+        score_val = score[0]
+
+        # 精确对齐加分：敌方英雄总血量被扣到 ≤16 的倍数（16/32/48/64/…）
+        if hero_attack > 0 and hero_total > 0 and hero_total % 16 <= hero_attack:
+            score_val += HERO_ALIGN_BONUS
+
+        if score_val > best_score[0]:
+            best_score = (score_val, score[1], score[2])
             best_plan = pairs
             best_board = traded_board
 
@@ -494,9 +561,12 @@ def build_payload(
 
     if exchanges:
         # 场面交换：先按 A/B 结算（我方B-=敌方A、敌方B-=我方A，B<=0 死亡移除），
-        # 再把结算后的场面交给 C++ 搜索。
-        board_source, enemy_source = apply_board_exchanges(
-            board_source, enemy_source, exchanges=exchanges
+        # 再把结算后的场面交给 C++ 搜索；敌方英雄目标（0）同时结算血量+护甲。
+        board_source, enemy_source, _exchanged_hero = apply_board_exchanges(
+            board_source,
+            enemy_source,
+            exchanges=exchanges,
+            hero=snapshot.get("opponent_hero"),
         )
 
     board: List[dict] = []
