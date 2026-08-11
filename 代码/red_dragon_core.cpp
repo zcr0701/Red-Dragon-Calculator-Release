@@ -148,7 +148,29 @@ static const unordered_map<string, CardDef> DB = {
     {"押注猎手", {3, "minion", "gambler_hunter", false, true, false, 4}},  // 快枪或连击：获取一张幸运币
     {"狐人老千", {2, "minion", "foxy_fraud", true, false, false, 2}},  // 战吼：下一张连击牌减 2 费（非连击牌）
     {"持枪要挟", {1, "spell", "discover_quickdraw", false, false, false, -1}},  // 发现一张另一职业的快枪牌
+    // ===== 持枪要挟发现牌池（另一职业快枪牌，牌池固定）=====
+    // 已建模（快枪机制 + 代码内已知机制）：
+    //   补水（快枪：复原两个法力水晶 → +2 法力，上限水晶）
+    //   脱水（快枪：法力值消耗为 1 → 本回合进入手牌时按 1 费）
+    // 未建模（未知机制，先纳入备注忽略）：
+    //   农场小助手（战吼发现亡灵 + 快枪减 2 费）、袋底藏沙（快枪敌方下一张 +1 费，
+    //     只影响对方）、银蛇（突袭剧毒快枪免疫）、热浪来袭（快枪全体 2 伤）、
+    //     不许乱动（变 1/1 + 1 伤）、和善的银行职员（发现法术）、
+    //     亮石旋岩虫（吸血快枪 5 伤）、列车难题（弃牌召矿车）
+    {"补水", {2, "spell", "rehydrate", false, false, false, -1}},
+    {"脱水", {3, "spell", "dehydrate", false, false, false, -1}},
+    {"农场小助手", {3, "minion", "farm_hand", false, false, false, 3}},
+    {"袋底藏沙", {2, "spell", "pocket_sand", false, false, false, -1}},
+    {"银蛇", {3, "minion", "silver_serpent", false, false, false, 3}},
+    {"热浪来袭", {2, "spell", "heat_wave", false, false, false, -1}},
+    {"不许乱动", {2, "spell", "lay_down_the_law", false, false, false, -1}},
+    {"和善的银行职员", {3, "minion", "benevolent_banker", false, false, false, 4}},
+    {"亮石旋岩虫", {4, "minion", "glowstone_gyreworm", false, false, false, 4}},
+    {"列车难题", {3, "spell", "trolley_problem", false, false, false, -1}},
 };
+
+// 持枪要挟已建模的发现池（快枪机制 + 代码内已知机制；未建模牌见上方备注）
+static const vector<string> QUICKDRAW_MODELED_POOL = {"补水", "脱水"};
 
 // ===================== 抽牌属性 =====================
 // 抽牌属性：卡牌会抽牌时记录“抽什么类型的牌、几张”：
@@ -166,7 +188,6 @@ struct DrawSpec {
 static const unordered_map<string, vector<DrawSpec>> DRAW_ATTR_BASE = {
     {"dig_for_treasure", {{"minion", 1}}},           // 挖掘宝藏：抽 1 张随从牌
     {"cultist_map", {{"random", 1}}},                // 异教地图：从牌库发现（选 3 张随机抽 1）→ 随机
-    {"discover_quickdraw", {{"random", 1}}},         // 持枪要挟：发现一张另一职业快枪牌 → 随机
     {"swindle", {{"spell", 1}}},                     // 行骗：抽 1 张法术牌
     {"shroud_of_concealment", {{"minion", 2}}},      // 潜伏帷幕：抽 2 张随从牌
     {"dubious_purchase", {{"random", 3}}},           // 可疑交易：抽 3 张随机牌
@@ -321,6 +342,8 @@ struct State {
 static int effective_cost(const State& s, const Card& card) {
     int base = card.current_cost();
     if (base < 0) return -1;
+    // 脱水快枪：本回合进入手牌时法力值消耗为 1
+    if (card.effect_id == "dehydrate" && card.entered_hand_this_turn) base = 1;
     int discount = 0;
     if (s.next_card > 0) discount += s.next_card;
     if (s.next_two_cards_count > 0) discount += s.next_two_cards;
@@ -614,6 +637,11 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
         if (dragon_in_hand) {
             s.mana = std::min(s.mana_crystals, s.mana + 2);
         }
+    } else if (e == "rehydrate") {
+        // 补水快枪：本回合进入手牌时复原两个法力水晶
+        if (card.entered_hand_this_turn) {
+            s.mana = std::min(s.mana_crystals, s.mana + 2);
+        }
     } else if (e == "swindle") {
         if (s.deck_is_known) {
             // 行骗：不连击抽 1 张法术；连击再抽 1 张随从（即连击共抽法术+随从 2 张）。
@@ -732,6 +760,22 @@ static vector<State> apply_search_effect(State base, const Card& card,
                 for (auto& d : disc) next_states.push_back(std::move(d));
             }
             states = std::move(next_states);
+        }
+        for (State& rs : states) {
+            if (card.is_spell_like()) transform_deadly_shadows(rs, card);
+            rs.cards_played_this_turn++;
+        }
+        return states;
+    }
+    if (e == "discover_quickdraw") {
+        // 持枪要挟：发现一张另一职业快枪牌（牌池固定，只展开已建模的快枪牌；
+        // 未建模的牌先纳入备注忽略）。发现牌本回合进入手牌 → 快枪可用。
+        vector<State> states;
+        for (const string& choice : QUICKDRAW_MODELED_POOL) {
+            State s = base.clone_reserved();
+            add_card_to_hand_or_burn(s, make_card(choice));
+            append_choice_to_last_path(s, choice);
+            states.push_back(std::move(s));
         }
         for (State& rs : states) {
             if (card.is_spell_like()) transform_deadly_shadows(rs, card);
