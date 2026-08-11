@@ -184,6 +184,9 @@ static const unordered_map<string, int> QUICKDRAW_POOL_SCORE = {
     {"不许乱动", 1},
 };
 
+// 误炸快枪分支上限（3 点 + 2 点 + 1 点可击杀最多 3 个随从，组合数防止爆炸）
+static const size_t MAX_MISFIRE_BRANCHES = 80;
+
 // ===================== 抽牌属性 =====================
 // 抽牌属性：卡牌会抽牌时记录“抽什么类型的牌、几张”：
 //   - random=随机：发现（选 3 张随机牌抽 1 张）或未知类型的普通抽牌，抽到的牌类型不可知；
@@ -799,21 +802,70 @@ static vector<State> apply_search_effect(State base, const Card& card,
         return states;
     }
     if (e == "misfire" && card.entered_hand_this_turn) {
-        // 误炸快枪：依次选择目标造成 3/2/1 点伤害（3+2+1 最多 6 点），
-        // 可击杀己方随从腾随从栏格子（敌方随从清除暂不建模）。
+        // 误炸快枪：依次选择 3 个目标造成 3/2/1 点伤害（同一目标可重复命中），
+        // 只腾随从栏格子建模：命中血量 <= 对应伤害的己方随从即死亡，最多清 3 格；
+        // 非击杀伤害（打在 8/8 龙上不致死）与 OTK 无关，不建模。
         vector<State> states;
         states.push_back(base.clone_reserved());  // 无目标：当作普通法术打出
-        for (size_t i = 0; i < base.board.size(); i++) {
-            const Card& target = base.board[i];
-            if (target.health >= 0 && target.health <= 6) {
-                State s = base.clone_reserved();
-                s.board.erase(s.board.begin() + i);
-                if (!s.path().empty()) {
-                    s.path_mut().back() += "（" + target.name() + "）";
+        const auto& b = base.board;
+        const size_t n = b.size();
+        bool capped = false;
+
+        auto kill_branch = [&](const vector<size_t>& idxs) {
+            State s = base.clone_reserved();
+            vector<size_t> sorted = idxs;
+            std::sort(sorted.begin(), sorted.end(), std::greater<size_t>());
+            for (size_t x : sorted) s.board.erase(s.board.begin() + x);
+            if (!s.path().empty()) {
+                string names;
+                for (size_t x : idxs) {
+                    if (!names.empty()) names += "、";
+                    names += b[x].name();
                 }
-                states.push_back(std::move(s));
+                s.path_mut().back() += "（" + names + "）";
+            }
+            states.push_back(std::move(s));
+        };
+
+        // 1 杀：3 点命中血量 <= 3 的随从
+        for (size_t i = 0; i < n; i++) {
+            if (b[i].health >= 0 && b[i].health <= 3) {
+                kill_branch({i});
+                if (states.size() >= MAX_MISFIRE_BRANCHES) { capped = true; break; }
             }
         }
+
+        // 2 杀：3 点 + 2 点（两随从较小血量 <= 2、较大 <= 3）
+        if (!capped) {
+            for (size_t i = 0; i < n && !capped; i++) {
+                for (size_t j = i + 1; j < n; j++) {
+                    int hi = std::max(b[i].health, b[j].health);
+                    int lo = std::min(b[i].health, b[j].health);
+                    if (b[i].health >= 0 && b[j].health >= 0 && lo <= 2 && hi <= 3) {
+                        kill_branch({i, j});
+                        if (states.size() >= MAX_MISFIRE_BRANCHES) { capped = true; break; }
+                    }
+                }
+            }
+        }
+
+        // 3 杀：3 + 2 + 1（三随从血量排序后小<=1、中<=2、大<=3）
+        if (!capped) {
+            for (size_t i = 0; i < n && !capped; i++) {
+                for (size_t j = i + 1; j < n && !capped; j++) {
+                    for (size_t k = j + 1; k < n; k++) {
+                        vector<int> hs = {b[i].health, b[j].health, b[k].health};
+                        if (hs[0] < 0 || hs[1] < 0 || hs[2] < 0) continue;
+                        std::sort(hs.begin(), hs.end());
+                        if (hs[0] <= 1 && hs[1] <= 2 && hs[2] <= 3) {
+                            kill_branch({i, j, k});
+                            if (states.size() >= MAX_MISFIRE_BRANCHES) { capped = true; break; }
+                        }
+                    }
+                }
+            }
+        }
+
         for (State& rs : states) {
             if (card.is_spell_like()) transform_deadly_shadows(rs, card);
             rs.cards_played_this_turn++;
