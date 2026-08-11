@@ -31,14 +31,34 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import cloud_report
-from PyQt5.QtCore import QEventLoop, QPoint, QSettings, QThread, QTimer, Qt, pyqtSignal
-from PyQt5.QtGui import QCursor, QPixmap
+from PyQt5.QtCore import (
+    QEventLoop,
+    QPoint,
+    QRectF,
+    QSettings,
+    QThread,
+    QTimer,
+    Qt,
+    pyqtSignal,
+)
+from PyQt5.QtGui import (
+    QColor,
+    QCursor,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
+    QGraphicsLineItem,
+    QGraphicsRectItem,
+    QGraphicsScene,
+    QGraphicsSimpleTextItem,
+    QGraphicsView,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -2402,7 +2422,9 @@ COMBO_MINION_CHECKS = [
 
 
 class WBTreeWindow(QDialog):
-    """W-B 机制分支树独立大窗口：分支卡为树的节点，可展开查看全部可能。"""
+    """W-B 机制分支树独立大窗口：经典多叉树布局（根在上、兄弟横排、子节点在下，
+    兄弟按伤害/增量广度优先排序，深度优先遍历绘制）；收起时只显示 DFS 主干链。
+    QGraphicsView 自带底部/右侧滚动条。"""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -2410,72 +2432,206 @@ class WBTreeWindow(QDialog):
         self.resize(1100, 800)
 
         layout = QVBoxLayout(self)
-        self.wb_tree = QTreeWidget()
-        self.wb_tree.setHeaderLabel("W-B机制分支树")
-        self.wb_tree.setColumnCount(1)
-        self.wb_tree.setAlternatingRowColors(True)
-        layout.addWidget(self.wb_tree)
+        self.scene = QGraphicsScene(self)
+        self.view = QGraphicsView(self.scene, self)
+        self.view.setRenderHint(QPainter.Antialiasing)
+        self.view.setDragMode(QGraphicsView.ScrollHandDrag)
+        layout.addWidget(self.view, 1)
+        self.expand_check = QCheckBox("展开分支")
+        self.expand_check.setChecked(False)
+        self.expand_check.toggled.connect(lambda _checked: self._relayout())
+        layout.addWidget(self.expand_check)
+        self._wb: Optional[Dict[str, object]] = None
 
     def set_wb(self, wb: Optional[Dict[str, object]]) -> None:
         """填充 W-B 分支树。"""
-        self.wb_tree.clear()
+        self._wb = wb
+        self._relayout()
 
-        if not wb:
+    def _relayout(self) -> None:
+        self.scene.clear()
+
+        if not self._wb:
             return
 
-        root_item = QTreeWidgetItem(["W-B机制（分支树）"])
-        self.wb_tree.addTopLevelItem(root_item)
+        expanded = self.expand_check.isChecked()
+        nodes = self._wb.get("nodes") or []
 
-        def walk(nodes: List[Dict[str, object]], parent: QTreeWidgetItem) -> None:
-            # 按分支卡分组：分支卡作为树的节点
-            groups: Dict[str, List[Dict[str, object]]] = {}
+        if expanded:
+            root = self._build_tree(nodes)
+        else:
+            root = self._build_trunk(nodes)
 
-            for node in nodes:
-                groups.setdefault(str(node.get("card") or ""), []).append(node)
+        self._layout(root)
+        self._draw(root, 0, 0)
+        rect = self.scene.itemsBoundingRect()
+        self.scene.setSceneRect(rect.adjusted(-40, -40, 80, 80))
+        self.view.centerOn(rect.left(), rect.top())
 
-            for card, card_nodes in groups.items():
-                card_item = QTreeWidgetItem([f"「{card}」"])
-                parent.addChild(card_item)
+    # ---------- 显示树结构 ----------
 
-                for node in card_nodes:
-                    play = node.get("play") or "直接"
-                    branches = node.get("branches") or []
-                    play_item = QTreeWidgetItem([f"{play}（{len(branches)}）"])
-                    card_item.addChild(play_item)
+    class _DispNode:
+        __slots__ = ("label", "children", "x", "y", "w", "h", "color")
 
-                    for bi, br in enumerate(branches, start=1):
-                        drawn = br.get("drawn") or []
-                        drawn_txt = (
-                            "{" + "、".join(drawn) + "}"
-                            if drawn
-                            else str(br.get("card", ""))
-                        )
-                        br_item = QTreeWidgetItem(
-                            [
-                                f"Branch{bi} 抽到{drawn_txt} "
-                                f"增量{br.get('delta', 0)}：最大伤害：{br.get('damage', 0)}，"
-                                f"龙数：{br.get('dragons', 0)}，余：{br.get('mana_left', 0)}费"
-                            ]
-                        )
-                        play_item.addChild(br_item)
-                        path = br.get("path") or []
+        def __init__(
+            self,
+            label: str,
+            children: Optional[List["WBTreeWindow._DispNode"]] = None,
+            color: str = "#FFFFFF",
+        ):
+            self.label = label
+            self.children = children or []
+            self.x = 0.0
+            self.y = 0.0
+            self.w = 200.0
+            self.h = 46.0
+            self.color = color
 
-                        for index, rnd in enumerate(split_path_rounds(path), start=1):
-                            step_item = QTreeWidgetItem(
-                                [
-                                    f"[第{chinese_round_number(index)}轮]："
-                                    + " → ".join(str(step) for step in rnd)
-                                ]
-                            )
-                            br_item.addChild(step_item)
+    def _build_tree(self, nodes: List[Dict[str, object]]) -> "_DispNode":
+        """构造多叉树：分支卡 → 打法 → 分支（兄弟按伤害排序）→ 递归分支卡。"""
+        root = self._DispNode("W-B机制（分支树）", color="#DBEAFE")
+        root.children = self._build_nodes(nodes)
+        return root
 
-                        children = br.get("children") or {}
+    def _build_nodes(self, nodes: List[Dict[str, object]]) -> List["_DispNode"]:
+        """把分支卡节点列表转成显示节点（递归分支卡直接平铺，不再包新根）。"""
+        card_nodes: List[WBTreeWindow._DispNode] = []
 
-                        if children.get("nodes"):
-                            walk(children.get("nodes") or [], br_item)
+        for node in nodes:
+            card = node.get("card") or ""
+            play = node.get("play") or "直接"
+            card_node = self._DispNode(f"「{card}」·{play}", color="#FEF3C7")
 
-        walk(wb.get("nodes") or [], root_item)
-        self.wb_tree.expandAll()
+            branches = sorted(
+                node.get("branches") or [],
+                key=lambda b: -(b.get("damage") or 0),
+            )
+
+            for br in branches:
+                drawn = br.get("drawn") or []
+                drawn_txt = (
+                    "抽到{" + "、".join(drawn) + "}"
+                    if drawn
+                    else "发现" + str(br.get("card", ""))
+                )
+                label = (
+                    f"{drawn_txt} 增量{br.get('delta', 0)}："
+                    f"{br.get('damage', 0)}伤/{br.get('dragons', 0)}龙/"
+                    f"余{br.get('mana_left', 0)}费"
+                )
+                br_node = self._DispNode(label, color="#E0F2FE")
+                path = br.get("path") or []
+
+                if path:
+                    path_txt = " → ".join(str(s) for s in path[:6])
+                    path_txt += " …" if len(path) > 6 else ""
+                    br_node.children.append(
+                        self._DispNode(path_txt, color="#FFFFFF")
+                    )
+
+                children = br.get("children") or {}
+
+                if children.get("nodes"):
+                    br_node.children.extend(
+                        self._build_nodes(children.get("nodes") or [])
+                    )
+
+                card_node.children.append(br_node)
+
+            card_nodes.append(card_node)
+
+        return card_nodes
+
+    def _build_trunk(self, nodes: List[Dict[str, object]]) -> "_DispNode":
+        """收起态：只保留 DFS 主干链（每层取最高伤分支）。"""
+        root = self._DispNode("W-B机制（主干）", color="#DBEAFE")
+        cur = list(nodes)
+        parent = root
+
+        while cur:
+            best_node = max(
+                cur,
+                key=lambda n: max(
+                    (b.get("damage") or 0) or (b.get("delta") or 0)
+                    for b in (n.get("branches") or [{}])
+                ),
+            )
+            card = best_node.get("card") or ""
+            play = best_node.get("play") or "直接"
+            node_box = self._DispNode(f"「{card}」·{play}", color="#FEF3C7")
+            parent.children.append(node_box)
+            branches = best_node.get("branches") or []
+
+            if not branches:
+                break
+
+            best_br = max(branches, key=lambda b: b.get("damage") or 0)
+            drawn = best_br.get("drawn") or []
+            drawn_txt = (
+                "抽到{" + "、".join(drawn) + "}"
+                if drawn
+                else "发现" + str(best_br.get("card", ""))
+            )
+            br_label = (
+                f"{drawn_txt} {best_br.get('damage', 0)}伤/"
+                f"{best_br.get('dragons', 0)}龙/余{best_br.get('mana_left', 0)}费"
+            )
+            br_box = self._DispNode(br_label, color="#E0F2FE")
+            node_box.children.append(br_box)
+            path = best_br.get("path") or []
+
+            if path:
+                path_txt = " → ".join(str(s) for s in path[:6])
+                path_txt += " …" if len(path) > 6 else ""
+                br_box.children.append(self._DispNode(path_txt, color="#FFFFFF"))
+
+            children = best_br.get("children") or {}
+            cur = children.get("nodes") or []
+            parent = br_box
+
+        return root
+
+    # ---------- 树布局（广度优先排序后自上而下） ----------
+
+    _NODE_GAP_X = 26.0
+    _LEVEL_GAP_Y = 70.0
+
+    def _layout(self, node: "_DispNode") -> float:
+        """递归计算子树宽度并把子节点 x 设为相对父中心的偏移。返回子树宽度。"""
+        if not node.children:
+            return node.w
+
+        child_widths = [self._layout(c) for c in node.children]
+        total = sum(child_widths) + self._NODE_GAP_X * (len(child_widths) - 1)
+        x = -total / 2.0
+
+        for child, cw in zip(node.children, child_widths):
+            child.x = x + cw / 2.0
+            x += cw + self._NODE_GAP_X
+
+        return total
+
+    # ---------- 深度优先遍历绘制 ----------
+
+    def _draw(self, node: "_DispNode", cx: float, cy: float) -> None:
+        """DFS 遍历绘制：节点中心 (cx, cy)，子节点向下展开。"""
+        for child in node.children:
+            ccx = cx + child.x
+            ccy = cy + node.h + self._LEVEL_GAP_Y
+            line = QGraphicsLineItem(cx, cy + node.h, ccx, ccy)
+            pen = QPen(QColor("#9CA3AF"))
+            pen.setWidth(2)
+            line.setPen(pen)
+            self.scene.addItem(line)
+            self._draw(child, ccx, ccy)
+
+        box = QGraphicsRectItem(QRectF(cx - node.w / 2.0, cy, node.w, node.h))
+        box.setBrush(QColor(node.color))
+        box.setPen(QPen(QColor("#666666")))
+        self.scene.addItem(box)
+        txt = QGraphicsSimpleTextItem(node.label, box)
+        txt.setPos(cx - node.w / 2.0 + 6, cy + 12)
+        self.scene.addItem(txt)
 
 
 class MiniWindow(QWidget):
