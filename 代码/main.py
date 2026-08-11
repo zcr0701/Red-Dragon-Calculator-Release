@@ -1209,6 +1209,14 @@ class MainWindow(QWidget):
         self.progress_bar.setVisible(False)
         self.engine_label = QLabel("")
         run_row.addWidget(self.calc_button)
+        # 免责声明：计算完成后静默上传公式到云端公式库（紧挨开始计算）
+        self.disclaimer_label = QLabel(
+            '<span style="font-size:11px;color:#888;">'
+            '免责声明：计算出的公式将上传云端公式库造福更多人喵~'
+            '</span>'
+        )
+        self.disclaimer_label.setWordWrap(False)
+        run_row.addWidget(self.disclaimer_label)
         run_row.addWidget(self.progress_bar, 1)
         run_row.addWidget(self.engine_label)
         right_layout.addLayout(run_row)
@@ -1329,15 +1337,6 @@ class MainWindow(QWidget):
         main_splitter.addWidget(self.manual_panel)
         main_splitter.setSizes([560, 220])
         self.manual_button.toggled.connect(self.manual_panel.setVisible)
-
-        # 主窗口底部免责声明：计算完成后静默上传公式到云端公式库
-        self.disclaimer_label = QLabel(
-            '<span style="font-size:12px;color:#888;">'
-            '免责声明：计算出的公式将上传云端公式库造福更多人喵~'
-            '</span>'
-        )
-        self.disclaimer_label.setWordWrap(True)
-        root.addWidget(self.disclaimer_label)
 
         self._update_etc_summary()
         self._update_calc_enabled()
