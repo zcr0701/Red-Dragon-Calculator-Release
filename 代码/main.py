@@ -1115,7 +1115,8 @@ class MainWindow(QWidget):
 
         for i, (card_name, label) in enumerate(COMBO_MINION_CHECKS):
             box = QCheckBox(label)
-            box.setChecked(True)
+            # 默认勾选 鱼狐刀暗牛晦；腾武默认不勾（由玩家手动勾选，程序不会自动改）
+            box.setChecked(card_name != "赤烟·腾武")
             box.setToolTip(card_name)
             box.toggled.connect(self._sync_mini_window)
             self.combo_checks.append((card_name, box))
@@ -2252,7 +2253,8 @@ class MiniWindow(QWidget):
 
         for i, (card_name, label) in enumerate(COMBO_MINION_CHECKS):
             box = QCheckBox(label)
-            box.setChecked(True)
+            # 默认勾选 鱼狐刀暗牛晦；腾武默认不勾（与主窗口一致，玩家手动勾选）
+            box.setChecked(card_name != "赤烟·腾武")
             box.setToolTip(card_name)
             box.toggled.connect(self._on_mini_combo_toggled)
             self.mini_combo_checks.append((card_name, box))
