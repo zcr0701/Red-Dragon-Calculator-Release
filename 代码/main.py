@@ -687,6 +687,15 @@ def _wb_tree_prefix(ancestors: List[tuple], col: int) -> str:
 PARA_INDENT = "\u3000\u3000"
 
 
+def _fmt_avg(value: Optional[float]) -> str:
+    """平均数值显示：保留 1 位小数，整数去掉小数尾巴（41.6 / 2 / 1.4）。"""
+    if value is None:
+        return "?"
+
+    text = f"{value:.1f}"
+    return text[:-2] if text.endswith(".0") else text
+
+
 def format_mini_results(
     data: Dict[str, object],
     colors: bool = False,
@@ -853,11 +862,48 @@ class CalculationWorker(QThread):
             # W-B 重写：分支卡（抽随从卡/持枪要挟）的全部分支已直接在 C++ 束宽搜索内
             # 展开（路径标注“（抽到X、Y）”/“（如果X）”），最高伤路径即主搜索结果；
             # Python 侧不再单独回溯计算分支树（保留 compute_wb_tree 代码备用）。
-            # 持枪要挟按发现牌分组的最优路径由 C++ 直接输出（quickdraw_branches），
-            # 小窗“可能分支”据此展示 补水/脱水/误炸/袋底藏沙/不许乱动 各自的伤害与余费。
+            # WhatIF 平均：主路径含持枪要挟时，用 branch_prefix 从分支点回溯，
+            # 五个发现牌（补水/脱水/误炸/袋底藏沙/不许乱动）各保留一条最高伤路径
+            # （quickdraw_branches），再对 伤害/龙数/余费 求平均（whatif_average）。
             result["wb"] = None
             result["draw_whatif"] = None
-            result["quickdraw_branches"] = result.get("quickdraw_branches") or None
+            quickdraw_branches: Optional[List[Dict[str, object]]] = []
+            whatif_average: Optional[Dict[str, float]] = None
+
+            if bool(self.options.get("draw_whatif", True)):
+                best_path = (result.get("results") or [{}])
+                best_path = list((best_path[0].get("path") or []) if best_path else [])
+                qi = next(
+                    (i for i, s in enumerate(best_path) if "持枪要挟" in str(s or "")),
+                    -1,
+                )
+
+                if qi > 0:
+                    # 记忆节点+回溯：重放主路径分支点前的公共前缀，从分支点一次搜完五个分支
+                    res_bp = engine.compute(
+                        self.snapshot,
+                        branch_prefix=list(best_path[:qi]),
+                        exchanges=best_exchange,
+                        **common_kwargs,
+                    )
+                    quickdraw_branches = res_bp.get("quickdraw_branches") or []
+
+                    if quickdraw_branches:
+                        n = len(quickdraw_branches)
+                        whatif_average = {
+                            "damage": sum(
+                                int(b.get("damage") or 0) for b in quickdraw_branches
+                            ) / n,
+                            "dragons": sum(
+                                int(b.get("dragons") or 0) for b in quickdraw_branches
+                            ) / n,
+                            "mana": sum(
+                                int(b.get("mana_left") or 0) for b in quickdraw_branches
+                            ) / n,
+                        }
+
+            result["quickdraw_branches"] = quickdraw_branches or None
+            result["whatif_average"] = whatif_average
 
             # 静默云端上报数据：场面数据 + 最高伤路径（含交换/预处理/分支完整记录）
             result["upload_payload"] = cloud_report.build_payload(
@@ -2349,6 +2395,15 @@ class MainWindow(QWidget):
                 f" / 余{item.get('mana', '?')}费：{path}"
             )
 
+        avg = data.get("whatif_average")
+        if avg:
+            lines.append("")
+            lines.append(
+                f"WhatIF平均最高伤害：{_fmt_avg(avg.get('damage'))}，"
+                f"平均龙数：{_fmt_avg(avg.get('dragons'))}，"
+                f"平均余费：{_fmt_avg(avg.get('mana'))}费"
+            )
+
         wb = data.get("wb")
         if wb:
             lines.append("")
@@ -3027,10 +3082,32 @@ class MiniWindow(QWidget):
         if wb:
             parts.append(self._mini_wb_block(wb, colors))
 
+        # 3) 带可能性分支的 WhatIF 显示：主路径 + 持枪要挟五个分支的平均值
+        if data.get("whatif_average") and data.get("quickdraw_branches"):
+            parts.append(self._mini_whatif_text(data, colors))
+
         if colors:
             self.mini_result.setHtml("<br><br>".join(parts))
         else:
             self.mini_result.setPlainText("\n\n".join(parts))
+
+    def _mini_whatif_text(self, data: Dict[str, object], colors: bool) -> str:
+        """带可能性分支的 WhatIF 显示：
+        主路径（按轮次、含 持枪要挟(如果X) 标注）+ WhatIF平均最高伤害/龙数/余费。
+        """
+        sep = "<br>" if colors else "\n"
+        header = (
+            "<b>带可能性分支的WhatIF显示：</b>" if colors
+            else "带可能性分支的WhatIF显示："
+        )
+        body = format_mini_results(data, colors=colors, exchanges=[])
+        avg = data.get("whatif_average") or {}
+        avg_line = (
+            f"WhatIF平均最高伤害：{_fmt_avg(avg.get('damage'))}，"
+            f"平均龙数：{_fmt_avg(avg.get('dragons'))}，"
+            f"平均余费：{_fmt_avg(avg.get('mana'))}费"
+        )
+        return header + sep + body + sep + avg_line
 
     def _mini_wb_block(self, wb: Dict[str, object], colors: bool) -> str:
         """统一 W-B 分支树（缩写+颜色框，全角空格缩进表示层级）。"""
