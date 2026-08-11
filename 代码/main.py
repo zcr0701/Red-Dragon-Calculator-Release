@@ -35,6 +35,7 @@ from PyQt5.QtCore import (
     QEventLoop,
     QPoint,
     QRectF,
+    QSize,
     QSettings,
     QThread,
     QTimer,
@@ -47,9 +48,11 @@ from PyQt5.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QTextDocument,
 )
 from PyQt5.QtWidgets import (
     QApplication,
+    QAbstractItemView,
     QCheckBox,
     QDialog,
     QDoubleSpinBox,
@@ -73,6 +76,8 @@ from PyQt5.QtWidgets import (
     QSizeGrip,
     QSpinBox,
     QSplitter,
+    QStyledItemDelegate,
+    QStyle,
     QTextBrowser,
     QTreeWidget,
     QTreeWidgetItem,
@@ -952,6 +957,216 @@ def format_whatif_tree(data: Dict[str, object], colors: bool = False) -> str:
             )
 
     return sep.join(lines)
+
+
+class _TreeHtmlDelegate(QStyledItemDelegate):
+    """QTreeWidget 节点用 HTML 渲染（保留缩写字颜色框）。"""
+
+    def paint(self, painter, option, index):  # noqa: N802
+        html_txt = index.data(Qt.UserRole)
+
+        if not html_txt:
+            super().paint(painter, option, index)
+            return
+
+        painter.save()
+
+        if option.state & QStyle.State_Selected:
+            painter.fillRect(option.rect, option.palette.highlight())
+        else:
+            painter.fillRect(option.rect, option.palette.base())
+
+        doc = QTextDocument()
+        doc.setDefaultFont(option.font)
+        doc.setHtml(html_txt)
+        doc.setTextWidth(max(50.0, option.rect.width() - 6.0))
+        painter.translate(option.rect.left() + 3, option.rect.top() + 2)
+        doc.drawContents(painter)
+        painter.restore()
+
+    def sizeHint(self, option, index):  # noqa: N802
+        html_txt = index.data(Qt.UserRole)
+
+        if not html_txt:
+            return super().sizeHint(option, index)
+
+        doc = QTextDocument()
+        doc.setDefaultFont(option.font)
+        doc.setHtml(html_txt)
+        return QSize(int(doc.idealWidth()) + 12, int(doc.size().height()) + 8)
+
+
+class WhatIFTreeWidget(QTreeWidget):
+    """WhatIF 分支树：主路径按轮次为根节点，行骗/持枪要挟同级分支为子节点。
+
+    代替文本式“├─ 空格对齐”显示：树形结构由 QTreeWidget 原生提供，
+    节点内容保留彩色缩写字框（HTML 代理渲染）。
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setHeaderHidden(True)
+        self.setColumnCount(1)
+        self.setAnimated(True)
+        self.setSelectionMode(QAbstractItemView.NoSelection)
+        self.setItemDelegate(_TreeHtmlDelegate(self))
+        self.setStyleSheet("QTreeWidget::item { padding: 1px 0; }")
+
+    @staticmethod
+    def _item(text: str) -> QTreeWidgetItem:
+        item = QTreeWidgetItem()
+        item.setData(0, Qt.UserRole, text)
+        # 纯文本兜底（无 delegate 时仍可读）
+        item.setText(0, re.sub(r"<[^>]+>", "", text))
+        return item
+
+    @staticmethod
+    def _round_index(main_path: List[str], idx: int) -> int:
+        """返回分支卡所在轮次的下标（0 起）；不在路径中返回 -1。"""
+        pos = 0
+
+        for r, rnd in enumerate(split_path_rounds(main_path)):
+            if idx < pos + len(rnd):
+                return r
+
+            pos += len(rnd)
+
+        return -1
+
+    def set_whatif(self, data: Dict[str, object], colors: bool = True) -> None:
+        self.clear()
+        results = data.get("results") or []
+
+        if not results:
+            return
+
+        avg = data.get("whatif_average") or {}
+        main = results[0]
+        main_path = list(main.get("path") or [])
+        main_dmg = int(main.get("damage") or 0)
+        main_mana = int(main.get("mana") or 0)
+        abbr_fn = abbreviate_step_html if colors else abbreviate_step
+
+        if avg:
+            avg_item = self._item(
+                f"WhatIF平均最高伤害：{_fmt_avg(avg.get('damage'))}，"
+                f"平均龙数：{_fmt_avg(avg.get('dragons'))}"
+            )
+            self.addTopLevelItem(avg_item)
+
+        round_items: List[QTreeWidgetItem] = []
+
+        for index, rnd in enumerate(split_path_rounds(main_path), start=1):
+            abbr = "-".join(abbr_fn(s, compact=False) for s in rnd)
+            item = self._item(f"[第{chinese_round_number(index)}轮]：　　{abbr}")
+            self.addTopLevelItem(item)
+            round_items.append(item)
+
+        if main_path and round_items:
+            last = round_items[-1]
+            last.setData(
+                0,
+                Qt.UserRole,
+                last.data(0, Qt.UserRole) + f"({main_dmg}伤余{main_mana}费)",
+            )
+            last.setText(
+                0,
+                re.sub(r"<[^>]+>", "", last.data(0, Qt.UserRole)),
+            )
+
+        # 抽随从卡同级分支（行骗/挖掘宝藏/潜伏帷幕/垂钓时光）
+        draw_markers = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光")
+        di = next(
+            (
+                i
+                for i, s in enumerate(main_path)
+                if any(m in str(s or "") for m in draw_markers)
+            ),
+            -1,
+        )
+        main_draw_key = ""
+
+        if di >= 0:
+            m = re.search(r"[（(](.+?)[）)]", str(main_path[di]))
+
+            if m:
+                main_draw_key = m.group(1)
+
+        draw_branches = data.get("draw_branches") or []
+
+        if draw_branches and di >= 0:
+            ri = self._round_index(main_path, di)
+
+            if 0 <= ri < len(round_items):
+                marker = next(
+                    (mk for mk in draw_markers if mk in str(main_path[di])),
+                    "行骗",
+                )
+
+                for b in draw_branches:
+                    key = b.get("card") or ""
+
+                    if key == main_draw_key:
+                        continue
+
+                    dmg = int(b.get("damage") or 0)
+                    mana = int(b.get("mana_left") or 0)
+                    node = self._item(
+                        f"├─{marker}({abbreviate_card_name(key)})"
+                        f"-……({dmg}伤余{mana}费)"
+                    )
+                    round_items[ri].addChild(node)
+                    self._append_path(node, b.get("path") or [], abbr_fn)
+
+        # 持枪要挟同级分支
+        qi = next(
+            (i for i, s in enumerate(main_path) if "持枪要挟" in str(s or "")),
+            -1,
+        )
+        main_qd_choice = ""
+
+        if qi >= 0:
+            m = re.search(r"持枪要挟[（(](.+?)[）)]", str(main_path[qi]))
+
+            if m:
+                main_qd_choice = m.group(1)
+
+        qd_branches = data.get("quickdraw_branches") or []
+
+        if qd_branches and qi >= 0:
+            ri = self._round_index(main_path, qi)
+
+            if 0 <= ri < len(round_items):
+                for b in qd_branches:
+                    card = b.get("card") or ""
+
+                    if card == main_qd_choice:
+                        continue
+
+                    dmg = int(b.get("damage") or 0)
+                    mana = int(b.get("mana_left") or 0)
+                    node = self._item(
+                        f"├─持枪要挟({abbreviate_card_name(card)})"
+                        f"-……({dmg}伤余{mana}费)"
+                    )
+                    round_items[ri].addChild(node)
+                    self._append_path(node, b.get("path") or [], abbr_fn)
+
+        self.expandToDepth(2)
+
+    @staticmethod
+    def _append_path(
+        parent: QTreeWidgetItem,
+        path: List[str],
+        abbr_fn,
+    ) -> None:
+        for index, rnd in enumerate(split_path_rounds(path), start=1):
+            abbr = "-".join(abbr_fn(s, compact=False) for s in rnd)
+            parent.addChild(
+                WhatIFTreeWidget._item(
+                    f"[第{chinese_round_number(index)}轮]：　　{abbr}"
+                )
+            )
 
 
 class CalculationWorker(QThread):
@@ -1865,6 +2080,9 @@ class MainWindow(QWidget):
         self.result_text.setReadOnly(True)
         self.result_text.setMaximumBlockCount(5000)
         result_layout.addWidget(self.result_text)
+        self.whatif_tree = WhatIFTreeWidget()
+        self.whatif_tree.setVisible(False)
+        result_layout.addWidget(self.whatif_tree)
         right_layout.addWidget(result_box, 1)
 
         top.addWidget(right)
@@ -2688,8 +2906,8 @@ class MainWindow(QWidget):
         return "\n".join(lines)
 
     def _on_result(self, data: Dict[str, object]) -> None:
-        # 主窗口结果 = 正常线（禁抽：不考虑行骗/挖掘宝藏/潜伏帷幕/垂钓时光/持枪要挟
-        # 这类可能带有分支的抽卡），与 小窗 原版 段完全一致。
+        # 主窗口结果 = 正常线（V1.2.1 逻辑：行骗/挖掘宝藏/潜伏帷幕/垂钓时光可打出，
+        # 抽牌按“抽杂牌”确定性处理），与 小窗 正常线 段完全一致。
         orig = data.get("original") or {}
         normal_dmg = int(orig.get("damage") or 0)
         normal_dragons = int(orig.get("dragons") or 0)
@@ -2723,15 +2941,14 @@ class MainWindow(QWidget):
         else:
             lines.append("  （无路径）")
 
-        # WhatIF 树：行骗/持枪要挟同级分支（含 96 等分支最优）
-        if (
+        # WhatIF 树：行骗/持枪要挟同级分支（含 96 等分支最优）→ QTreeWidget 展示
+        has_whatif = bool(
             data.get("quickdraw_branches")
             or data.get("draw_branches")
             or data.get("whatif_average")
-        ):
-            lines.append("")
-            lines.append("WhatIF（考虑分支抽卡/持枪要挟）：")
-            lines.append(format_whatif_tree(data, colors=False))
+        )
+        self.whatif_tree.set_whatif(data, colors=self.mini_color_enabled())
+        self.whatif_tree.setVisible(has_whatif)
 
         wb = data.get("wb")
         if wb:
@@ -3160,6 +3377,9 @@ class MiniWindow(QWidget):
         self.mini_result.setReadOnly(True)
         self.mini_result.document().setMaximumBlockCount(3000)
         root.addWidget(self.mini_result, 1)
+        self.mini_whatif_tree = WhatIFTreeWidget()
+        self.mini_whatif_tree.setVisible(False)
+        root.addWidget(self.mini_whatif_tree, 1)
         self.set_formula_font(self.main.mini_font_size())
 
         grip = QSizeGrip(self)
@@ -3171,6 +3391,7 @@ class MiniWindow(QWidget):
         font.setPixelSize(int(size))
         self.mini_result.setFont(font)
         self.mini_result.document().setDefaultFont(font)
+        self.mini_whatif_tree.setFont(font)
 
     # ---- 拖动 / 吸附 / 调整大小 ----
 
@@ -3387,31 +3608,30 @@ class MiniWindow(QWidget):
         self._render_result()
 
     def _render_result(self) -> None:
-        """小窗显示顺序：原版（不考虑分支节点）在前 → 带可能性分支的 WhatIF 显示。"""
+        """小窗显示顺序：正常线（QTextBrowser）在前 → WhatIF 分支树（QTreeWidget）。"""
         if self._last_data is None:
             return
 
         exchanges = self.main.current_exchange_pairs()
         data = self._last_data
         colors = self.main.mini_color_enabled()
-        parts: List[str] = []
 
-        # 1) 原版：不考虑 >=1 可能结果的分支节点（即之前的计算逻辑）
-        parts.append(self._mini_original_text(data, colors, exchanges))
+        # 1) 正常线（V1.2.1 抽杂牌逻辑）
+        text = self._mini_original_text(data, colors, exchanges)
 
-        # 2) 带可能性分支的 WhatIF 显示：主路径 + 分支列表 + 平均
-        # 制表符对齐的 ├─ 分支列表只出现在 WhatIF 显示里。
-        if (
+        if colors:
+            self.mini_result.setHtml(text)
+        else:
+            self.mini_result.setPlainText(text)
+
+        # 2) WhatIF 分支树（QTreeWidget）
+        has_whatif = bool(
             data.get("quickdraw_branches")
             or data.get("draw_branches")
             or data.get("whatif_average")
-        ):
-            parts.append(self._mini_whatif_text(data, colors))
-
-        if colors:
-            self.mini_result.setHtml("<br><br>".join(parts))
-        else:
-            self.mini_result.setPlainText("\n\n".join(parts))
+        )
+        self.mini_whatif_tree.set_whatif(data, colors=colors)
+        self.mini_whatif_tree.setVisible(has_whatif)
 
     def _mini_original_text(
         self,
@@ -3419,10 +3639,10 @@ class MiniWindow(QWidget):
         colors: bool,
         exchanges: Optional[List[Tuple[int, int]]] = None,
     ) -> str:
-        """正常线：不考虑分支抽卡（行骗/挖掘宝藏/潜伏帷幕/垂钓时光/持枪要挟）。
+        """正常线（V1.2.1 逻辑）：抽卡当杂牌打出，结果唯一确定。
 
-        C++ 的 original 已按“禁抽”计算（打出过这类卡的路径不进正常线）；
-        0 伤害时统一显示（无路径），不显示浪费费用的无意义路径。
+        C++ 的 original 已按“抽杂牌”计算（行骗保底抽法术杂牌、垂钓连击抽未知杂牌、
+        挖掘宝藏/潜伏帷幕不模拟抽牌）；0 伤害时统一显示（无路径）。
         """
         orig = data.get("original")
 
