@@ -2283,20 +2283,28 @@ class MiniWindow(QWidget):
         band_row.addStretch(1)
         root.addLayout(band_row)
 
-        # 牌库剩余随从（如果机制抽牌池）：与主窗口双向同步
-        combo_row = QGridLayout()
-        combo_row.setSpacing(4)
+        # 牌库剩余随从（如果机制抽牌池）：单行 卡组随从：[鱼][狐][刀][暗][牛][晦][腾]
+        combo_row = QHBoxLayout()
+        combo_row.setSpacing(3)
+        combo_label = QLabel("卡组随从：")
+        combo_label.setStyleSheet("font-size:11px;color:#555;")
+        combo_row.addWidget(combo_label)
         self.mini_combo_checks: List[Tuple[str, QCheckBox]] = []
 
         for i, (card_name, label) in enumerate(COMBO_MINION_CHECKS):
             box = QCheckBox(label)
+            box.setStyleSheet(
+                "QCheckBox{margin:0;padding:0;font-size:11px;}"
+                "QCheckBox::indicator{width:12px;height:12px;}"
+            )
             # 默认勾选 鱼狐刀暗牛晦；腾武默认不勾（与主窗口一致，玩家手动勾选）
             box.setChecked(card_name != "赤烟·腾武")
             box.setToolTip(card_name)
             box.toggled.connect(self._on_mini_combo_toggled)
             self.mini_combo_checks.append((card_name, box))
-            combo_row.addWidget(box, i // 4, i % 4)
+            combo_row.addWidget(box)
 
+        combo_row.addStretch(1)
         root.addLayout(combo_row)
 
         deadly_row = QHBoxLayout()
