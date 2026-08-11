@@ -443,6 +443,7 @@ def build_payload(
     only_best_damage: bool = False,
     discover_quickdraw_choice: Optional[str] = None,
     branch_prefix: Optional[List[str]] = None,
+    lethal_threshold: int = -1,
 ) -> Dict[str, object]:
     """把日志快照转成 C++ JSON 局面（纯束宽搜索）。
 
@@ -555,6 +556,7 @@ def build_payload(
         "only_best_damage": 1 if only_best_damage else 0,
         "discover_quickdraw_choice": discover_quickdraw_choice or "",
         "branch_prefix": branch_prefix or [],
+        "lethal_threshold": int(lethal_threshold),
         # 默认四通道：H6/1100（8水晶十龙深线）、H1/1500（4水晶十龙/紧线）、
         # H2/1100（96 伤线）、H2/3000（6水晶紧 48 伤线）
         "wide_widths": wide_widths or [1100, 1500, 1100, 3000],
@@ -695,6 +697,7 @@ def compute(
     only_best_damage: bool = False,
     discover_quickdraw_choice: Optional[str] = None,
     branch_prefix: Optional[List[str]] = None,
+    lethal_threshold: int = -1,
     exe_path: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
     found_callback: Optional[Callable[[int, int], None]] = None,
@@ -717,6 +720,7 @@ def compute(
         only_best_damage=only_best_damage,
         discover_quickdraw_choice=discover_quickdraw_choice,
         branch_prefix=branch_prefix,
+        lethal_threshold=lethal_threshold,
     )
     result = run_engine(
         payload,
@@ -1034,6 +1038,19 @@ def compute_draw_whatif(
     variant["mana"] = mana
 
     dmg, drg, mana_left = _quick_otk_estimate(variant)
+
+    # 精确截断（与框2“可能机制”共享）：预计伤害封顶为 敌方英雄血量+护甲，
+    # 超过即视为已斩杀，不再给出更高估值
+    if options and bool(options.get("truncate_branch", True)):
+        hero = snapshot.get("opponent_hero") or {}
+        hp = hero.get("health")
+
+        if isinstance(hp, int) and hp > 0:
+            lethal = hp + int(hero.get("armor") or 0)
+
+            if lethal > 0:
+                dmg = min(dmg, lethal)
+
     return {
         "cards": list(used_cards),
         "drawn": drawn_minions,

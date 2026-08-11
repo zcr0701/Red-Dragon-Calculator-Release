@@ -1367,6 +1367,7 @@ struct SearchParams {
     vector<int> heuristics;     // 各宽束通道的启发函数；空 = 默认 {6,2}
     int inner_threads = 1;      // 宽束通道内部的并行展开线程数（大局面通道给 3）
     int only_best_damage = 0;   // 只计算最高伤害：找到最高伤后剪掉无法超越它的分支
+    int lethal_threshold = -1;  // 精确截断：>0 时搜到 伤害≥阈值（敌方血量+护甲）即停
 };
 
 // ---------- 子链覆盖度（旧 beam 冠军判据：状态侧已凑齐的子链骨架数） ----------
@@ -1870,6 +1871,12 @@ static void* beam_slice_worker(void* param) {
     BeamSliceArgs* a = static_cast<BeamSliceArgs*>(param);
     long long local = 0;
     for (int i = a->begin; i < a->end; i++) {
+        if (a->p->lethal_threshold > 0 && a->best_damage &&
+            a->best_damage->load() >= a->p->lethal_threshold) {
+            // 精确截断：已达成 伤害 ≥ 敌方血量+护甲，不再展开本层剩余状态
+            a->total_exp->fetch_add(local);
+            return 0;
+        }
         for (State& succ : generate_successors((*a->level)[i])) {
             local++;
             if ((local & 511) == 0 && a->budget->over()) {
@@ -1928,6 +1935,10 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
 
     for (int depth = 1; depth <= p.depth; depth++) {
         if (budget.over()) break;
+        if (p.lethal_threshold > 0 && best_damage &&
+            best_damage->load() >= p.lethal_threshold) {
+            break;  // 精确截断：已找到 伤害 ≥ 敌方血量+护甲 的斩杀线
+        }
         if (best_damage && p.only_best_damage &&
             best_damage->load() >= p.max_alex * 16) {
             break;  // 已达理论上限（每条龙最多 16 伤），不可能再提升
@@ -2509,6 +2520,7 @@ int main(int argc, char** argv) {
     p.time_budget_sec = root.get_double("time_budget_sec", p.time_budget_sec);
     p.heuristic = (int)root.get_int("heuristic", p.heuristic);
     p.only_best_damage = (int)root.get_int("only_best_damage", 0);
+    p.lethal_threshold = (int)root.get_int("lethal_threshold", -1);
     p.wide_width = (int)root.get_int("wide_width", p.wide_width);
     const JVal* wws = root.find("wide_widths");
     if (wws && wws->type == JVal::ARR) {

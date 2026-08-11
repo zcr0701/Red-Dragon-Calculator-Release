@@ -600,6 +600,11 @@ class CalculationWorker(QThread):
             }
             result = engine.compute(
                 self.snapshot,
+                lethal_threshold=(
+                    _lethal_threshold(self.snapshot)
+                    if bool(self.options.get("truncate_normal", False))
+                    else -1
+                ),
                 progress_callback=self.progress.emit,
                 found_callback=self.found.emit,
                 should_stop=lambda: self._stop,
@@ -637,6 +642,11 @@ class CalculationWorker(QThread):
                         self.snapshot,
                         discover_quickdraw_choice=choice,
                         branch_prefix=branch_prefix,
+                        lethal_threshold=(
+                            _lethal_threshold(self.snapshot)
+                            if bool(self.options.get("truncate_branch", True))
+                            else -1
+                        ),
                         should_stop=lambda: self._stop,
                         **common_kwargs,
                     )
@@ -679,6 +689,17 @@ def _hero_text(hero: Optional[Dict[str, object]]) -> str:
     hp = hero.get("health")
     armor = hero.get("armor") or 0
     return f"{hp if hp is not None else '?'}血/{armor}甲"
+
+
+def _lethal_threshold(snapshot: Dict[str, object]) -> int:
+    """精确截断阈值 = 敌方英雄血量 + 护甲；无数据（-1）表示不截断。"""
+    hero = snapshot.get("opponent_hero") or {}
+    hp = hero.get("health")
+
+    if not isinstance(hp, int) or hp <= 0:
+        return -1
+
+    return hp + int(hero.get("armor") or 0)
 
 
 def parse_manual_zone_lines(
@@ -1095,6 +1116,19 @@ class MainWindow(QWidget):
             "抽到预写组合缺失的随从，能达到的最高伤害"
         )
         param_grid.addWidget(self.draw_whatif_check, 10, 0, 1, 2)
+        # 精确截断：伤害 ≥ 敌方血量+护甲 即停（加速计算）
+        self.truncate_normal_check = QCheckBox("正常计算")
+        self.truncate_normal_check.setChecked(False)
+        self.truncate_normal_check.setToolTip(
+            "勾选后：正常计算搜到 伤害 ≥ 敌方英雄血量+护甲 即停（只求斩杀线，不再追最高伤）"
+        )
+        self.truncate_branch_check = QCheckBox("可能机制")
+        self.truncate_branch_check.setChecked(True)
+        self.truncate_branch_check.setToolTip(
+            "勾选后：持枪要挟各可能分支计算搜到 伤害 ≥ 敌方英雄血量+护甲 即停（加速分支计算）"
+        )
+        param_grid.addWidget(self.truncate_normal_check, 11, 0)
+        param_grid.addWidget(self.truncate_branch_check, 11, 1)
         right_layout.addWidget(param_box)
 
         run_row = QHBoxLayout()
@@ -1667,6 +1701,8 @@ class MainWindow(QWidget):
             "exchanges": self.current_exchange_pairs(),
             "only_best_damage": self.best_only_check.isChecked(),
             "draw_whatif": self.draw_whatif_check.isChecked(),
+            "truncate_normal": self.truncate_normal_check.isChecked(),
+            "truncate_branch": self.truncate_branch_check.isChecked(),
         }
 
     def current_exchange_pairs(self) -> List[Tuple[int, int]]:
