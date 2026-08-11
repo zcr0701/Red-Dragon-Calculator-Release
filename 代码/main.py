@@ -342,6 +342,28 @@ def split_path_rounds(path: List[str]) -> List[List[str]]:
     return rounds
 
 
+def _whatif_path_text(whatif: Dict[str, object]) -> str:
+    """把如果机制结果拼成完整假设路径：抽随从卡后附“抽到X”，暗施法者标注复制刀油。"""
+    cards = whatif.get("cards") or []
+    drawn = whatif.get("drawn") or []
+    di = 0
+    steps: List[str] = []
+
+    for card in cards:
+        n = engine.DRAW_MINION_SPELLS.get(card, (0, 0))[1]
+
+        if n:
+            got = drawn[di:di + n]
+            di += n
+            steps.append(card + ("(抽到" + "、".join(got) + ")" if got else ""))
+        elif card == "暗影施法者" and "斯卡布斯·刀油" in cards:
+            steps.append("暗影施法者(斯卡布斯·刀油)")
+        else:
+            steps.append(card)
+
+    return " → ".join(steps)
+
+
 def _format_exchange_line(exchanges: List[Tuple[int, int]]) -> str:
     """场面交换处理行：[我方随从X]->[敌方随从X]，……。X 为 board 序号。"""
     if not exchanges:
@@ -1722,6 +1744,7 @@ class MainWindow(QWidget):
         if whatif:
             lines.append("")
             lines.append("如果机制：")
+            lines.append("如果路径：" + _whatif_path_text(whatif))
             lines.append("如果使用：[" + "][".join(whatif["cards"]) + "]")
             drawn = whatif.get("drawn") or []
             lines.append("可能抽到：[" + "][".join(drawn) + "]")
@@ -1854,8 +1877,10 @@ class MiniWindow(QWidget):
 
         deadly_row = QHBoxLayout()
         self.mini_deadly_check = QCheckBox("殒命序号：")
+        self.mini_deadly_check.setToolTip("重开游戏时需要填，平时不用管")
         self.mini_deadly_input = QLineEdit()
         self.mini_deadly_input.setPlaceholderText("如 3,7")
+        self.mini_deadly_input.setToolTip("重开游戏时需要填，平时不用管")
         self.mini_deadly_input.setEnabled(False)
         self.mini_deadly_check.toggled.connect(self.mini_deadly_input.setEnabled)
         self.mini_deadly_check.toggled.connect(self._on_mini_deadly_changed)
@@ -2090,15 +2115,31 @@ class MiniWindow(QWidget):
             return
 
         exchanges = self.main.current_exchange_pairs()
+        whatif_text = self._mini_whatif_text()
 
         if self.main.mini_color_enabled():
-            self.mini_result.setHtml(
-                format_mini_results(self._last_data, colors=True, exchanges=exchanges)
+            html_out = format_mini_results(
+                self._last_data, colors=True, exchanges=exchanges
             )
+
+            if whatif_text:
+                html_out += "<br><br>" + html.escape(whatif_text)
+
+            self.mini_result.setHtml(html_out)
         else:
-            self.mini_result.setPlainText(
-                format_mini_results(self._last_data, exchanges=exchanges)
-            )
+            plain = format_mini_results(self._last_data, exchanges=exchanges)
+
+            if whatif_text:
+                plain += "\n\n" + whatif_text
+
+            self.mini_result.setPlainText(plain)
+
+    def _mini_whatif_text(self) -> str:
+        """解析主窗口结果文本里的“如果机制”段落（主窗口已拼出完整路径）。"""
+        text = self.main.result_text.toPlainText()
+        marker = "如果机制："
+        idx = text.find(marker)
+        return text[idx:].rstrip() if idx >= 0 else ""
 
     def refresh_result(self) -> None:
         """小窗颜色开关切换后重绘已显示的结果。"""
