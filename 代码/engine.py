@@ -279,6 +279,7 @@ def _keep_value(
     in_hand: bool,
     etc_band: Optional[List[str]],
     hand: Optional[List[dict]] = None,
+    health: Optional[int] = None,
 ) -> float:
     """随从保留分：结合手牌与牛池动态判断（场面上的随从价值随持有情况变化）。
 
@@ -293,7 +294,10 @@ def _keep_value(
         return 0.0 if in_hand else 35.0
 
     if name == "斯卡布斯·刀油":
-        return 20.0 if in_hand else 50.0
+        # 刀油是减费引擎（下两张牌-2费），连招价值与身材无关；
+        # 用户优先级 鱼/刀/牛 最高。085526：保留刀油不交换=48伤，
+        # 送刀腾1格反而只有32伤——旧值50被1个空位(+100)盖过。
+        return 60.0 if in_hand else 110.0
 
     if name == "乐队经理精英牛头人酋长":
         if in_hand:
@@ -311,6 +315,11 @@ def _keep_value(
         if "舞动全场（ft.迦罗娜）" in etc_band:
             return 120.0  # 牛内还有舞 → 高价值
 
+        if "战略转移" in etc_band:
+            # 牛内还有战略转移 → 回手引擎（单随从回手并还原），价值≈幻觉药水档。
+            # 085526：不交换保留牛=48伤（幻弹牛→牛拿转→转回手），送牛腾1格只有32伤。
+            return 110.0
+
         if set(etc_band) == {"幻觉药水"}:
             return 110.0  # 只剩幻：牛本体仍可舞动回手/占位，保留价值高
 
@@ -318,6 +327,16 @@ def _keep_value(
 
     if name == "暗影施法者":
         return 12.0 if in_hand else 30.0
+
+    if name == "赤烟·腾武":
+        # 原版腾武（health>1）是回手引擎：回手并设 1 费，保留价值 60/110；
+        # 1/1 复制体是牺牲材料，价值 0（腾武不优先回手 1/1 复制）。
+        # 依据 081102：80 伤线保留 3/2 腾武+双刀，只牺牲两个 1/1 复制体；
+        # 牺牲原版腾武的计划（如 送腾3/2+晦1/1）只有 64 伤；
+        # 085526：保留腾武送刀+牛=48伤 > 保牛送腾=32伤，腾武价值须高于 牛(其他组合)=90。
+        if health and health > 1:
+            return 60.0 if in_hand else 110.0
+        return 0.0
 
     if name == "晦鳞巢母":
         return 8.0 if in_hand else 20.0
@@ -344,18 +363,28 @@ def exchange_heuristic(
     hand = hand or []
     hand_names = {item.get("name") for item in hand}
     free_slots = max(0, MAX_BOARD_SLOTS - len(board))
+    # 空位饱和：前 4 个空位每个价值 100，之后边际价值骤降为 15。
+    # 依据 102544：场上仅 3 随从（空 4 格）时最优是“不交换”保留腾武+刀（128伤），
+    # 旧评分给第 5/6 个空位也按 100/格，导致“送掉腾武+刀换多余空位”的计划反超。
+    free_value = 100.0 * min(free_slots, 4) + 15.0 * max(0, free_slots - 4)
     keep_score = 0.0
     position_bonus = 0.0
 
     for index, item in enumerate(board, start=1):
         name = item.get("name") or ""
-        keep = _keep_value(name, name in hand_names, etc_band, hand)
+        keep = _keep_value(
+            name,
+            name in hand_names,
+            etc_band,
+            hand,
+            int(item.get("health") or 0),
+        )
         keep_score += keep
 
         if keep:
             position_bonus += max(0, MAX_BOARD_SLOTS - index) * 0.5
 
-    total = free_slots * 100.0 + keep_score + position_bonus
+    total = free_value + keep_score + position_bonus
     return (total, free_slots, len(board))
 
 
