@@ -72,10 +72,8 @@ def build_payload(
             "play_sequence": [str(step) for step in (best.get("path") or [])],
             # 场面交换处理：最优解使用的交换计划（我方随从->敌方随从/英雄）
             "exchanges": exchanges,
-            # 可能预处理：如果机制（抽随从卡→凑齐组合→预计伤害）
-            "draw_whatif": result.get("draw_whatif"),
-            # 可能分支：持枪要挟各发现牌分支的完整路径
-            "quickdraw_branches": result.get("quickdraw_branches"),
+            # 统一 W-B 机制分支树（抽随从卡/持枪要挟分支的完整记录）
+            "wb": result.get("wb"),
         },
         # 场面数据：敌我随从/英雄/牛池/效果等完整局面
         "scene": {

@@ -528,6 +528,38 @@ def _format_exchange_line(exchanges: List[Tuple[int, int]]) -> str:
     return f"场面交换处理：{plan}。其中X为随从在board中的序号"
 
 
+def _wb_tree_lines(wb: Dict[str, object]) -> List[str]:
+    """统一 W-B 机制分支树（制表符缩进表示层级）。"""
+    lines = ["W-B机制（分支树）："]
+    nodes = wb.get("nodes") or []
+
+    for ni, node in enumerate(nodes):
+        card = node.get("card") or ""
+        kind = node.get("kind") or ""
+        branches = node.get("branches") or []
+        label = f"抽随从卡分支「{card}」" if kind == "draw" else f"持枪要挟分支"
+        lines.append(f"\t{label}（{len(branches)} 个分支）")
+
+        for bi, br in enumerate(branches, start=1):
+            drawn = br.get("drawn") or []
+            drawn_txt = "{" + "、".join(drawn) + "}" if drawn else str(br.get("card", ""))
+            lines.append(
+                f"\t\tBranch{bi} 抽到{drawn_txt} "
+                f"增量{br.get('delta', 0)}：最大伤害：{br.get('damage', 0)}，"
+                f"龙数：{br.get('dragons', 0)}，余：{br.get('mana_left', 0)}费"
+            )
+            path = br.get("path") or []
+
+            if path:
+                for index, rnd in enumerate(split_path_rounds(path), start=1):
+                    lines.append(
+                        f"\t\t[第{chinese_round_number(index)}轮]："
+                        + " → ".join(str(step) for step in rnd)
+                    )
+
+    return lines
+
+
 # 小窗段落（每轮路径行）开头缩进两个全角空格
 PARA_INDENT = "\u3000\u3000"
 
@@ -691,105 +723,117 @@ class CalculationWorker(QThread):
                     **common_kwargs,
                 )
 
-            whatif_top_k = int(self.options.get("whatif_branch_top_k", 3))
-            whatif = None
+            # ========== 统一 W-B 机制（WhatIf-Branch）==========
+            draw_top_k = int(self.options.get("whatif_branch_top_k", 3))
+            quickdraw_top_k = int(self.options.get("branch_top_k", 5))
+            node_top_k = int(self.options.get("wb_node_top_k", 3))
+            wb = None
 
-            if bool(self.options.get("draw_whatif", True)) and whatif_top_k > 0:
-                # 独立的 WhatIf：牌库剩余多张可能抽到的随从时生成多个分支（top-K），
-                # 每个分支独立评估（强制首抽为该随从），再各自在干净变体上跑真实搜索。
-                whatif = engine.compute_whatif_branches(
-                    self.snapshot, self.options, top_k=whatif_top_k
+            if bool(self.options.get("draw_whatif", True)) and node_top_k > 0:
+                # 识别手牌中的分支卡（抽随从卡/持枪要挟），按 [场面变化] 增量评分
+                # 对各分支取 top-K，生成分支树；随后逐分支回溯真实搜索。
+                wb = engine.compute_wb_tree(
+                    self.snapshot,
+                    self.options,
+                    draw_top_k=max(1, draw_top_k),
+                    quickdraw_top_k=max(1, quickdraw_top_k),
                 )
 
-                if whatif:
-                    for sc in whatif.get("branches") or []:
-                        variant = sc.pop("variant", None)
+                if wb:
+                    nodes = wb.get("nodes") or []
 
-                        if not variant:
-                            continue
-
-                        res2 = engine.compute(
-                            variant,
-                            exchanges=best_exchange,
-                            lethal_threshold=(
-                                _lethal_threshold(variant, best_exchange)
-                                if bool(self.options.get("truncate_branch", True))
-                                else -1
-                            ),
-                            should_stop=lambda: self._stop,
-                            **common_kwargs,
-                        )
-                        best2 = (res2.get("results") or [{}])[0]
-                        cont = best2.get("path") or []
-                        real_damage = int(res2.get("max_damage") or 0)
-                        # 真实搜索结果总是覆盖预估：0 伤时清空路径（避免显示无龙的假路径）
-                        sc["damage"] = real_damage
-                        sc["dragons"] = int(res2.get("max_dragons") or 0)
-                        sc["mana_left"] = int(best2.get("mana") or 0)
-
-                        if real_damage > 0:
-                            sc["path"] = (
-                                list(sc.get("pre_path") or []) + list(cont)
-                            )
-                        else:
-                            sc["path"] = []
-
-                result["draw_whatif"] = whatif
-
-            # 可能分支机制：主结果最优路径含持枪要挟时，提取分支点前缀，
-            # 各发现牌只“回溯到分支点往后”单独计算（前缀由引擎重放，不重复搜索）。
-            branch_prefix: List[str] = []
-            has_branch_path = False
-
-            for item in (result.get("results") or []):
-                path = item.get("path") or []
-
-                for i, step in enumerate(path):
-                    if "持枪要挟" in str(step or ""):
-                        branch_prefix = list(path[:i])
-                        has_branch_path = True
-                        break
-
-                if has_branch_path:
-                    break
-
-            branch_top_k = int(self.options.get("branch_top_k", 3))
-
-            if has_branch_path and branch_top_k > 0:
-                branches: List[Dict[str, object]] = []
-
-                for choice in QUICKDRAW_BRANCH_ORDER[:branch_top_k]:
-                    if self._stop:
-                        break
-
-                    br = engine.compute(
-                        self.snapshot,
-                        discover_quickdraw_choice=choice,
-                        branch_prefix=branch_prefix,
-                        lethal_threshold=(
-                            _lethal_threshold(self.snapshot, best_exchange)
-                            if bool(self.options.get("truncate_branch", True))
-                            else -1
+                    # 分支节点 TOP-K：按各节点最佳分支增量分排序，取前 node_top_k 个
+                    nodes.sort(
+                        key=lambda node: max(
+                            (b.get("delta") or 0) for b in (node.get("branches") or [])
                         ),
-                        should_stop=lambda: self._stop,
-                        exchanges=best_exchange,
-                        **common_kwargs,
+                        reverse=True,
                     )
-                    best = (br.get("results") or [{}])[0]
-                    dmg = int(best.get("damage") or 0)
+                    nodes = nodes[:node_top_k]
 
-                    if dmg > 0:
-                        branches.append(
-                            {
-                                "card": choice,
-                                "damage": dmg,
-                                "dragons": int(best.get("dragons") or 0),
-                                "mana_left": int(best.get("mana") or 0),
-                                "path": best.get("path") or [],
-                            }
+                    # 主结果最优路径含持枪要挟时提取分支前缀（供 quickdraw 回溯）
+                    branch_prefix: List[str] = []
+
+                    for item in (result.get("results") or []):
+                        path = item.get("path") or []
+
+                        for i, step in enumerate(path):
+                            if "持枪要挟" in str(step or ""):
+                                branch_prefix = list(path[:i])
+                                break
+
+                        if branch_prefix:
+                            break
+
+                    for node in nodes:
+                        for br in node.get("branches") or []:
+                            if self._stop:
+                                break
+
+                            if node.get("kind") == "draw":
+                                variant = br.pop("variant", None)
+
+                                if not variant:
+                                    continue
+
+                                res2 = engine.compute(
+                                    variant,
+                                    exchanges=best_exchange,
+                                    lethal_threshold=(
+                                        _lethal_threshold(variant, best_exchange)
+                                        if bool(self.options.get("truncate_branch", True))
+                                        else -1
+                                    ),
+                                    should_stop=lambda: self._stop,
+                                    **common_kwargs,
+                                )
+                                best2 = (res2.get("results") or [{}])[0]
+                                real_damage = int(res2.get("max_damage") or 0)
+                                br["damage"] = real_damage
+                                br["dragons"] = int(res2.get("max_dragons") or 0)
+                                br["mana_left"] = int(best2.get("mana") or 0)
+                                br["path"] = (
+                                    [node["card"]]
+                                    + list(best2.get("path") or [])
+                                    if real_damage > 0
+                                    else []
+                                )
+                            else:
+                                choice = br.get("card") or ""
+                                br2 = engine.compute(
+                                    self.snapshot,
+                                    discover_quickdraw_choice=choice,
+                                    branch_prefix=branch_prefix,
+                                    lethal_threshold=(
+                                        _lethal_threshold(self.snapshot, best_exchange)
+                                        if bool(self.options.get("truncate_branch", True))
+                                        else -1
+                                    ),
+                                    should_stop=lambda: self._stop,
+                                    exchanges=best_exchange,
+                                    **common_kwargs,
+                                )
+                                best2 = (br2.get("results") or [{}])[0]
+                                br["damage"] = int(best2.get("damage") or 0)
+                                br["dragons"] = int(best2.get("dragons") or 0)
+                                br["mana_left"] = int(best2.get("mana") or 0)
+                                br["path"] = best2.get("path") or []
+
+                    # 只保留单张分叉卡造成最大伤害的分叉树（其余节点不再展示）
+                    if nodes:
+                        best_node = max(
+                            nodes,
+                            key=lambda node: max(
+                                (b.get("damage") or 0)
+                                for b in (node.get("branches") or [])
+                            ),
                         )
+                        nodes = [best_node]
+                        wb["nodes"] = nodes
 
-                result["quickdraw_branches"] = branches
+            result["wb"] = wb
+            result["draw_whatif"] = None
+            result["quickdraw_branches"] = None
 
             # 静默云端上报数据：场面数据 + 最高伤路径（含交换/预处理/分支完整记录）
             result["upload_payload"] = cloud_report.build_payload(
@@ -1269,29 +1313,36 @@ class MainWindow(QWidget):
             "只返回最高伤害路径，计算更快"
         )
         param_grid.addWidget(self.best_only_check, 9, 0, 1, 2)
-        self.draw_whatif_check = QCheckBox("如果机制：抽随从假设最高伤害（省费打出抽随从卡）")
+        self.draw_whatif_check = QCheckBox("W-B机制：分支卡回溯计算（抽随从卡/持枪要挟）")
         self.draw_whatif_check.setChecked(True)
         self.draw_whatif_check.setToolTip(
-            "计算完成后独立推演：若用手牌中的抽随从卡（默认先伺机待发省费）"
-            "抽到预写组合缺失的随从，能达到的最高伤害"
+            "统一 WhatIf-Branch 机制：识别手牌中的分支卡（抽随从卡/持枪要挟），"
+            "用 [场面变化] 增量评估对可能分支取 top-K，回溯计算各分支最终伤害与路径"
         )
         param_grid.addWidget(self.draw_whatif_check, 10, 0, 1, 2)
-        # 持枪要挟分支 top-K：主结果与 WhatIf 各自独立设置（默认 3，0=不计算分支）
+        # W-B 机制参数：抽随从卡分支数 / 持枪要挟分支数 / 分支节点 TOP-K
         branch_top_row = QHBoxLayout()
-        branch_top_row.addWidget(QLabel("可能分支top-K："))
-        self.branch_top_k = self._spin(3, 0, 5)
-        self.branch_top_k.setToolTip(
-            "持枪要挟可能分支按优先级（补水>脱水>误炸>袋底藏沙>不许乱动）"
-            "计算前 K 个；0=不计算分支"
-        )
-        branch_top_row.addWidget(self.branch_top_k)
-        branch_top_row.addWidget(QLabel("WhatIf分支top-K："))
-        self.whatif_branch_top_k = self._spin(3, 0, 5)
+        branch_top_row.addWidget(QLabel("抽随从卡分支数："))
+        self.whatif_branch_top_k = self._spin(3, 0, 10)
         self.whatif_branch_top_k.setToolTip(
-            "WhatIf 分支 top-K：牌库剩余多张可能抽到的随从时，每个可能抽到 = 一个分支，"
-            "按优先级取前 K 个分别计算；0=不计算 WhatIf"
+            "抽随从卡分支计算数量（默认 3）：候选 = 自选组合剩余未到手随从的抽取组合数，"
+            "按 [场面变化] 增量评分只取前 K 个分支计算；0=不计算"
         )
         branch_top_row.addWidget(self.whatif_branch_top_k)
+        branch_top_row.addWidget(QLabel("持枪要挟分支数："))
+        self.branch_top_k = self._spin(5, 0, 5)
+        self.branch_top_k.setToolTip(
+            "持枪要挟分支计算数量（默认 5 = 已知全部：补水/脱水/误炸/袋底藏沙/不许乱动），"
+            "按 [场面变化] 增量评分取前 K 个；0=不计算"
+        )
+        branch_top_row.addWidget(self.branch_top_k)
+        branch_top_row.addWidget(QLabel("分支节点TOP-K："))
+        self.wb_node_top_k = self._spin(3, 0, 5)
+        self.wb_node_top_k.setToolTip(
+            "分支节点 TOP-K（默认 3）：按各分支卡最佳分支的增量评分排序，"
+            "最多探索前 K 个分支节点，其余不往下展开"
+        )
+        branch_top_row.addWidget(self.wb_node_top_k)
         param_grid.addLayout(branch_top_row, 11, 0, 1, 2)
         # 精确截断：伤害 ≥ 敌方血量+护甲 即停（加速计算）
         trunc_row = QHBoxLayout()
@@ -1301,10 +1352,10 @@ class MainWindow(QWidget):
         self.truncate_normal_check.setToolTip(
             "框1=正常计算：勾选后正常计算搜到 伤害 ≥ 敌方英雄血量+护甲 即停（只求斩杀线，不再追最高伤）"
         )
-        self.truncate_branch_check = QCheckBox("框2")
+        self.truncate_branch_check = QCheckBox("框2=W-B机制")
         self.truncate_branch_check.setChecked(True)
         self.truncate_branch_check.setToolTip(
-            "框2=可能机制：持枪要挟各可能分支计算与可能机制预处理搜到 伤害 ≥ 敌方英雄血量+护甲 即停（加速分支计算）"
+            "框2=W-B机制：抽随从卡/持枪要挟各分支回溯计算搜到 伤害 ≥ 敌方英雄血量+护甲 即停（加速分支计算）"
         )
         self.truncate_exchange_check = QCheckBox("框3")
         self.truncate_exchange_check.setChecked(True)
@@ -1929,6 +1980,7 @@ class MainWindow(QWidget):
             "whatif_combo": [name for name, box in self.combo_checks if box.isChecked()],
             "branch_top_k": self.branch_top_k.value(),
             "whatif_branch_top_k": self.whatif_branch_top_k.value(),
+            "wb_node_top_k": self.wb_node_top_k.value(),
             "truncate_normal": self.truncate_normal_check.isChecked(),
             "truncate_branch": self.truncate_branch_check.isChecked(),
             "truncate_exchange": self.truncate_exchange_check.isChecked(),
@@ -2201,64 +2253,10 @@ class MainWindow(QWidget):
                 f" / 余{item.get('mana', '?')}费：{path}"
             )
 
-        whatif = data.get("draw_whatif")
-        if whatif:
+        wb = data.get("wb")
+        if wb:
             lines.append("")
-            lines.append("WhatIf：")
-            cards = whatif.get("cards") or []
-            possible = whatif.get("possible") or []
-            branches = whatif.get("branches") or []
-
-            if cards:
-                lines.append("如果使用：[" + "][".join(cards) + "];")
-
-            if possible:
-                if len(possible) == 1:
-                    lines.append("将抽到：[" + "][".join(possible) + "]")
-                else:
-                    lines.append(
-                        f"将抽到（牌库剩余{len(possible)}）：["
-                        + "][".join(possible)
-                        + "]"
-                    )
-
-            if len(branches) <= 1:
-                sc = branches[0] if branches else {}
-                lines.append(
-                    f"预计最大伤害：{sc.get('damage', 0)}，龙数：{sc.get('dragons', 0)}，"
-                    f"余：{sc.get('mana_left', 0)}费"
-                )
-                path = sc.get("path") or []
-
-                if path:
-                    for index, rnd in enumerate(split_path_rounds(path), start=1):
-                        lines.append(
-                            f"[第{chinese_round_number(index)}轮]："
-                            + " → ".join(str(step) for step in rnd)
-                        )
-            else:
-                for i, sc in enumerate(branches, start=1):
-                    lines.append(
-                        f"Branch{i} 抽到[{']['.join(sc.get('drawn') or [])}]："
-                        f"最大伤害：{sc.get('damage', 0)}，龙数：{sc.get('dragons', 0)}，"
-                        f"余：{sc.get('mana_left', 0)}费"
-                    )
-                    path = sc.get("path") or []
-
-                    if path:
-                        for index, rnd in enumerate(split_path_rounds(path), start=1):
-                            lines.append(
-                                f"[第{chinese_round_number(index)}轮]："
-                                + " → ".join(str(step) for step in rnd)
-                            )
-
-        branch_lines = _format_whatif_branch_lines(
-            results, data.get("quickdraw_branches"), full_names=True
-        )
-
-        if branch_lines:
-            lines.append("")
-            lines.extend(branch_lines)
+            lines.extend(_wb_tree_lines(wb))
 
         text = "\n".join(lines)
         self.result_text.setPlainText(text)
@@ -2692,27 +2690,19 @@ class MiniWindow(QWidget):
         else:
             parts.append(format_mini_results(data, exchanges=exchanges))
 
-        # 2) 如果机制预处理
-        whatif = data.get("draw_whatif")
+        # 2) 统一 W-B 机制分支树
+        wb = data.get("wb")
 
-        if whatif:
-            parts.append(self._mini_whatif_block(whatif, colors))
-
-        # 3) 可能分支（持枪要挟）
-        branch_text = self._mini_whatif_branch_text(data, colors)
-
-        if branch_text:
-            parts.append(branch_text)
+        if wb:
+            parts.append(self._mini_wb_block(wb, colors))
 
         if colors:
             self.mini_result.setHtml("<br><br>".join(parts))
         else:
             self.mini_result.setPlainText("\n\n".join(parts))
 
-    def _mini_whatif_block(
-        self, whatif: Dict[str, object], colors: bool
-    ) -> str:
-        """WhatIf 显示块：如果使用/将抽到（牌库剩余池）/各分支最大伤害与分轮路径。"""
+    def _mini_wb_block(self, wb: Dict[str, object], colors: bool) -> str:
+        """统一 W-B 分支树（缩写+颜色框，全角空格缩进表示层级）。"""
         if colors:
             box_fn = _card_box_html
             sep = "<br>"
@@ -2720,45 +2710,38 @@ class MiniWindow(QWidget):
             box_fn = lambda name: "[" + abbreviate_card_name(name) + "]"  # noqa: E731
             sep = "\n"
 
-        cards = whatif.get("cards") or []
-        possible = whatif.get("possible") or []
-        branches = whatif.get("branches") or []
-        lines = ["WhatIf："]
-
-        if cards:
-            lines.append("如果使用：" + "".join(box_fn(str(c)) for c in cards) + ";")
-
-        if possible:
-            if len(possible) == 1:
-                lines.append("将抽到：" + "".join(box_fn(str(c)) for c in possible))
-            else:
-                lines.append(
-                    f"将抽到（牌库剩余{len(possible)}）："
-                    + "".join(box_fn(str(c)) for c in possible)
-                )
-
         abbr_fn = abbreviate_step_html if colors else abbreviate_step
+        lines = ["W-B机制（分支树）："]
 
-        def _branch_lines(sc: Dict[str, object], head: str) -> List[str]:
-            out = [
-                f"{head}最大伤害：{sc.get('damage', 0)}，"
-                f"龙数：{sc.get('dragons', 0)}，余：{sc.get('mana_left', 0)}费"
-            ]
-            path = sc.get("path") or []
+        for node in wb.get("nodes") or []:
+            kind = node.get("kind") or ""
+            card = node.get("card") or ""
+            branches = node.get("branches") or []
+            label = f"抽随从卡分支「{card}」" if kind == "draw" else "持枪要挟分支"
+            lines.append("\u3000" + label + f"（{len(branches)}）")
 
-            for index, rnd in enumerate(split_path_rounds(path), start=1):
-                abbr = "-".join(abbr_fn(str(s)) for s in rnd)
-                out.append(f"[第{chinese_round_number(index)}轮]：{abbr}")
+            for bi, br in enumerate(branches, start=1):
+                drawn = br.get("drawn") or []
 
-            return out
+                if drawn:
+                    drawn_txt = "".join(box_fn(str(c)) for c in drawn)
+                else:
+                    drawn_txt = box_fn(str(br.get("card", "")))
 
-        if len(branches) <= 1:
-            sc = branches[0] if branches else {}
-            lines.extend(_branch_lines(sc, "预计"))
-        else:
-            for i, sc in enumerate(branches, start=1):
-                drawn = "".join(box_fn(str(c)) for c in (sc.get("drawn") or []))
-                lines.extend(_branch_lines(sc, f"Branch{i} 抽到{drawn}："))
+                lines.append(
+                    "\u3000\u3000"
+                    f"Branch{bi} 抽到{drawn_txt} 增量{br.get('delta', 0)}："
+                    f"最大伤害：{br.get('damage', 0)}，"
+                    f"龙数：{br.get('dragons', 0)}，余：{br.get('mana_left', 0)}费"
+                )
+                path = br.get("path") or []
+
+                for index, rnd in enumerate(split_path_rounds(path), start=1):
+                    abbr = "-".join(abbr_fn(str(s)) for s in rnd)
+                    lines.append(
+                        "\u3000\u3000"
+                        f"[第{chinese_round_number(index)}轮]：{abbr}"
+                    )
 
         return sep.join(lines)
 

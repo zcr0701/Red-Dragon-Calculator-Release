@@ -1420,3 +1420,170 @@ def compute_whatif_branches(
         "possible": possible,
         "branches": branches,
     }
+
+
+# ===================== 统一 W-B 机制（WhatIf-Branch） =====================
+# 分支卡 = 抽随从卡（潜伏帷幕/挖掘宝藏/行骗/垂钓时光）与 持枪要挟。
+# 在分支卡使用处用 [场面变化] 增量评估函数对分支前后打分（复用抽牌优先级、
+# 随从保留、空位、法力等既有维度；只按“新增内容/场面需求”增量计算，不重复算两次），
+# 按加权得分决定该分支节点是否往下探索；探索的分支用真实搜索回溯得到最终伤害/路径。
+
+# 持枪要挟发现牌池（全部已知）
+QUICKDRAW_CHOICES = ("补水", "脱水", "误炸", "袋底藏沙", "不许乱动")
+
+
+def wb_draw_delta(drawn_minions: List[str]) -> float:
+    """抽随从卡分支增量分：抽到优先级越高的组合随从，场面提升越大。"""
+    return sum(DRAW_PRIORITY.get(mn, 0) for mn in drawn_minions)
+
+
+def wb_quickdraw_delta(snapshot: Dict[str, object], card: str) -> float:
+    """持枪要挟分支增量分：按当前场面需求加权。
+    - 需要腾格子（空位少）→ 误炸/脱水/不许乱动 价值高；
+    - 需要费用且无法用晦回费 → 补水 价值高。"""
+    board = snapshot.get("board") or []
+    hand = snapshot.get("hand") or []
+    free_slots = max(0, MAX_BOARD_SLOTS - len(board))
+    mana = int(snapshot.get("mana") or 0)
+    names = {str(h.get("name", "")) for h in hand}
+    names |= {str(b.get("name", "")) for b in board}
+    need_slots = free_slots <= 2
+    need_mana = mana <= 2 and "晦鳞巢母" not in names
+
+    if card == "误炸":
+        return (3.0 + (4 - free_slots) * 0.8) if need_slots else 1.0
+    if card == "脱水":
+        return (2.5 + (4 - free_slots) * 0.5) if need_slots else 1.0
+    if card == "补水":
+        return 3.5 if need_mana else 1.5
+    if card == "不许乱动":
+        return (2.0 + (4 - free_slots) * 0.4) if need_slots else 1.0
+    if card == "袋底藏沙":
+        return 1.0
+    return 0.5
+
+
+def _draw_combinations(missing: List[str], count: int) -> List[List[str]]:
+    """牌库剩余随从里取 count 张的所有组合（如 潜伏帷幕 抽 2 张，剩余 3 张 → C(3,2)=3）。"""
+    if count <= 0 or count > len(missing):
+        return []
+
+    result: List[List[str]] = []
+
+    def rec(start: int, chosen: List[str]) -> None:
+        if len(chosen) == count:
+            result.append(list(chosen))
+            return
+
+        for i in range(start, len(missing)):
+            chosen.append(missing[i])
+            rec(i + 1, chosen)
+            chosen.pop()
+
+    rec(0, [])
+    return result
+
+
+def _build_draw_variant(
+    snapshot: Dict[str, object],
+    draw_card: str,
+    drawn_minions: List[str],
+) -> Dict[str, object]:
+    """抽随从卡分支的干净变体：只把 draw_card（+省费来源伺机/狐）当作已打出，
+    抽到的随从加入手牌，法力扣减实付费用。"""
+    hand = snapshot.get("hand") or []
+    hand_names = [str(h.get("name", "")) for h in hand]
+    cost, _count = DRAW_MINION_SPELLS.get(draw_card, (0, 0))
+    discount = 0
+    remove_names = {draw_card}
+
+    if "伺机待发" in hand_names:
+        discount += 2
+        remove_names.add("伺机待发")
+
+    if "狐人老千" in hand_names:
+        discount += 2
+        remove_names.add("狐人老千")
+
+    variant = dict(snapshot)
+    variant["hand"] = [h for h in hand if str(h.get("name", "")) not in remove_names]
+
+    for mn in drawn_minions:
+        variant["hand"].append({"name": mn})
+
+    variant["mana"] = max(0, int(snapshot.get("mana") or 0) - max(0, cost - discount))
+    return variant
+
+
+def compute_wb_tree(
+    snapshot: Dict[str, object],
+    options: Optional[Dict[str, object]] = None,
+    draw_top_k: int = 3,
+    quickdraw_top_k: int = 5,
+) -> Optional[Dict[str, object]]:
+    """统一 W-B 机制：识别手牌中的分支卡，按 [场面变化] 增量评分对可能分支取 top-K，
+    生成分支树。返回 {"kind":"wb", "nodes":[分支卡节点]} 或 None。
+
+    每个节点：
+      {"card": 分支卡, "kind": "draw"|"quickdraw",
+       "branches": [{"drawn": 抽到的随从组合 | "card": 持枪发现牌,
+                     "delta": 增量分, "variant": 干净变体(仅 draw)}]}
+    """
+    hand = snapshot.get("hand") or []
+    board = snapshot.get("board") or []
+    hand_names = [str(h.get("name", "")) for h in hand]
+    have = set(hand_names) | {str(b.get("name", "")) for b in board}
+    combo = (
+        list(options.get("whatif_combo") or COMBO_MINION_SETS[0])
+        if options
+        else list(COMBO_MINION_SETS[0])
+    )
+    missing = [n for n in combo if n not in have]
+    missing.sort(key=lambda n: -DRAW_PRIORITY.get(n, 0))
+    nodes: List[Dict[str, object]] = []
+
+    # 抽随从卡节点：每个分支 = 一种可能抽到的随从组合（按增量分取 top-K）
+    for dcard in DRAW_MINION_SPELLS:
+        if dcard not in hand_names:
+            continue
+
+        count = DRAW_MINION_SPELLS[dcard][1]
+        combos = _draw_combinations(missing, count)
+
+        if not combos:
+            continue
+
+        scored = sorted(
+            ((wb_draw_delta(drawn), drawn) for drawn in combos),
+            key=lambda x: -x[0],
+        )
+        branches = []
+
+        for delta, drawn in scored[:draw_top_k]:
+            variant = _build_draw_variant(snapshot, dcard, drawn)
+            branches.append(
+                {
+                    "drawn": drawn,
+                    "delta": round(delta, 2),
+                    "variant": variant,
+                }
+            )
+
+        nodes.append({"card": dcard, "kind": "draw", "branches": branches})
+
+    # 持枪要挟节点：每个分支 = 一种发现牌（按增量分取 top-K）
+    if "持枪要挟" in hand_names:
+        scored = sorted(
+            ((wb_quickdraw_delta(snapshot, choice), choice) for choice in QUICKDRAW_CHOICES),
+            key=lambda x: -x[0],
+        )
+        branches = [
+            {"card": choice, "delta": round(delta, 2)}
+            for delta, choice in scored[:quickdraw_top_k]
+        ]
+        nodes.append({"card": "持枪要挟", "kind": "quickdraw", "branches": branches})
+
+    if not nodes:
+        return None
+
+    return {"kind": "wb", "nodes": nodes}
