@@ -3378,14 +3378,22 @@ class IntroDialog(QDialog):
 
         author_body = QLabel(
             '<span style="font-size:36px; color:#374151;">'
-            '　　该计算器经历了多轮底层架构的优化和算法的设计尝试，以及反复的bug修改，'
-            '才实现了将计算时间压缩到<b><span style="color:#DC2626;">3s以内</span></b>，'
+            '　　为了实现将计算时间压缩到<b><span style="color:#DC2626;">3s以内</span></b>，'
+            '以及实现支持持枪要挟，随机抽牌等分支尝试效果。该计算器经历了'
+            '<b><span style="color:#D97706;">多轮底层架构的优化</span></b>和'
+            '<b><span style="color:#D97706;">相关算法的设计尝试</span></b>'
+            '(<b><span style="color:#D97706;">场面交换</span></b>算法，'
+            '<b><span style="color:#7C3AED;">分支尝试</span></b>算法，'
+            '<b><span style="color:#0E7490;">束搜索剪枝</span></b>等)，以及'
+            '<b><span style="color:#EA580C;">反反复复</span></b>的bug修改，'
             '普遍覆盖了<b><span style="color:#16A34A;">95%以上的最优解</span></b>，'
             '并且计算出许多公式表上的<b><span style="color:#D97706;">更优解</span></b>'
             '以及一些神奇的<b><span style="color:#7C3AED;">等价路径</span></b>，'
             '具体由使用者自己发掘。<br/>'
-            '　　开发这个软件的过程耗费了作者不少的时间精力和金钱，'
-            '所以如果帮助到了您，请务必给作者<b><span style="color:#D97706;">一点支持</span></b>。'
+            '　　由于开发这个软件的过程耗费了作者'
+            '<b><span style="color:#DC2626;">大量</span></b>的时间精力和金钱，'
+            '所以如果该软件帮助到了您，请务必给作者'
+            '<b><span style="color:#D97706;">一点支持</span></b>。'
             '</span>'
         )
         author_body.setWordWrap(True)
