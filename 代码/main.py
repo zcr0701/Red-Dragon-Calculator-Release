@@ -1117,18 +1117,22 @@ class MainWindow(QWidget):
         )
         param_grid.addWidget(self.draw_whatif_check, 10, 0, 1, 2)
         # 精确截断：伤害 ≥ 敌方血量+护甲 即停（加速计算）
-        self.truncate_normal_check = QCheckBox("正常计算")
+        trunc_row = QHBoxLayout()
+        trunc_row.addWidget(QLabel("精确截断加速："))
+        self.truncate_normal_check = QCheckBox("框1")
         self.truncate_normal_check.setChecked(False)
         self.truncate_normal_check.setToolTip(
-            "勾选后：正常计算搜到 伤害 ≥ 敌方英雄血量+护甲 即停（只求斩杀线，不再追最高伤）"
+            "框1=正常计算：勾选后正常计算搜到 伤害 ≥ 敌方英雄血量+护甲 即停（只求斩杀线，不再追最高伤）"
         )
-        self.truncate_branch_check = QCheckBox("可能机制")
+        self.truncate_branch_check = QCheckBox("框2")
         self.truncate_branch_check.setChecked(True)
         self.truncate_branch_check.setToolTip(
-            "勾选后：持枪要挟各可能分支计算搜到 伤害 ≥ 敌方英雄血量+护甲 即停（加速分支计算）"
+            "框2=可能机制：持枪要挟各可能分支计算与可能机制预处理搜到 伤害 ≥ 敌方英雄血量+护甲 即停（加速分支计算）"
         )
-        param_grid.addWidget(self.truncate_normal_check, 11, 0)
-        param_grid.addWidget(self.truncate_branch_check, 11, 1)
+        trunc_row.addWidget(self.truncate_normal_check)
+        trunc_row.addWidget(self.truncate_branch_check)
+        trunc_row.addStretch(1)
+        param_grid.addLayout(trunc_row, 11, 0, 1, 2)
         right_layout.addWidget(param_box)
 
         run_row = QHBoxLayout()
