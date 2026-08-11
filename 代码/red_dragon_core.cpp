@@ -126,6 +126,7 @@ static const unordered_map<string, CardDef> DB = {
     {"挖掘宝藏", {1, "spell", "dig_for_treasure", false, false, false, -1}},
     {"黑水弯刀", {1, "weapon", "blackwater_cutlass", false, false, false, -1}},
     {"邪恶短刀", {1, "weapon", "", false, false, false, -1}},
+    {"疯狂之灾祸", {1, "spell", "plague_of_madness", false, false, false, -1}},
     {"锯齿骨刺", {2, "spell", "serrated_bone_spike", false, false, false, -1}},
     {"疾速矿锄", {2, "weapon", "quick_pick", false, false, false, -1}},
     {"异教地图", {2, "spell", "cultist_map", false, false, false, -1}},
@@ -571,6 +572,9 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
         s.mana += 1;  // 临时法力不封顶（与 Python gain_temporary 一致）
     } else if (e == "preparation") {
         s.next_spell += 2;
+    } else if (e == "plague_of_madness") {
+        // 疯狂之灾祸：双方各装备一把 2/2 剧毒刀。武器攻击不计入 OTK 伤害，
+        // 仅作为 1 费法术（连击触发器 / 殒命暗影变形源 / 杂牌）参与搜索。
     } else if (e == "lucky_comet") {
         // 幸运彗星：将一张类型为随从的杂牌置入手牌；获得一次性效果——
         // 下一张连击随从的连击触发两次（仅当连击能触发时生效并消耗，跨回合保留）。
@@ -1115,15 +1119,29 @@ static vector<State> generate_successors(const State& st) {
             if (dup_secret) continue;  // 每种奥秘只能装备一个
         }
         // 抽牌属性辅助“是否考虑展开该路径”：牌库未知时——
-        // 抽随从卡（挖掘宝藏/潜伏帷幕）直接按“组合剩余随从池”展开分支，
-        // 让所有可能抽到的随从都参与束宽搜索（显示可能的最高伤路径）；
-        // 无此类卡在手中时这里是常数级判断，不影响搜索性能。
+        // 抽随从卡（挖掘宝藏/潜伏帷幕）以及连击追加抽随从（行骗连击）
+        // 直接按“组合剩余随从池”展开分支，让所有可能抽到的随从都参与束宽搜索
+        // （显示可能的最高伤路径）；无此类卡在手中时这里是常数级判断，不影响搜索性能。
         if (!st.deck_is_known && st.branch_expand) {
             int draw_count = 0;
             auto base_draw_it = DRAW_ATTR_BASE.find(card.effect_id);
             if (base_draw_it != DRAW_ATTR_BASE.end()) {
                 for (const auto& d : base_draw_it->second)
                     if (d.type == "minion") draw_count += d.count;
+            }
+            // 连击追加的随从抽牌（行骗：连击再抽 1 张随从）：
+            // 只有连击真正触发时才展开；不连击打出行骗抽不了随从。
+            auto combo_draw_it = DRAW_ATTR_COMBO.find(card.effect_id);
+            if (combo_draw_it != DRAW_ATTR_COMBO.end() && combo_active(st)) {
+                for (const auto& d : combo_draw_it->second)
+                    if (d.type == "minion") draw_count += d.count;
+            }
+            // 保底抽的法术（行骗无条件抽 1 张法术）：展开分支时同样置入“未知法术”杂牌，
+            // 与常规路径一致（牌库未知时该法术必然发生，抽到具体哪张不可建模）。
+            int base_junk_spells = 0;
+            if (base_draw_it != DRAW_ATTR_BASE.end()) {
+                for (const auto& d : base_draw_it->second)
+                    if (d.type == "spell") base_junk_spells += d.count;
             }
 
             if (draw_count > 0) {
@@ -1139,6 +1157,15 @@ static vector<State> generate_successors(const State& st) {
                             for (const string& mn : missing) {
                                 add_card_to_hand_or_burn(base, make_card(mn));
                             }
+                            for (int k = 0; k < base_junk_spells; k++) {
+                                Card unknown_spell = make_card("未知法术");
+                                unknown_spell.card_type = "spell";
+                                add_card_to_hand_or_burn(base, unknown_spell);
+                            }
+                            // 分支展开跳过 apply_search_effect：补上施放法术的
+                            // 殒命暗影变形与本回合已出牌计数（连击状态）。
+                            if (card.is_spell_like()) transform_deadly_shadows(base, card);
+                            base.cards_played_this_turn++;
                             out.push_back(std::move(base));
                         }
                         continue;
@@ -1167,6 +1194,15 @@ static vector<State> generate_successors(const State& st) {
                         for (const string& mn : drawn) {
                             add_card_to_hand_or_burn(base, make_card(mn));
                         }
+                        for (int k = 0; k < base_junk_spells; k++) {
+                            Card unknown_spell = make_card("未知法术");
+                            unknown_spell.card_type = "spell";
+                            add_card_to_hand_or_burn(base, unknown_spell);
+                        }
+                        // 分支展开跳过 apply_search_effect：补上施放法术的
+                        // 殒命暗影变形与本回合已出牌计数（连击状态）。
+                        if (card.is_spell_like()) transform_deadly_shadows(base, card);
+                        base.cards_played_this_turn++;
 
                         out.push_back(std::move(base));
                     }

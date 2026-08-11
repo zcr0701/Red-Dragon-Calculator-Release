@@ -729,6 +729,15 @@ def format_mini_results(
         f"最大伤害：{data.get('max_damage', 0)}，"
         f"龙数：{data.get('max_dragons', 0)}，余：{best_mana}费"
     )
+    # 0 伤害时不显示浪费费用的无意义路径，统一显示“（无路径）”。
+    if not results or int(data.get("max_damage") or 0) <= 0:
+        title = (
+            f"最大伤害：{data.get('max_damage', 0)}，"
+            f"龙数：{data.get('max_dragons', 0)}，余：0费"
+        )
+        if colors:
+            return "<br>".join([html.escape(title), html.escape("（无路径）")])
+        return "\n".join([title, "（无路径）"])
 
     if colors:
         esc = html.escape
@@ -3106,7 +3115,13 @@ class MiniWindow(QWidget):
         parts.append(self._mini_original_text(data, colors, exchanges))
 
         # 2) 带可能性分支的 WhatIF 显示：主路径 + 分支列表 + 平均
-        if data.get("whatif_average") and data.get("quickdraw_branches"):
+        # 0 伤害（无路径）时不再重复显示无意义的分支路径；
+        # 制表符对齐的 ├─ 分支列表只出现在 WhatIF 显示里。
+        if (
+            int(data.get("max_damage") or 0) > 0
+            and data.get("whatif_average")
+            and data.get("quickdraw_branches")
+        ):
             parts.append(self._mini_whatif_text(data, colors))
 
         if colors:
@@ -3127,14 +3142,24 @@ class MiniWindow(QWidget):
         """
         orig = data.get("original")
 
-        if orig and (orig.get("path") or []):
+        if (
+            orig
+            and (orig.get("path") or [])
+            and int(orig.get("damage") or 0) > 0
+        ):
             orig_data: Dict[str, object] = {
                 "max_damage": orig.get("damage"),
                 "max_dragons": orig.get("dragons"),
                 "results": [orig],
             }
         else:
-            orig_data = data
+            # 原版线不存在或 0 伤害：直接显示“（无路径）”，
+            # 不退回主搜索的 0 伤长路径（把费用用光也无意义）。
+            orig_data = {
+                "max_damage": 0,
+                "max_dragons": 0,
+                "results": [],
+            }
 
         text = format_mini_results(
             orig_data, colors=colors, exchanges=exchanges or [], branches=False
