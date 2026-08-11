@@ -800,9 +800,9 @@ static vector<State> apply_search_effect(State base, const Card& card,
             State s = base.clone_reserved();
             if (s.quickdraw_choice < 0) s.quickdraw_choice = (int)ci;
             add_card_to_hand_or_burn(s, make_card(choice));
-            // 路径标注“（如果X）”：持枪要挟只是把快枪牌置入手牌，X 由玩家后续打出
+            // 路径标注“（X）”：持枪要挟只是把快枪牌置入手牌，X 由玩家后续打出
             if (!s.path().empty()) {
-                s.path_mut().back() += "（如果" + choice + "）";
+                s.path_mut().back() += "（" + choice + "）";
             }
             states.push_back(std::move(s));
         }
@@ -1152,7 +1152,7 @@ static vector<State> generate_successors(const State& st) {
                         if (!play_card_base(base, hand_index, -1, false, false)) continue;
 
                         if (!base.path().empty()) {
-                            string note = "（抽到";
+                            string note = "（";
                             for (size_t di = 0; di < drawn.size(); di++) {
                                 if (di) note += "、";
                                 note += drawn[di];
