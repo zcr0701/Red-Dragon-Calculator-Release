@@ -265,6 +265,7 @@ struct State {
     Card weapon;
     bool has_weapon = false;
     bool deck_is_known = false;
+    bool branch_expand = true;  // W-B：抽随从卡分支是否直接展开进束宽搜索（主窗口“W-B机制”勾选框）
     int mana_crystals = 10;
     int mana = 10;
     int initial_mana_crystals = 10;
@@ -322,6 +323,7 @@ struct State {
         c.weapon = weapon;
         c.has_weapon = has_weapon;
         c.deck_is_known = deck_is_known;
+        c.branch_expand = branch_expand;
         c.mana_crystals = mana_crystals;
         c.mana = mana;
         c.initial_mana_crystals = initial_mana_crystals;
@@ -984,6 +986,51 @@ static bool combo_minion_set_complete(const State& s) {
     return false;
 }
 
+// 抽随从卡分支池：牌库剩余可能抽到的组合随从（按优先级排序，供束宽搜索直接展开分支）。
+// 默认勾选 鱼/狐/刀/暗/牛/晦，腾武默认不勾（玩家手动勾选，程序不会自动改），故分支池不含腾武。
+static const vector<string> COMBO_MINION_POOL = {
+    "鲨鱼之灵",        // 鱼 6
+    "斯卡布斯·刀油",   // 刀 5
+    "乐队经理精英牛头人酋长",  // 牛 4
+    "暗影施法者",       // 暗 3
+    "晦鳞巢母",        // 晦 2
+    "狐人老千",        // 狐 1
+};
+
+static vector<string> combo_missing_minions(const State& s) {
+    vector<string> missing;
+    auto have = [&](const string& n) {
+        for (const auto& c : s.hand) if (c.name() == n) return true;
+        for (const auto& c : s.board) if (c.name() == n) return true;
+        return false;
+    };
+    for (const string& n : COMBO_MINION_POOL) {
+        if (!have(n)) missing.push_back(n);
+    }
+    return missing;
+}
+
+// 组合取 k 个的所有组合（用于潜伏帷幕抽 2 张时展开分支），最多 MAX 个。
+static vector<vector<string>> combo_combinations(const vector<string>& pool, int k,
+                                                  size_t max_count = 32) {
+    vector<vector<string>> out;
+    vector<size_t> idx(k, 0);
+    for (size_t i = 0; i < idx.size(); i++) idx[i] = i;
+    while (true) {
+        vector<string> comb;
+        for (size_t i = 0; i < idx.size(); i++) comb.push_back(pool[idx[i]]);
+        out.push_back(std::move(comb));
+        if (out.size() >= max_count) break;
+        size_t i = idx.size();
+        while (i-- > 0) {
+            if (idx[i] < pool.size() - (idx.size() - i)) { idx[i]++; break; }
+        }
+        if (i == SIZE_MAX) break;
+        for (size_t j = i + 1; j < idx.size(); j++) idx[j] = idx[j - 1] + 1;
+    }
+    return out;
+}
+
 // 纯随机抽牌（发现/未知类型）且牌库未知时无法建模抽到的牌：
 // 若卡牌本身是法术且其抽牌为无条件随机，则禁止作为免费填充牌展开
 // （异教地图/持枪要挟/可疑交易；垂钓时光是连击才抽、锯齿骨刺不抽牌只减费、
@@ -1060,9 +1107,68 @@ static vector<State> generate_successors(const State& st) {
                 if (sec.name() == card.name()) { dup_secret = true; break; }
             if (dup_secret) continue;  // 每种奥秘只能装备一个
         }
-        // 抽牌属性辅助“是否考虑展开该路径”：牌库未知时，纯随机抽牌
-        // （发现/未知类型）无法建模抽到的牌，禁止展开，避免它作为免费填充牌
-        // 进入路径；牌库已知时按实际牌库抽牌模拟（见 apply_effect_inplace）。
+        // 抽牌属性辅助“是否考虑展开该路径”：牌库未知时——
+        // 抽随从卡（挖掘宝藏/潜伏帷幕）直接按“组合剩余随从池”展开分支，
+        // 让所有可能抽到的随从都参与束宽搜索（显示可能的最高伤路径）；
+        // 无此类卡在手中时这里是常数级判断，不影响搜索性能。
+        if (!st.deck_is_known && st.branch_expand) {
+            int draw_count = 0;
+            auto base_draw_it = DRAW_ATTR_BASE.find(card.effect_id);
+            if (base_draw_it != DRAW_ATTR_BASE.end()) {
+                for (const auto& d : base_draw_it->second)
+                    if (d.type == "minion") draw_count += d.count;
+            }
+
+            if (draw_count > 0) {
+                vector<string> missing = combo_missing_minions(st);
+
+                if (!missing.empty()) {
+                    vector<vector<string>> drawn_sets;
+
+                    if ((int)missing.size() < draw_count) {
+                        // 剩余随从不足抽取张数：只抽剩余的全部（单个分支）
+                        State base = st.clone_reserved();
+                        if (play_card_base(base, hand_index, -1, false, false)) {
+                            for (const string& mn : missing) {
+                                add_card_to_hand_or_burn(base, make_card(mn));
+                            }
+                            out.push_back(std::move(base));
+                        }
+                        continue;
+                    }
+
+                    if (draw_count == 1) {
+                        for (const string& mn : missing) drawn_sets.push_back({mn});
+                    } else {
+                        drawn_sets = combo_combinations(missing, draw_count);
+                    }
+
+                    for (const auto& drawn : drawn_sets) {
+                        State base = st.clone_reserved();
+                        if (!play_card_base(base, hand_index, -1, false, false)) continue;
+
+                        if (!base.path().empty()) {
+                            string note = "（抽到";
+                            for (size_t di = 0; di < drawn.size(); di++) {
+                                if (di) note += "、";
+                                note += drawn[di];
+                            }
+                            note += "）";
+                            base.path_mut().back() += note;
+                        }
+
+                        for (const string& mn : drawn) {
+                            add_card_to_hand_or_burn(base, make_card(mn));
+                        }
+
+                        out.push_back(std::move(base));
+                    }
+                    continue;  // 跳过下方常规展开
+                }
+            }
+        }
+        // 纯随机法术抽牌（异教地图等）仍禁止，避免虚构抽牌后继
+        // （无论是否展开抽随从卡分支都生效；抽随从分支开关只影响 minion 抽牌卡）
         if (!st.deck_is_known && card_is_unmodelable_random_draw(card)) continue;
         // 其余抽牌类卡按“不抽牌”打出（触发连击/腾手牌格），避免虚构抽牌后继；
         // 随从表判空后更可直接作为普通法术使用（draw 效果本身不模拟）。
@@ -2300,6 +2406,8 @@ static State state_from_json(const JVal& root) {
     st.deck_is_known = false;
     const JVal* dj = root.find("deck_is_known");
     if (dj && dj->type == JVal::BOOL) st.deck_is_known = dj->b;
+    const JVal* be = root.find("branch_expand");
+    if (be && be->type == JVal::BOOL) st.branch_expand = be->b;
 
     const JVal* hand = root.find("hand");
     if (hand && hand->type == JVal::ARR) {

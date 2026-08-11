@@ -736,6 +736,7 @@ def build_payload(
     discover_quickdraw_choice: Optional[str] = None,
     branch_prefix: Optional[List[str]] = None,
     lethal_threshold: int = -1,
+    branch_expand: bool = True,
 ) -> Dict[str, object]:
     """把日志快照转成 C++ JSON 局面（纯束宽搜索）。
 
@@ -852,6 +853,7 @@ def build_payload(
         "discover_quickdraw_choice": discover_quickdraw_choice or "",
         "branch_prefix": branch_prefix or [],
         "lethal_threshold": int(lethal_threshold),
+        "branch_expand": bool(branch_expand),
         # 默认四通道：H6/1100（8水晶十龙深线）、H1/1500（4水晶十龙/紧线）、
         # H2/1100（96 伤线）、H2/3000（6水晶紧 48 伤线）
         "wide_widths": wide_widths or [1100, 1500, 1100, 3000],
@@ -993,6 +995,7 @@ def compute(
     discover_quickdraw_choice: Optional[str] = None,
     branch_prefix: Optional[List[str]] = None,
     lethal_threshold: int = -1,
+    branch_expand: bool = True,
     exe_path: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int, int], None]] = None,
     found_callback: Optional[Callable[[int, int], None]] = None,
@@ -1016,6 +1019,7 @@ def compute(
         discover_quickdraw_choice=discover_quickdraw_choice,
         branch_prefix=branch_prefix,
         lethal_threshold=lethal_threshold,
+        branch_expand=branch_expand,
     )
     result = run_engine(
         payload,

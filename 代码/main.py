@@ -793,6 +793,9 @@ class CalculationWorker(QThread):
                 "heuristics": heuristics,
                 "etc_band": list(self.options.get("etc_band") or []),
                 "only_best_damage": bool(self.options.get("only_best_damage", True)),
+                # W-B 重写：抽随从卡分支直接进束宽搜索（由 C++ 引擎展开，
+                # 主窗口“W-B机制”勾选框控制是否展开；持枪要挟分支同样在引擎内）。
+                "branch_expand": bool(self.options.get("draw_whatif", True)),
             }
             # 场面交换：按价值取前 N 个场面（默认3）分别计算，保留最高伤害的结果
             top_n = max(1, int(self.options.get("exchange_top_n", 3)))
@@ -847,64 +850,10 @@ class CalculationWorker(QThread):
                 )
 
             # ========== 统一 W-B 机制（WhatIf-Branch）==========
-            draw_top_k = int(self.options.get("whatif_branch_top_k", 3))
-            quickdraw_top_k = int(self.options.get("branch_top_k", 5))
-            node_top_k = int(self.options.get("wb_node_top_k", 3))
-            wb = None
-
-            if bool(self.options.get("draw_whatif", True)) and node_top_k > 0:
-                # 识别手牌中的分支卡（抽随从卡/持枪要挟），按 [场面变化] 增量评分
-                # 对各分支取 top-K，生成分支树；随后逐分支回溯真实搜索。
-                wb = engine.compute_wb_tree(
-                    self.snapshot,
-                    self.options,
-                    node_top_k=max(1, node_top_k),
-                    draw_top_k=max(1, draw_top_k),
-                    quickdraw_top_k=max(1, quickdraw_top_k),
-                )
-
-                if wb:
-                    nodes = wb.get("nodes") or []
-
-                    # 主结果最优路径含持枪要挟时提取分支前缀（供 quickdraw 回溯）
-                    branch_prefix: List[str] = []
-
-                    for item in (result.get("results") or []):
-                        path = item.get("path") or []
-
-                        for i, step in enumerate(path):
-                            if "持枪要挟" in str(step or ""):
-                                branch_prefix = list(path[:i])
-                                break
-
-                        if branch_prefix:
-                            break
-
-                    for node in nodes:
-                        self._process_wb_node(
-                            node, branch_prefix, best_exchange, common_kwargs
-                        )
-
-                    # 只保留单张分叉卡造成最大伤害的分叉树：
-                    # 按分支卡分组，取该卡各打法节点中最高分支伤害最大的那张卡，
-                    # 其余分支卡在根层不再展示（仍会以递归子节点出现在其分支内）。
-                    if nodes:
-                        card_best: Dict[str, int] = {}
-
-                        for node in nodes:
-                            card = str(node.get("card") or "")
-                            best = max(
-                                (b.get("damage") or 0)
-                                for b in (node.get("branches") or [])
-                            )
-                            card_best[card] = max(card_best.get(card, 0), best)
-
-                        if card_best:
-                            best_card = max(card_best, key=card_best.get)
-                            nodes = [n for n in nodes if n.get("card") == best_card]
-                            wb["nodes"] = nodes
-
-            result["wb"] = wb
+            # W-B 重写：分支卡（抽随从卡/持枪要挟）的全部分支已直接在 C++ 束宽搜索内
+            # 展开（路径标注“（抽到X、Y）”/“（如果X）”），最高伤路径即主搜索结果；
+            # Python 侧不再单独回溯计算分支树（保留 compute_wb_tree 代码备用）。
+            result["wb"] = None
             result["draw_whatif"] = None
             result["quickdraw_branches"] = None
 
@@ -1453,11 +1402,12 @@ class MainWindow(QWidget):
             "只返回最高伤害路径，计算更快"
         )
         param_grid.addWidget(self.best_only_check, 9, 0, 1, 2)
-        self.draw_whatif_check = QCheckBox("W-B机制：分支卡回溯计算（抽随从卡/持枪要挟）")
+        self.draw_whatif_check = QCheckBox("W-B机制：抽随从卡/持枪要挟分支直接进束宽搜索")
         self.draw_whatif_check.setChecked(True)
         self.draw_whatif_check.setToolTip(
-            "统一 WhatIf-Branch 机制：识别手牌中的分支卡（抽随从卡/持枪要挟），"
-            "用 [场面变化] 增量评估对可能分支取 top-K，回溯计算各分支最终伤害与路径"
+            "W-B 重写：抽随从卡（挖掘宝藏/潜伏帷幕）按卡组随从勾选直接展开全部分支"
+            "进束宽搜索，持枪要挟按发现牌池展开（路径标注 抽到X/如果X）；"
+            "不勾选时按旧逻辑把抽牌卡当杂牌打出（不展开抽随从分支）。"
         )
         param_grid.addWidget(self.draw_whatif_check, 10, 0, 1, 2)
         # W-B 机制参数：抽随从卡分支数 / 持枪要挟分支数 / 分支节点 TOP-K
