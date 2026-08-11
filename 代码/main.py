@@ -453,6 +453,20 @@ def _format_whatif_branch_lines(
                     prefix_steps = list(path[:i])
                 break
 
+    if not prefix_steps:
+        # 分支路径可能因截断未带“持枪要挟”步骤：从主搜索结果提取前缀
+        for item in results:
+            p = item.get("path") or []
+
+            for i, step in enumerate(p):
+                if "持枪要挟" in str(step or ""):
+                    prefix_steps = list(p[:i])
+                    prefix = " -> ".join(prefix_steps)
+                    break
+
+            if prefix_steps:
+                break
+
     if full_names:
         abbr_fn = None
     elif colors:
@@ -475,11 +489,18 @@ def _format_whatif_branch_lines(
         x = b.get("card") or ""
         path = b.get("path") or []
         cont: List[str] = []
+        found_branch = False
 
         for i, step in enumerate(path):
             if "持枪要挟" in str(step or ""):
                 cont = path[i + 1:]
+                found_branch = True
                 break
+
+        if not found_branch and prefix_steps and len(path) > len(prefix_steps):
+            # 分支路径未带“持枪要挟（如果X）”步骤（截断搜索找到的廉价线）：
+            # 跳过共享前缀后作为该分支的后续路径展示
+            cont = path[len(prefix_steps):]
 
         lines.append(
             f"最大伤害：{b.get('damage', 0)}；龙数：{b.get('dragons', 0)}；"
