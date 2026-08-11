@@ -149,28 +149,40 @@ static const unordered_map<string, CardDef> DB = {
     {"狐人老千", {2, "minion", "foxy_fraud", true, false, false, 2}},  // 战吼：下一张连击牌减 2 费（非连击牌）
     {"持枪要挟", {1, "spell", "discover_quickdraw", false, false, false, -1}},  // 发现一张另一职业的快枪牌
     // ===== 持枪要挟发现牌池（另一职业快枪牌，牌池固定）=====
-    // 已建模（快枪机制 + 代码内已知机制）：
+    // 已建模（按 可能机制 打分：补水5 > 脱水4 > 误炸3 > 袋底藏沙2 > 不许乱动1）：
     //   补水（快枪：复原两个法力水晶 → +2 法力，上限水晶）
     //   脱水（快枪：法力值消耗为 1 → 本回合进入手牌时按 1 费）
+    //   误炸（快枪可选目标造成 3/2/1 点伤害 → 与 OTK 无关，按普通法术）
+    //   袋底藏沙（快枪敌方下一张 +1 费，只影响对方 → 按普通法术）
+    //   不许乱动（变 1/1 + 1 伤 → 与 OTK 无关，按普通法术）
     // 未建模（未知机制，先纳入备注忽略）：
-    //   农场小助手（战吼发现亡灵 + 快枪减 2 费）、袋底藏沙（快枪敌方下一张 +1 费，
-    //     只影响对方）、银蛇（突袭剧毒快枪免疫）、热浪来袭（快枪全体 2 伤）、
-    //     不许乱动（变 1/1 + 1 伤）、和善的银行职员（发现法术）、
-    //     亮石旋岩虫（吸血快枪 5 伤）、列车难题（弃牌召矿车）
+    //   农场小助手（战吼发现亡灵 + 快枪减 2 费）、银蛇（突袭剧毒快枪免疫）、
+    //   热浪来袭（快枪全体 2 伤）、和善的银行职员（发现法术）、
+    //   亮石旋岩虫（吸血快枪 5 伤）、列车难题（弃牌召矿车）
     {"补水", {2, "spell", "rehydrate", false, false, false, -1}},
     {"脱水", {3, "spell", "dehydrate", false, false, false, -1}},
-    {"农场小助手", {3, "minion", "farm_hand", false, false, false, 3}},
+    {"误炸", {2, "spell", "misfire", false, false, false, -1}},
     {"袋底藏沙", {2, "spell", "pocket_sand", false, false, false, -1}},
+    {"不许乱动", {2, "spell", "lay_down_the_law", false, false, false, -1}},
+    {"农场小助手", {3, "minion", "farm_hand", false, false, false, 3}},
     {"银蛇", {3, "minion", "silver_serpent", false, false, false, 3}},
     {"热浪来袭", {2, "spell", "heat_wave", false, false, false, -1}},
-    {"不许乱动", {2, "spell", "lay_down_the_law", false, false, false, -1}},
     {"和善的银行职员", {3, "minion", "benevolent_banker", false, false, false, 4}},
     {"亮石旋岩虫", {4, "minion", "glowstone_gyreworm", false, false, false, 4}},
     {"列车难题", {3, "spell", "trolley_problem", false, false, false, -1}},
 };
 
-// 持枪要挟已建模的发现池（快枪机制 + 代码内已知机制；未建模牌见上方备注）
-static const vector<string> QUICKDRAW_MODELED_POOL = {"补水", "脱水"};
+// 持枪要挟已建模的发现池（按优先级打分排序；未建模牌见上方备注）
+static const vector<string> QUICKDRAW_MODELED_POOL = {
+    "补水", "脱水", "误炸", "袋底藏沙", "不许乱动",
+};
+static const unordered_map<string, int> QUICKDRAW_POOL_SCORE = {
+    {"补水", 5},
+    {"脱水", 4},
+    {"误炸", 3},
+    {"袋底藏沙", 2},
+    {"不许乱动", 1},
+};
 
 // ===================== 抽牌属性 =====================
 // 抽牌属性：卡牌会抽牌时记录“抽什么类型的牌、几张”：
