@@ -789,6 +789,25 @@ class CalculationWorker(QThread):
                             node, branch_prefix, best_exchange, common_kwargs
                         )
 
+                    # 只保留单张分叉卡造成最大伤害的分叉树：
+                    # 按分支卡分组，取该卡各打法节点中最高分支伤害最大的那张卡，
+                    # 其余分支卡在根层不再展示（仍会以递归子节点出现在其分支内）。
+                    if nodes:
+                        card_best: Dict[str, int] = {}
+
+                        for node in nodes:
+                            card = str(node.get("card") or "")
+                            best = max(
+                                (b.get("damage") or 0)
+                                for b in (node.get("branches") or [])
+                            )
+                            card_best[card] = max(card_best.get(card, 0), best)
+
+                        if card_best:
+                            best_card = max(card_best, key=card_best.get)
+                            nodes = [n for n in nodes if n.get("card") == best_card]
+                            wb["nodes"] = nodes
+
             result["wb"] = wb
             result["draw_whatif"] = None
             result["quickdraw_branches"] = None
