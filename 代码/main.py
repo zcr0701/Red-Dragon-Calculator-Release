@@ -1045,20 +1045,21 @@ class _TreeHtmlDelegate(QStyledItemDelegate):
             view_width -= widget.indentation() * depth + 20
 
         if option.rect.width() > 50:
-            # 布局/绘制时 option.rect 已给真实行宽：按绘制同款宽度测量，杜绝低估
-            width = max(80, int(option.rect.width() - 6))
+            # 布局/绘制时 option.rect 已给真实行宽：比绘制宽度再窄 30px 测量，
+            # 并加 18px 底部余量，保证行高 ≥ 实际绘制高度，换行绝不被下一行遮挡
+            width = max(80, int(option.rect.width() - 36))
             doc = QTextDocument()
             doc.setDefaultFont(option.font)
             doc.setHtml(html_txt + self._fork_glyph(option.widget, index))
             doc.setTextWidth(float(width))
-            return QSize(width + 8, int(doc.size().height()) + 10)
+            return QSize(width + 8, int(doc.size().height()) + 18)
 
         width = max(80, view_width)
         doc = QTextDocument()
         doc.setDefaultFont(option.font)
         doc.setHtml(html_txt + self._fork_glyph(option.widget, index))
         doc.setTextWidth(float(width))
-        return QSize(width + 8, int(doc.size().height()) + 10)
+        return QSize(width + 8, int(doc.size().height()) + 18)
 
 
 class WhatIFTreeWidget(QTreeWidget):
@@ -1264,7 +1265,9 @@ class WhatIFTreeWidget(QTreeWidget):
 
         # 分叉结果默认折叠成短行（如 垂钓时光(晦)▶），点了哪个再展开哪个的路径；
         # 单分叉（如 行骗(晦)）已由 worker 并入路径，不再生成可展开子节点。
-        def add_outcome(parent, steps, children, dmg, mana, fallback_card=""):
+        def add_outcome(
+            parent, steps, children, dmg, mana, fork_damage=0, fallback_card=""
+        ):
             if not steps:
                 # 子分叉路径为空：用结果卡名兜底生成叶子，保证展开选项有内容
                 if fallback_card:
@@ -1283,8 +1286,11 @@ class WhatIFTreeWidget(QTreeWidget):
             first = abbr_fn(str(steps[0]), compact=False)
             rest = [str(s) for s in steps[1:]]
 
-            # 规则：0 伤害路径不给展开选项 → 整条路径（含子分叉尾）内联为叶子
-            if dmg <= 0:
+            # 规则：后续造成的伤害 = 总伤 − 分叉点伤害；为 0 时不给展开选项，
+            # 整条路径（含子分叉尾）内联为叶子。
+            cont_damage = dmg - int(fork_damage or 0)
+
+            if cont_damage <= 0:
                 text = join_steps(steps) + f"({dmg}伤余{mana}费)"
 
                 for ch in children:
@@ -1334,6 +1340,7 @@ class WhatIFTreeWidget(QTreeWidget):
                     ch.get("children") or [],
                     int(ch.get("damage") or 0),
                     int(ch.get("mana_left") or 0),
+                    fork_damage=int(ch.get("fork_damage") or 0),
                     fallback_card=card,
                 )
 
@@ -1357,6 +1364,7 @@ class WhatIFTreeWidget(QTreeWidget):
                 tb.get("children") or [],
                 int(tb.get("damage") or 0),
                 int(tb.get("mana_left") or 0),
+                fork_damage=int(tb.get("fork_damage") or 0),
             )
 
         # 主干默认展开显示各分叉结果；分叉结果本身默认折叠
@@ -1798,6 +1806,7 @@ class CalculationWorker(QThread):
                             "damage": int(best_i.get("damage") or 0),
                             "dragons": int(best_i.get("dragons") or 0),
                             "mana_left": int(best_i.get("mana") or 0),
+                            "fork_damage": int(best_i.get("fork_damage") or 0),
                             "path": path_i,
                         }
 
@@ -1813,6 +1822,9 @@ class CalculationWorker(QThread):
                                         "damage": int(c.get("damage") or 0),
                                         "dragons": int(c.get("dragons") or 0),
                                         "mana_left": int(c.get("mana_left") or 0),
+                                        "fork_damage": int(
+                                            c.get("fork_damage") or 0
+                                        ),
                                         "path": list(c.get("path") or []),
                                     }
                                     for c in (res_i.get("quickdraw_branches") or [])
@@ -1829,6 +1841,9 @@ class CalculationWorker(QThread):
                                         "damage": int(c.get("damage") or 0),
                                         "dragons": int(c.get("dragons") or 0),
                                         "mana_left": int(c.get("mana_left") or 0),
+                                        "fork_damage": int(
+                                            c.get("fork_damage") or 0
+                                        ),
                                         "path": list(c.get("path") or []),
                                     }
                                     for c in (res_i.get("draw_branches") or [])
