@@ -927,6 +927,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
             if (s.quickdraw_choice < 0) s.quickdraw_choice = (int)ci;
             s.used_quickdraw = true;
             s.fork_damage = base.alex_damage;
+            s.forced_draw_choice.clear();  // 强制抽牌用一次即失效
             add_card_to_hand_or_burn(s, make_card(choice));
             // 路径标注“（X）”：持枪要挟只是把快枪牌置入手牌，X 由玩家后续打出
             if (!s.path().empty()) {
@@ -942,6 +943,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
                 s.quickdraw_choice = (int)QUICKDRAW_MODELED_POOL.size();  // 下标 5 = 其他快枪牌·随从
             s.used_quickdraw = true;
             s.fork_damage = base.alex_damage;
+            s.forced_draw_choice.clear();
             Card junk = make_card("未知快枪牌随从");
             junk.type_idx = N_T_MINION;
             add_card_to_hand_or_burn(s, junk);
@@ -958,6 +960,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
                 s.quickdraw_choice = (int)QUICKDRAW_MODELED_POOL.size() + 1;  // 下标 6 = 其他快枪牌·法术
             s.used_quickdraw = true;
             s.fork_damage = base.alex_damage;
+            s.forced_draw_choice.clear();
             Card junk = make_card("未知快枪牌法术");
             junk.type_idx = N_T_SPELL;
             add_card_to_hand_or_burn(s, junk);
@@ -1354,6 +1357,7 @@ static vector<State> generate_successors(const State& st) {
                         State base = st.clone_reserved();
                         if (play_card_base(base, hand_index, -1, false, false)) {
                             base.fork_damage = base.alex_damage;
+                            base.forced_draw_choice.clear();  // 强制抽牌用一次即失效
                             for (const string& mn : missing) {
                                 add_card_to_hand_or_burn(base, make_card(mn));
                                 deck_draw_minion(base, mn);
@@ -1388,6 +1392,7 @@ static vector<State> generate_successors(const State& st) {
                             State base = st.clone_reserved();
                             if (play_card_base(base, hand_index, -1, false, false)) {
                                 base.fork_damage = base.alex_damage;
+                                base.forced_draw_choice.clear();
                                 for (const string& mn : missing) {
                                     add_card_to_hand_or_burn(base, make_card(mn));
                                     deck_draw_minion(base, mn);
@@ -1420,6 +1425,7 @@ static vector<State> generate_successors(const State& st) {
                         State base = st.clone_reserved();
                         if (!play_card_base(base, hand_index, -1, false, false)) continue;
                         base.fork_damage = base.alex_damage;
+                        base.forced_draw_choice.clear();
 
                         if (!base.path().empty()) {
                             string note = "（";
@@ -1508,6 +1514,7 @@ static vector<State> generate_successors(const State& st) {
                 State base = st.clone_reserved();
                 if (!play_card_base(base, hand_index, -1, false, false)) continue;
                 base.fork_damage = base.alex_damage;
+                base.forced_draw_choice.clear();
                 if (!apply_effect_inplace(base, N_E_FISHIN, card, -1, false)) continue;
                 if (!base.path().empty()) base.path_mut().back() += "（" + pick + "）";
                 if (pick == "未知杂牌") {

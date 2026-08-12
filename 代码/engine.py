@@ -730,11 +730,10 @@ def find_engine(exe_path: Optional[str] = None) -> Optional[str]:
 
 
 def build_dredge_options(snapshot: Dict[str, object]) -> List[str]:
-    """垂钓时光探底分叉池：已知底牌 + 可能缺失的组合随从（最多 3 张）。
+    """垂钓时光探底分叉池：只认阅读器已记录的底牌（最多 3 张）。
 
-    阅读器只追踪到部分底牌时，未知的底牌可能是组合随从（如手牌+场面已有
-    鱼狐刀暗牛时，牌库只剩晦）——把它补进分叉池，才能探索“探底拿晦回费”
-    这类更高伤可能；缺位仍由 C++ 以“未知杂牌”兜底。
+    垂钓时光是“探底：随机三张里选一张”，没有记录到底牌时不能假设底部有
+    某个随从；缺位由 C++ 以“未知杂牌”兜底。
     """
     dredge = []
 
@@ -743,25 +742,6 @@ def build_dredge_options(snapshot: Dict[str, object]) -> List[str]:
 
         if name and name != "未知杂牌":
             dredge.append(name)
-
-    have_names = {
-        str(h.get("name", "")) for h in (snapshot.get("hand") or [])
-    } | {str(b.get("name", "")) for b in (snapshot.get("board") or [])}
-
-    # 与 C++ COMBO_MINION_POOL 保持一致（鱼/刀/牛/暗/晦/狐；腾武默认不勾）
-    for n in (
-        "鲨鱼之灵",
-        "斯卡布斯·刀油",
-        "乐队经理精英牛头人酋长",
-        "暗影施法者",
-        "晦鳞巢母",
-        "狐人老千",
-    ):
-        if len(dredge) >= 3:
-            break
-
-        if n not in have_names and n not in dredge:
-            dredge.append(n)
 
     return dredge[:3]
 
