@@ -1260,6 +1260,32 @@ class WhatIFTreeWidget(QTreeWidget):
             first = abbr_fn(str(steps[0]), compact=False)
             rest = [str(s) for s in steps[1:]]
 
+            # 规则：0 伤害路径不给展开选项 → 整条路径（含子分叉尾）内联为叶子
+            if dmg <= 0:
+                text = join_steps(steps) + f"({dmg}伤余{mana}费)"
+
+                for ch in children:
+                    card = str(ch.get("card") or "")
+                    tail = WhatIFTreeWidget._tail_steps(
+                        [
+                            str(s)
+                            for s in (ch.get("mid") or ch.get("path") or [])
+                        ],
+                        card,
+                    )
+
+                    if tail:
+                        text += "-" + join_steps(tail)
+
+                item = self._item(text)
+
+                if parent is not None:
+                    parent.addChild(item)
+                else:
+                    self.addTopLevelItem(item)
+
+                return
+
             if not rest and not children:
                 item = self._item(first + f"({dmg}伤余{mana}费)")
 
@@ -1272,11 +1298,7 @@ class WhatIFTreeWidget(QTreeWidget):
 
             # 可展开行：标签带本行结果 (X伤害余N费)；展开的完整路径结尾不再带
             node = self._item(first + f"({dmg}伤余{mana}费)")
-
-            if parent is not None:
-                parent.addChild(node)
-            else:
-                self.addTopLevelItem(node)
+            added = False
 
             if rest:
                 # 到下一个分叉卡之前的路径（若有更深分叉）；否则整段延续路径
@@ -1284,11 +1306,15 @@ class WhatIFTreeWidget(QTreeWidget):
 
                 if cont:
                     node.addChild(self._item(join_steps(cont)))
+                    added = True
 
             for ch in children:
-                ch_steps = [
-                    str(s) for s in (ch.get("mid") or ch.get("path") or [])
-                ]
+                card = str(ch.get("card") or "")
+                ch_steps = WhatIFTreeWidget._tail_steps(
+                    [str(s) for s in (ch.get("mid") or ch.get("path") or [])],
+                    card,
+                )
+                before = node.childCount()
                 add_outcome(
                     node,
                     ch_steps,
@@ -1296,6 +1322,25 @@ class WhatIFTreeWidget(QTreeWidget):
                     int(ch.get("damage") or 0),
                     int(ch.get("mana_left") or 0),
                 )
+
+                if node.childCount() > before:
+                    added = True
+
+            if not added:
+                # 无实际可展开内容：降级为叶子，不显示无意义的 ▶
+                item = self._item(first + f"({dmg}伤余{mana}费)")
+
+                if parent is not None:
+                    parent.addChild(item)
+                else:
+                    self.addTopLevelItem(item)
+
+                return
+
+            if parent is not None:
+                parent.addChild(node)
+            else:
+                self.addTopLevelItem(node)
 
         for tb in branches:
             add_outcome(
