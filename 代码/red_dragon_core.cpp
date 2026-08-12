@@ -55,12 +55,91 @@ static const int MAX_HAND = 10;
 static const int MAX_BOARD = 7;
 static const int MAX_SECRET = 5;
 
+// 字符串驻留池：同名/同类型/同效果共享同一份字符串，克隆 O(1) 零分配、比较 O(1) 指针。
+// 跨线程用轻量自旋锁保护（仅首次插入才分配，克隆/比较不碰锁）。
+static std::shared_ptr<const std::string> intern_name(const string& name) {
+    static std::atomic<bool> spin_lock{false};
+    while (spin_lock.exchange(true, std::memory_order_acquire)) {
+        // 自旋等待（临界区极短，仅首次插入才分配）
+    }
+    static unordered_map<string, std::shared_ptr<const std::string>> pool;
+    std::shared_ptr<const std::string> sp;
+    auto it = pool.find(name);
+    if (it == pool.end()) {
+        sp = std::make_shared<const std::string>(name);
+        pool.emplace(name, sp);
+    } else {
+        sp = it->second;
+    }
+    spin_lock.store(false, std::memory_order_release);
+    return sp;
+}
+
+// 热路径卡名/类型/效果驻留指针：指针相等 ≡ 字符串相等。
+// 启发函数/特征扫描/效果分发对每个候选状态做数十次比较（每局数百万次），
+// 用指针比较替代逐字节字符串比较；同时把 Card 里两个 32B 的 std::string
+// 压成两个 8B 指针（State 体积 ≈ 2.8KB → 1.7KB，克隆/搬运/缓存压力大减）。
+static const std::shared_ptr<const std::string> N_SHARK = intern_name("鲨鱼之灵");
+static const std::shared_ptr<const std::string> N_MOTHER = intern_name("晦鳞巢母");
+static const std::shared_ptr<const std::string> N_CASTER = intern_name("暗影施法者");
+static const std::shared_ptr<const std::string> N_STEP = intern_name("暗影步");
+static const std::shared_ptr<const std::string> N_DANCE = intern_name("舞动全场（ft.迦罗娜）");
+static const std::shared_ptr<const std::string> N_POTION = intern_name("幻觉药水");
+static const std::shared_ptr<const std::string> N_SCABBS = intern_name("斯卡布斯·刀油");
+static const std::shared_ptr<const std::string> N_ETC = intern_name("乐队经理精英牛头人酋长");
+static const std::shared_ptr<const std::string> N_DRAGON = intern_name("生命的缚誓者阿莱克丝塔萨");
+static const std::shared_ptr<const std::string> N_TENWU = intern_name("赤烟·腾武");
+static const std::shared_ptr<const std::string> N_TRANSFER = intern_name("战略转移");
+static const std::shared_ptr<const std::string> N_DEADLY = intern_name("殒命暗影");
+static const std::shared_ptr<const std::string> N_SWINDLE = intern_name("行骗");
+static const std::shared_ptr<const std::string> N_DIG = intern_name("挖掘宝藏");
+static const std::shared_ptr<const std::string> N_CURTAIN = intern_name("潜伏帷幕");
+static const std::shared_ptr<const std::string> N_QUICKDRAW = intern_name("持枪要挟");
+static const std::shared_ptr<const std::string> N_FISHIN = intern_name("垂钓时光");
+static const std::shared_ptr<const std::string> N_FOX = intern_name("狐人老千");
+static const std::shared_ptr<const std::string> N_BONE = intern_name("锯齿骨刺");
+// 卡牌类型
+static const std::shared_ptr<const std::string> N_T_MINION = intern_name("minion");
+static const std::shared_ptr<const std::string> N_T_SPELL = intern_name("spell");
+static const std::shared_ptr<const std::string> N_T_SECRET = intern_name("secret");
+static const std::shared_ptr<const std::string> N_T_WEAPON = intern_name("weapon");
+static const std::shared_ptr<const std::string> N_T_UNKNOWN = intern_name("unknown");
+// 卡牌效果（effect_id）
+static const std::shared_ptr<const std::string> N_E_NONE = intern_name("unknown");
+static const std::shared_ptr<const std::string> N_E_COIN = intern_name("coin");
+static const std::shared_ptr<const std::string> N_E_FAKE_COIN = intern_name("fake_coin");
+static const std::shared_ptr<const std::string> N_E_PREPARATION = intern_name("preparation");
+static const std::shared_ptr<const std::string> N_E_PLAGUE = intern_name("plague_of_madness");
+static const std::shared_ptr<const std::string> N_E_LUCKY_COMET = intern_name("lucky_comet");
+static const std::shared_ptr<const std::string> N_E_FOXY = intern_name("foxy_fraud");
+static const std::shared_ptr<const std::string> N_E_SCABBS_CUT = intern_name("scabbs_cutterbutter");
+static const std::shared_ptr<const std::string> N_E_TRANSFER = intern_name("strategic_transfer");
+static const std::shared_ptr<const std::string> N_E_STEP = intern_name("shadowstep");
+static const std::shared_ptr<const std::string> N_E_CASTER = intern_name("shadowcaster");
+static const std::shared_ptr<const std::string> N_E_TENWU = intern_name("tenwu");
+static const std::shared_ptr<const std::string> N_E_DANCE = intern_name("breakdance");
+static const std::shared_ptr<const std::string> N_E_POTION = intern_name("potion_of_illusion");
+static const std::shared_ptr<const std::string> N_E_MOTHER = intern_name("candlebreath_mother");
+static const std::shared_ptr<const std::string> N_E_REHYDRATE = intern_name("rehydrate");
+static const std::shared_ptr<const std::string> N_E_SWINDLE = intern_name("swindle");
+static const std::shared_ptr<const std::string> N_E_FISHIN = intern_name("gone_fishin");
+static const std::shared_ptr<const std::string> N_E_BONE = intern_name("serrated_bone_spike");
+static const std::shared_ptr<const std::string> N_E_GAMBLER = intern_name("gambler_hunter");
+static const std::shared_ptr<const std::string> N_E_CULTIST = intern_name("cultist_map");
+static const std::shared_ptr<const std::string> N_E_ETC = intern_name("elite_tauren_champion");
+static const std::shared_ptr<const std::string> N_E_QUICKDRAW = intern_name("discover_quickdraw");
+static const std::shared_ptr<const std::string> N_E_MISFIRE = intern_name("misfire");
+static const std::shared_ptr<const std::string> N_E_DEHYDRATE = intern_name("dehydrate");
+static const std::shared_ptr<const std::string> N_E_POCKET_SAND = intern_name("pocket_sand");
+static const std::shared_ptr<const std::string> N_E_LAY_DOWN = intern_name("lay_down_the_law");
+static const std::shared_ptr<const std::string> N_E_ALEX = intern_name("alexstrasza");
+
 // ===================== 卡牌 =====================
 struct Card {
     std::shared_ptr<const std::string> name_;           // 驻留共享：克隆 O(1) 零分配
     std::shared_ptr<const std::string> original_name_;
-    string card_type;      // minion / spell / secret / weapon / unknown
-    string effect_id;
+    std::shared_ptr<const std::string> card_type;       // 驻留：minion/spell/secret/weapon/unknown
+    std::shared_ptr<const std::string> effect_id;       // 驻留：效果 ID（shadowcaster 等）
     uint64_t static_hash = 0;  // name/original_name/card_type/effect_id 的哈希，创建时一次算好
     int cost = -1;         // -1 = 无固定费用（殒命暗影）
     int temp_cost = -1;    // -1 = 无
@@ -82,52 +161,11 @@ struct Card {
         return original_name_ ? *original_name_ : empty;
     }
     int current_cost() const { return temp_cost >= 0 ? temp_cost : cost; }
-    bool is_spell_like() const { return card_type == "spell" || card_type == "secret"; }
+    bool is_spell_like() const {
+        return card_type == N_T_SPELL || card_type == N_T_SECRET;
+    }
     Card clone() const { return *this; }
 };
-
-// 卡名驻留池：同名牌共享同一份字符串，搜索中反复创建（药水复制/牛头人选择/刀油衍生物）
-// 只发生一次分配；跨线程用轻量自旋锁保护（仅卡牌创建时走锁，克隆不碰锁）。
-static std::shared_ptr<const std::string> intern_name(const string& name) {
-    static std::atomic<bool> spin_lock{false};
-    while (spin_lock.exchange(true, std::memory_order_acquire)) {
-        // 自旋等待（临界区极短，仅首次插入才分配）
-    }
-    static unordered_map<string, std::shared_ptr<const std::string>> pool;
-    std::shared_ptr<const std::string> sp;
-    auto it = pool.find(name);
-    if (it == pool.end()) {
-        sp = std::make_shared<const std::string>(name);
-        pool.emplace(name, sp);
-    } else {
-        sp = it->second;
-    }
-    spin_lock.store(false, std::memory_order_release);
-    return sp;
-}
-
-// 热路径卡名驻留指针：卡名经 intern_name 驻留，指针相等 ≡ 字符串相等。
-// 启发函数/特征扫描对每个候选状态做数十次卡名比较（每局数百万次），
-// 用指针比较替代逐字节字符串比较是 SIMD 无法覆盖的标量大头。
-static const std::shared_ptr<const std::string> N_SHARK = intern_name("鲨鱼之灵");
-static const std::shared_ptr<const std::string> N_MOTHER = intern_name("晦鳞巢母");
-static const std::shared_ptr<const std::string> N_CASTER = intern_name("暗影施法者");
-static const std::shared_ptr<const std::string> N_STEP = intern_name("暗影步");
-static const std::shared_ptr<const std::string> N_DANCE = intern_name("舞动全场（ft.迦罗娜）");
-static const std::shared_ptr<const std::string> N_POTION = intern_name("幻觉药水");
-static const std::shared_ptr<const std::string> N_SCABBS = intern_name("斯卡布斯·刀油");
-static const std::shared_ptr<const std::string> N_ETC = intern_name("乐队经理精英牛头人酋长");
-static const std::shared_ptr<const std::string> N_DRAGON = intern_name("生命的缚誓者阿莱克丝塔萨");
-static const std::shared_ptr<const std::string> N_TENWU = intern_name("赤烟·腾武");
-static const std::shared_ptr<const std::string> N_TRANSFER = intern_name("战略转移");
-static const std::shared_ptr<const std::string> N_DEADLY = intern_name("殒命暗影");
-static const std::shared_ptr<const std::string> N_SWINDLE = intern_name("行骗");
-static const std::shared_ptr<const std::string> N_DIG = intern_name("挖掘宝藏");
-static const std::shared_ptr<const std::string> N_CURTAIN = intern_name("潜伏帷幕");
-static const std::shared_ptr<const std::string> N_QUICKDRAW = intern_name("持枪要挟");
-static const std::shared_ptr<const std::string> N_FISHIN = intern_name("垂钓时光");
-static const std::shared_ptr<const std::string> N_FOX = intern_name("狐人老千");
-static const std::shared_ptr<const std::string> N_BONE = intern_name("锯齿骨刺");
 
 struct CardDef {
     int cost;
@@ -258,18 +296,18 @@ static Card make_card(const string& name, int cost_override = -1) {
     if (it == DB.end()) {
         c.name_ = intern_name(normalized);
         c.original_name_ = c.name_;
-        c.card_type = "unknown";
-        c.effect_id = "unknown";
+        c.card_type = N_T_UNKNOWN;
+        c.effect_id = N_E_NONE;
         c.static_hash = mix_hash(str_hash(*c.name_), str_hash(*c.original_name_));
-        c.static_hash = mix_hash(c.static_hash, str_hash(c.card_type));
-        c.static_hash = mix_hash(c.static_hash, str_hash(c.effect_id));
+        c.static_hash = mix_hash(c.static_hash, str_hash(*c.card_type));
+        c.static_hash = mix_hash(c.static_hash, str_hash(*c.effect_id));
         return c;
     }
     const CardDef& d = it->second;
     c.name_ = intern_name(normalized);
     c.original_name_ = c.name_;
-    c.card_type = d.card_type;
-    c.effect_id = d.effect_id;
+    c.card_type = intern_name(d.card_type);
+    c.effect_id = intern_name(d.effect_id);
     c.cost = cost_override >= 0 ? cost_override : d.cost;
     c.battlecry = d.battlecry;
     c.combo = d.combo;
@@ -277,8 +315,8 @@ static Card make_card(const string& name, int cost_override = -1) {
     c.health = d.health;
     if (name == "殒命暗影") c.is_deadly_shadow = true;
     c.static_hash = mix_hash(str_hash(*c.name_), str_hash(*c.original_name_));
-    c.static_hash = mix_hash(c.static_hash, str_hash(c.card_type));
-    c.static_hash = mix_hash(c.static_hash, str_hash(c.effect_id));
+    c.static_hash = mix_hash(c.static_hash, str_hash(*c.card_type));
+    c.static_hash = mix_hash(c.static_hash, str_hash(*c.effect_id));
     return c;
 }
 
@@ -406,7 +444,7 @@ static int effective_cost(const State& s, const Card& card) {
     int base = card.current_cost();
     if (base < 0) return -1;
     // 脱水快枪：本回合进入手牌时法力值消耗为 1
-    if (card.effect_id == "dehydrate" && card.entered_hand_this_turn) base = 1;
+    if (card.effect_id == N_E_DEHYDRATE && card.entered_hand_this_turn) base = 1;
     int discount = 0;
     if (s.next_card > 0) discount += s.next_card;
     if (s.next_two_cards_count > 0) discount += s.next_two_cards;
@@ -428,7 +466,7 @@ static bool same_playable_card(const State& s, const Card& a, const Card& b) {
         a.is_deadly_shadow != b.is_deadly_shadow ||
         a.locked_one_cost != b.locked_one_cost)
         return false;
-    if (a.effect_id == "gambler_hunter" &&
+    if (a.effect_id == N_E_GAMBLER &&
         a.entered_hand_this_turn != b.entered_hand_this_turn)
         return false;
     bool transfer_around = false;
@@ -459,7 +497,7 @@ static void consume_discounts(State& s, const Card& card) {
 }
 
 static int minion_trigger_multiplier(const State& s, const Card& card) {
-    if (card.effect_id == "tenwu") return 1;  // 腾武是单体回手，鲨鱼不重复触发（避免回两张）
+    if (card.effect_id == N_E_TENWU) return 1;  // 腾武是单体回手，鲨鱼不重复触发（避免回两张）
     if ((card.battlecry || card.combo) && s.has_shark()) return 2;
     return 1;
 }
@@ -512,8 +550,8 @@ static bool play_card_base(State& s, int hand_index, int target_friendly_index,
     int cost = effective_cost(s, card);
     if (cost < 0 || s.mana < cost) return false;
     // 杂牌（unknown）可能是随从：打出会占格子，按随从处理
-    if ((card.card_type == "minion" || card.card_type == "unknown") && s.board_full()) return false;
-        if (card.card_type == "secret") {
+    if ((card.card_type == N_T_MINION || card.card_type == N_T_UNKNOWN) && s.board_full()) return false;
+        if (card.card_type == N_T_SECRET) {
             if ((int)s.secrets.size() >= MAX_SECRET) return false;
             for (const auto& sec : s.secrets)
                 if (sec.name() == card.name()) return false;  // 每种奥秘只能装备一个
@@ -553,11 +591,11 @@ static bool play_card_base(State& s, int hand_index, int target_friendly_index,
         }
     }
 
-    if (card.card_type == "minion" || card.card_type == "unknown") {
+    if (card.card_type == N_T_MINION || card.card_type == N_T_UNKNOWN) {
         s.board.push_back(card);
-    } else if (card.card_type == "secret") {
+    } else if (card.card_type == N_T_SECRET) {
         s.secrets.push_back(card);
-    } else if (card.card_type == "weapon") {
+    } else if (card.card_type == N_T_WEAPON) {
         s.weapon = card;
         s.has_weapon = true;
     }
@@ -614,33 +652,33 @@ static State breakdance_branch(const State& base) {
 
 // 效果结算：单分支效果原地修改（零克隆，对应“增量状态”优化）；
 // 仅牛头人发现等真多分支效果走克隆路径。
-static bool apply_effect_inplace(State& s, const string& e, const Card& card,
+static bool apply_effect_inplace(State& s, const std::shared_ptr<const std::string>& e, const Card& card,
                                  int target_friendly_index, bool target_enemy_is_killed) {
-    if (e == "coin" || e == "fake_coin") {
+    if (e == N_E_COIN || e == N_E_FAKE_COIN) {
         s.mana += 1;  // 临时法力不封顶（与 Python gain_temporary 一致）
-    } else if (e == "preparation") {
+    } else if (e == N_E_PREPARATION) {
         s.next_spell += 2;
-    } else if (e == "plague_of_madness") {
+    } else if (e == N_E_PLAGUE) {
         // 疯狂之灾祸：双方各装备一把 2/2 剧毒刀。武器攻击不计入 OTK 伤害，
         // 仅作为 1 费法术（连击触发器 / 殒命暗影变形源 / 杂牌）参与搜索。
-    } else if (e == "lucky_comet") {
+    } else if (e == N_E_LUCKY_COMET) {
         // 幸运彗星：将一张类型为随从的杂牌置入手牌；获得一次性效果——
         // 下一张连击随从的连击触发两次（仅当连击能触发时生效并消耗，跨回合保留）。
         Card junk = make_card("未知随从");
-        junk.card_type = "minion";
+        junk.card_type = N_T_MINION;
         junk.entered_hand_this_turn = true;
         add_card_to_hand_or_burn(s, junk);
         s.next_combo_twice = true;
-    } else if (e == "foxy_fraud") {
+    } else if (e == N_E_FOXY) {
         // 战吼：下一张连击牌减 2 费。不需要本回合先出牌触发——
         // 即使作为本回合第一张牌打出也生效（鲨鱼双战吼 → 下一张连击牌 -4）。
         s.next_combo += 2;
-    } else if (e == "scabbs_cutterbutter") {
+    } else if (e == N_E_SCABBS_CUT) {
         if (s.cards_played_this_turn > 0) {
             // 连击：接下来两张牌各减 2（幸运彗星双触发 = 两次各推 {2,2}）
             s.oil_stacks.push_back({2, 2});
         }
-    } else if (e == "strategic_transfer") {
+    } else if (e == N_E_TRANSFER) {
         // 战略转移：所有友方随从移回手牌，一律还原为原始版本
         // （费用恢复原始消耗、身材恢复原始身材；暗施/药水 1/1 复制、腾武锁 1 费同样还原）
         vector<Card> returning = s.board;
@@ -664,7 +702,7 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
             }
             s.burned_cards += (int)returning.size() - free_slots;
         }
-    } else if (e == "shadowstep") {
+    } else if (e == N_E_STEP) {
         if (target_friendly_index >= 0 && target_friendly_index < (int)s.board.size()) {
             Card target = s.board[target_friendly_index];
             s.board.erase(s.board.begin() + target_friendly_index);
@@ -676,7 +714,7 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
             target = orig;
             add_card_to_hand_or_burn(s, target);
         }
-    } else if (e == "shadowcaster") {
+    } else if (e == N_E_CASTER) {
         if (target_friendly_index >= 0 && target_friendly_index < (int)s.board.size()) {
             Card copied = s.board[target_friendly_index].clone();
             copied.temp_cost = 1;
@@ -684,7 +722,7 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
             copied.is_mini_copy = true;
             add_card_to_hand_or_burn(s, copied);
         }
-    } else if (e == "tenwu") {
+    } else if (e == N_E_TENWU) {
         if (target_friendly_index >= 0 && target_friendly_index < (int)s.board.size()) {
             Card target = s.board[target_friendly_index];
             s.board.erase(s.board.begin() + target_friendly_index);
@@ -692,10 +730,10 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
             target.temp_cost = 1;
             add_card_to_hand_or_burn(s, target);
         }
-    } else if (e == "breakdance") {
+    } else if (e == N_E_DANCE) {
         State ns = breakdance_branch(s);
         s = std::move(ns);
-    } else if (e == "potion_of_illusion") {
+    } else if (e == N_E_POTION) {
         vector<Card> copies;
         for (const auto& m : s.board) {
             Card copy = m.clone();
@@ -705,19 +743,19 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
             copies.push_back(copy);
         }
         for (const auto& c : copies) add_card_to_hand_or_burn(s, c);
-    } else if (e == "candlebreath_mother") {
+    } else if (e == N_E_MOTHER) {
         bool dragon_in_hand = false;
         for (const auto& c : s.hand)
             if (c.dragon) { dragon_in_hand = true; break; }
         if (dragon_in_hand) {
             s.mana = std::min(s.mana_crystals, s.mana + 2);
         }
-    } else if (e == "rehydrate") {
+    } else if (e == N_E_REHYDRATE) {
         // 补水快枪：本回合进入手牌时复原两个法力水晶
         if (card.entered_hand_this_turn) {
             s.mana = std::min(s.mana_crystals, s.mana + 2);
         }
-    } else if (e == "swindle") {
+    } else if (e == N_E_SWINDLE) {
         if (s.deck_is_known) {
             // 行骗：不连击抽 1 张法术；连击再抽 1 张随从（即连击共抽法术+随从 2 张）。
             // 牌库已知时按实际牌库精确模拟（移出牌库进手牌/满手烧毁）：
@@ -733,7 +771,7 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
             }
             if (combo) {
                 for (auto it = s.deck.begin(); it != s.deck.end(); ++it) {
-                    bool minion = it->card_type == "minion" || it->card_type == "unknown";
+                    bool minion = it->card_type == N_T_MINION || it->card_type == N_T_UNKNOWN;
                     if (!minion) continue;
                     Card drawn = *it;
                     s.deck.erase(it);
@@ -746,10 +784,10 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
             // 把该法术作为“未知法术”杂牌置入手牌（满手按进场顺序烧毁）；
             // 连击的随从部分不模拟（牌库是否还有随从未知，避免虚构抽牌后继）。
             Card unknown_spell = make_card("未知法术");
-            unknown_spell.card_type = "spell";
+            unknown_spell.card_type = N_T_SPELL;
             add_card_to_hand_or_burn(s, unknown_spell);
         }
-    } else if (e == "gone_fishin") {
+    } else if (e == N_E_FISHIN) {
         // 垂钓时光：连击才抽 1 张牌（不连击只有探底，不抽牌）。
         // 牌库已知：按实际牌库抽第一张（移出牌库进手牌/满手烧毁）；
         // 牌库未知：把抽到的牌作为“未知抽牌”杂牌置入手牌（不能当免费连击触发器）。
@@ -763,7 +801,7 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
                 add_card_to_hand_or_burn(s, unknown);
             }
         }
-    } else if (e == "serrated_bone_spike") {
+    } else if (e == N_E_BONE) {
         if (target_enemy_is_killed) {
             if (target_friendly_index < -1) {
                 // 敌方随从目标（编码 -2 起）：血量 <= 3 必死，下一张牌减 2 费（不抽牌）
@@ -785,14 +823,14 @@ static bool apply_effect_inplace(State& s, const string& e, const Card& card,
                 s.next_card += 2;
             }
         }
-    } else if (e == "gambler_hunter") {
+    } else if (e == N_E_GAMBLER) {
         // 押注猎手：快枪或连击 → 获取一张幸运币（两者不叠加）
         bool quick_draw = card.entered_hand_this_turn;
         bool triggered = s.cards_played_this_turn > 0 || quick_draw;
         if (triggered) {
             add_card_to_hand_or_burn(s, make_card("幸运币"));
         }
-    } else if (e == "cultist_map") {
+    } else if (e == N_E_CULTIST) {
         // 异教地图：从牌库中“发现”一张牌（保底抽 1 张）。
         // 牌库已知：按实际牌库抽第一张（移出牌库进手牌/满手烧毁）；
         // 牌库未知：无法可靠建模抽到的牌，搜索不再展开该动作（见 generate_successors）。
@@ -818,8 +856,8 @@ static vector<State> apply_search_effect(State base, const Card& card,
         multiplier = 2;
         base.next_combo_twice = false;
     }
-    const string& e = card.effect_id;
-    if (e == "elite_tauren_champion") {
+    const std::shared_ptr<const std::string>& e = card.effect_id;
+    if (e == N_E_ETC) {
         // 牛头人发现：真多分支效果，克隆每个乐队选择
         vector<State> states;
         if (multiplier == 1) {
@@ -842,7 +880,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
         }
         return states;
     }
-    if (e == "discover_quickdraw") {
+    if (e == N_E_QUICKDRAW) {
         // 持枪要挟：发现一张另一职业快枪牌（牌池固定，展开 5 张已建模牌；
         // 其余未建模牌按类型拆成“其他快枪牌·随从（4）”/“其他快枪牌·法术（2）”
         // 两个杂牌分支，数量加权 4/11、2/11）。
@@ -871,7 +909,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
                 s.quickdraw_choice = (int)QUICKDRAW_MODELED_POOL.size();  // 下标 5 = 其他快枪牌·随从
             s.used_quickdraw = true;
             Card junk = make_card("未知快枪牌随从");
-            junk.card_type = "minion";
+            junk.card_type = N_T_MINION;
             add_card_to_hand_or_burn(s, junk);
             if (!s.path().empty()) {
                 s.path_mut().back() += "（" + QUICKDRAW_OTHER_MINION_NAME + "）";
@@ -886,7 +924,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
                 s.quickdraw_choice = (int)QUICKDRAW_MODELED_POOL.size() + 1;  // 下标 6 = 其他快枪牌·法术
             s.used_quickdraw = true;
             Card junk = make_card("未知快枪牌法术");
-            junk.card_type = "spell";
+            junk.card_type = N_T_SPELL;
             add_card_to_hand_or_burn(s, junk);
             if (!s.path().empty()) {
                 s.path_mut().back() += "（" + QUICKDRAW_OTHER_SPELL_NAME + "）";
@@ -899,7 +937,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
         }
         return states;
     }
-    if (e == "misfire" && card.entered_hand_this_turn) {
+    if (e == N_E_MISFIRE && card.entered_hand_this_turn) {
         // 误炸快枪：依次选择 3 个目标造成 3/2/1 点伤害（同一目标可重复命中），
         // 只腾随从栏格子建模：命中血量 <= 对应伤害的己方随从即死亡，最多清 3 格；
         // 非击杀伤害（打在 8/8 龙上不致死）与 OTK 无关，不建模。
@@ -978,7 +1016,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
         return states;
     }
     // 脱水：造成 4 点伤害（基础效果，快枪仅减费为 1）→ 可击杀血量 <= 4 的己方随从腾格子
-    if (e == "dehydrate") {
+    if (e == N_E_DEHYDRATE) {
         vector<State> states;
         states.push_back(base.clone_reserved());  // 无目标
         for (size_t i = 0; i < base.board.size(); i++) {
@@ -999,7 +1037,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
         return states;
     }
     // 袋底藏沙：造成 3 点伤害（基础效果）→ 可击杀血量 <= 3 的己方随从腾格子
-    if (e == "pocket_sand") {
+    if (e == N_E_POCKET_SAND) {
         vector<State> states;
         states.push_back(base.clone_reserved());  // 无目标
         for (size_t i = 0; i < base.board.size(); i++) {
@@ -1020,7 +1058,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
         return states;
     }
     // 不许乱动：快枪时先变 1/1 再造成 1 点伤害 → 可击杀任意己方随从腾格子
-    if (e == "lay_down_the_law" && card.entered_hand_this_turn) {
+    if (e == N_E_LAY_DOWN && card.entered_hand_this_turn) {
         vector<State> states;
         states.push_back(base.clone_reserved());  // 无目标
         for (size_t i = 0; i < base.board.size(); i++) {
@@ -1134,9 +1172,9 @@ static vector<vector<string>> combo_combinations(const vector<string>& pool, int
 // （异教地图/持枪要挟/可疑交易；垂钓时光是连击才抽、锯齿骨刺不抽牌只减费、
 // 疾速矿锄不触发抽牌可当杂牌打出，均不受此限制）。
 static bool card_is_unmodelable_random_draw(const Card& card) {
-    auto base_it = DRAW_ATTR_BASE.find(card.effect_id);
+    auto base_it = DRAW_ATTR_BASE.find(*card.effect_id);
     if (base_it == DRAW_ATTR_BASE.end()) return false;
-    if (DRAW_ATTR_COMBO.find(card.effect_id) != DRAW_ATTR_COMBO.end()) return false;  // 连击追加 → 可展开
+    if (DRAW_ATTR_COMBO.find(*card.effect_id) != DRAW_ATTR_COMBO.end()) return false;  // 连击追加 → 可展开
     if (!card.is_spell_like()) return false;  // 武器/随从等还有装备/战吼等其他效果
     for (const auto& d : base_it->second) {
         if (d.type != "random" || d.conditional) return false;
@@ -1146,8 +1184,8 @@ static bool card_is_unmodelable_random_draw(const Card& card) {
 
 static int cards_drawn_if_played(const State& s, const Card& card) {
     // 按抽牌属性汇总本次实际会抽的条目：基础抽牌 + 连击追加（连击时才生效）
-    auto base_it = DRAW_ATTR_BASE.find(card.effect_id);
-    auto combo_it = DRAW_ATTR_COMBO.find(card.effect_id);
+    auto base_it = DRAW_ATTR_BASE.find(*card.effect_id);
+    auto combo_it = DRAW_ATTR_COMBO.find(*card.effect_id);
     if (base_it == DRAW_ATTR_BASE.end() && combo_it == DRAW_ATTR_COMBO.end()) return 0;
     vector<const DrawSpec*> specs;
     if (base_it != DRAW_ATTR_BASE.end())
@@ -1169,7 +1207,7 @@ static int cards_drawn_if_played(const State& s, const Card& card) {
     int deck_total = (int)s.deck.size();
     int deck_minions = 0, deck_spells = 0;
     for (const auto& c : s.deck) {
-        if (c.card_type == "minion") deck_minions++;
+    if (c.card_type == N_T_MINION) deck_minions++;
         if (c.is_spell_like()) deck_spells++;
     }
     int n = 0;
@@ -1197,8 +1235,8 @@ static vector<State> generate_successors(const State& st) {
         if (cost < 0) continue;
         if (st.mana < cost) continue;
         // 杂牌（unknown）可能是随从：打出占格子
-        if ((card.card_type == "minion" || card.card_type == "unknown") && st.board_full()) continue;
-        if (card.card_type == "secret") {
+    if ((card.card_type == N_T_MINION || card.card_type == N_T_UNKNOWN) && st.board_full()) continue;
+    if (card.card_type == N_T_SECRET) {
             if ((int)st.secrets.size() >= MAX_SECRET) continue;
             bool dup_secret = false;
             for (const auto& sec : st.secrets)
@@ -1211,14 +1249,14 @@ static vector<State> generate_successors(const State& st) {
         // （显示可能的最高伤路径）；无此类卡在手中时这里是常数级判断，不影响搜索性能。
         if (!st.deck_is_known && st.branch_expand) {
             int draw_count = 0;
-            auto base_draw_it = DRAW_ATTR_BASE.find(card.effect_id);
+    auto base_draw_it = DRAW_ATTR_BASE.find(*card.effect_id);
             if (base_draw_it != DRAW_ATTR_BASE.end()) {
                 for (const auto& d : base_draw_it->second)
                     if (d.type == "minion") draw_count += d.count;
             }
             // 连击追加的随从抽牌（行骗：连击再抽 1 张随从）：
             // 只有连击真正触发时才展开；不连击打出行骗抽不了随从。
-            auto combo_draw_it = DRAW_ATTR_COMBO.find(card.effect_id);
+    auto combo_draw_it = DRAW_ATTR_COMBO.find(*card.effect_id);
             if (combo_draw_it != DRAW_ATTR_COMBO.end() && combo_active(st)) {
                 for (const auto& d : combo_draw_it->second)
                     if (d.type == "minion") draw_count += d.count;
@@ -1268,7 +1306,7 @@ static vector<State> generate_successors(const State& st) {
                             }
                             for (int k = 0; k < base_junk_spells; k++) {
                                 Card unknown_spell = make_card("未知法术");
-                                unknown_spell.card_type = "spell";
+                                unknown_spell.card_type = N_T_SPELL;
                                 add_card_to_hand_or_burn(base, unknown_spell);
                             }
                             base.used_draw_branch = true;  // 抽到具体随从：不进正常线
@@ -1300,7 +1338,7 @@ static vector<State> generate_successors(const State& st) {
                                 }
                                 for (int k = 0; k < base_junk_spells; k++) {
                                     Card unknown_spell = make_card("未知法术");
-                                    unknown_spell.card_type = "spell";
+                                    unknown_spell.card_type = N_T_SPELL;
                                     add_card_to_hand_or_burn(base, unknown_spell);
                                 }
                                 base.used_draw_branch = true;  // 抽到具体随从：不进正常线
@@ -1341,7 +1379,7 @@ static vector<State> generate_successors(const State& st) {
                         }
                         for (int k = 0; k < base_junk_spells; k++) {
                             Card unknown_spell = make_card("未知法术");
-                            unknown_spell.card_type = "spell";
+                            unknown_spell.card_type = N_T_SPELL;
                             add_card_to_hand_or_burn(base, unknown_spell);
                         }
                         base.used_draw_branch = true;  // 抽到具体随从：不进正常线
@@ -1362,11 +1400,11 @@ static vector<State> generate_successors(const State& st) {
                     if (!forced) {
                         State junk = st.clone_reserved();
                         if (play_card_base(junk, hand_index, -1, false, false)) {
-                            if (card.effect_id == "swindle") {
+                            if (card.effect_id == N_E_SWINDLE) {
                                 Card unknown_spell = make_card("未知法术");
-                                unknown_spell.card_type = "spell";
+                                unknown_spell.card_type = N_T_SPELL;
                                 add_card_to_hand_or_burn(junk, unknown_spell);
-                            } else if (card.effect_id == "gone_fishin" && combo_active(st)) {
+                            } else if (card.effect_id == N_E_FISHIN && combo_active(st)) {
                                 Card unknown = make_card("未知抽牌");
                                 add_card_to_hand_or_burn(junk, unknown);
                             }
@@ -1383,7 +1421,7 @@ static vector<State> generate_successors(const State& st) {
         // 垂钓时光探底分叉（WhatIF/Branch）：阅读器追踪的牌库底已知牌作为分叉选项。
         // 打出垂钓时光 = 从底 3 张选 1 张入手（连击额外抽 1 张）；每个已知底牌一个分支，
         // 不足 3 张时补“未知杂牌”分支；选中后其余已知牌留在牌库底（下次垂钓时光再用）。
-        if (card.effect_id == "gone_fishin" && st.branch_expand && !st.dredge_bottom.empty()) {
+        if (card.effect_id == N_E_FISHIN && st.branch_expand && !st.dredge_bottom.empty()) {
             const bool forced = !st.forced_draw_choice.empty();
             vector<string> opts;
             for (const string& n : st.dredge_bottom) {
@@ -1406,7 +1444,7 @@ static vector<State> generate_successors(const State& st) {
             for (const string& pick : opts) {
                 State base = st.clone_reserved();
                 if (!play_card_base(base, hand_index, -1, false, false)) continue;
-                if (!apply_effect_inplace(base, "gone_fishin", card, -1, false)) continue;
+                if (!apply_effect_inplace(base, N_E_FISHIN, card, -1, false)) continue;
                 if (!base.path().empty()) base.path_mut().back() += "（" + pick + "）";
                 if (pick == "未知杂牌") {
                     Card junk = make_card("未知抽牌");
@@ -1429,7 +1467,7 @@ static vector<State> generate_successors(const State& st) {
             if (!forced) {
                 State junk = st.clone_reserved();
                 if (play_card_base(junk, hand_index, -1, false, false)) {
-                    apply_effect_inplace(junk, "gone_fishin", card, -1, false);
+                    apply_effect_inplace(junk, N_E_FISHIN, card, -1, false);
                     if (card.is_spell_like()) transform_deadly_shadows(junk, card);
                     junk.cards_played_this_turn++;
                     out.push_back(std::move(junk));
@@ -1444,9 +1482,9 @@ static vector<State> generate_successors(const State& st) {
         // 随从表判空后更可直接作为普通法术使用（draw 效果本身不模拟）。
 
         vector<int> friendly_targets;
-        if (card.effect_id == "shadowstep" || card.effect_id == "shadowcaster" ||
-            card.effect_id == "serrated_bone_spike" || card.effect_id == "tenwu") {
-            if (card.effect_id == "tenwu") {
+        if (card.effect_id == N_E_STEP || card.effect_id == N_E_CASTER ||
+            card.effect_id == N_E_BONE || card.effect_id == N_E_TENWU) {
+            if (card.effect_id == N_E_TENWU) {
                 // 腾武不能以腾武为目标（自回环非法）；目标顺序由路径标注
                 for (int i = 0; i < (int)st.board.size(); i++) {
                     if (st.board[i].name_ == N_TENWU) continue;
@@ -1459,9 +1497,9 @@ static vector<State> generate_successors(const State& st) {
             friendly_targets.push_back(-1);
         }
         vector<bool> kill_options = {false};
-        if (card.effect_id == "serrated_bone_spike") kill_options = {false, true};
+        if (card.effect_id == N_E_BONE) kill_options = {false, true};
         vector<bool> enemy_options = {true};
-        if (card.effect_id == "alexstrasza") enemy_options = {true, false};
+        if (card.effect_id == N_E_ALEX) enemy_options = {true, false};
 
         for (int tf : friendly_targets) {
             for (bool ek : kill_options) {
@@ -1476,7 +1514,7 @@ static vector<State> generate_successors(const State& st) {
         // 锯齿骨刺（编码负目标：-2 起）：
         //   - 血量 <= 3：击杀分支，移除并抽 2
         //   - 血量 > 3：不击杀分支视作杂牌（仅消耗腾手牌，不模拟伤害）
-        if (card.effect_id == "serrated_bone_spike") {
+        if (card.effect_id == N_E_BONE) {
             for (int ei = 0; ei < (int)st.enemy_board.size(); ei++) {
                 const Card& target = st.enemy_board[ei];
                 State base = st.clone_reserved();
@@ -2045,7 +2083,7 @@ static int subchain_score(const State& s) {
             if (free_slots <= 1) {
                 bool stuck_minion = false;
                 for (const auto& c : s.hand) {
-                    if (c.card_type == "minion" || c.card_type == "unknown") {
+        if (c.card_type == N_T_MINION || c.card_type == N_T_UNKNOWN) {
                         int cc = effective_cost(s, c);
                         if (cc >= 0 && cc <= s.mana) { stuck_minion = true; break; }
                     }
@@ -2910,7 +2948,7 @@ static State state_from_json(const JVal& root) {
         for (const auto& item : board->arr) {
             Card c = make_card(item.get_str("name"));
             // 战场只可能是随从：法术/奥秘/武器误入（如日志/输入错位）直接丢弃
-            if (c.is_spell_like() || c.card_type == "weapon") continue;
+        if (c.is_spell_like() || c.card_type == N_T_WEAPON) continue;
             long long hp = item.get_int("health", -1);
             if (hp >= 0) c.health = (int)hp;
             long long tc = item.get_int("temp_cost", -1);

@@ -6,7 +6,7 @@ set OUT=%~dp0red_dragon_engine.exe
 
 if exist "D:\mingw64\bin\g++.exe" (
   echo [build] use MinGW g++: D:\mingw64\bin\g++.exe
-  "D:\mingw64\bin\g++.exe" -std=c++17 -O3 -static -o "%OUT%" "%SRC%"
+  "D:\mingw64\bin\g++.exe" -std=c++17 -O3 -flto -static -o "%OUT%" "%SRC%"
   if %errorlevel%==0 (
     echo [build] done: %OUT%
     exit /b 0
@@ -16,7 +16,7 @@ if exist "D:\mingw64\bin\g++.exe" (
 where g++ >nul 2>nul
 if %errorlevel%==0 (
   echo [build] use g++ from PATH
-  g++ -std=c++17 -O3 -static -o "%OUT%" "%SRC%"
+  g++ -std=c++17 -O3 -flto -static -o "%OUT%" "%SRC%"
   if %errorlevel%==0 (
     echo [build] done: %OUT%
     exit /b 0
