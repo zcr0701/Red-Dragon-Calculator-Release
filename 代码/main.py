@@ -1,4 +1,4 @@
-"""红龙贼计算器主入口（Python GUI + hslog 日志读取 + C++ 计算核心）。
+﻿"""红龙贼计算器主入口（Python GUI + hslog 日志读取 + C++ 计算核心）。
 
 职责划分：
   - Python：PyQt5 图形界面 + 基于 hslog 读取本机 Power.log 对局快照 + 手动输入
@@ -975,6 +975,23 @@ def format_whatif_tree(data: Dict[str, object], colors: bool = False) -> str:
 class _TreeHtmlDelegate(QStyledItemDelegate):
     """QTreeWidget 节点用 HTML 渲染（保留缩写字颜色框）。"""
 
+    @staticmethod
+    def _fork_glyph(widget, index) -> str:
+        """可展开节点（有子项）在分叉点后显示展开标记 ▶/▼。
+
+        树内原生箭头在行首，用户希望展开按钮出现在“分叉点后面”——
+        可展开节点的文本末尾正好是分叉卡（如 …-持枪要挟），标记追加在末尾。
+        """
+        if widget is None or not index.isValid():
+            return ""
+        model = widget.model()
+
+        if model is None or model.rowCount(index) <= 0:
+            return ""
+
+        mark = "▼" if widget.isExpanded(index) else "▶"
+        return f'<span style="color:#0E7490;font-weight:bold;"> {mark}</span>'
+
     def paint(self, painter, option, index):  # noqa: N802
         html_txt = index.data(Qt.UserRole)
 
@@ -991,7 +1008,7 @@ class _TreeHtmlDelegate(QStyledItemDelegate):
 
         doc = QTextDocument()
         doc.setDefaultFont(option.font)
-        doc.setHtml(html_txt)
+        doc.setHtml(html_txt + self._fork_glyph(option.widget, index))
         doc.setTextWidth(max(50.0, option.rect.width() - 6.0))
         painter.translate(option.rect.left() + 3, option.rect.top() + 2)
         doc.drawContents(painter)
@@ -1014,18 +1031,14 @@ class _TreeHtmlDelegate(QStyledItemDelegate):
         width = max(80, view_width)
         doc = QTextDocument()
         doc.setDefaultFont(option.font)
-        doc.setHtml(html_txt)
+        doc.setHtml(html_txt + self._fork_glyph(option.widget, index))
         doc.setTextWidth(float(width))
         return QSize(width + 8, int(doc.size().height()) + 10)
 
 
 class WhatIFRainbowLabel(QLabel):
-    """WhatIF 标题卡：'WhatIF' 逐字符彩虹循环变色，后接数据（平均伤害金色、保底伤害红色）。
-
-    QLabel + 富文本 + QTimer：每 300ms 让色相整体滚动（字符间距 50°，
-    每个字符初始颜色不同，整体像彩虹一样向右流动）；数据部分静态不变，
-    方便快速定位数值。
-    """
+    """WhatIF 首行：'WhatIF' 每个字初始颜色不同并整体循环变色（彩虹），
+    第二行固定显示 最高平均伤害（金色）/ 保底伤害（红色）。"""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -1056,9 +1069,9 @@ class WhatIFRainbowLabel(QLabel):
         html = (
             '<span style="font-size:14px;">'
             + prefix
-            + ":"
-            f'<span style="color:#FFD700;font-weight:bold;">最高平均伤害:{avg_txt}</span>'
-            f'<span style="color:#FF6B6B;font-weight:bold;">，保底伤害:{self._worst}</span>'
+            + ":<br>"
+            f'<span style="color:#FFD700;font-weight:bold;">最高平均伤害：{avg_txt}</span>'
+            f'<span style="color:#FF6B6B;font-weight:bold;">，保底伤害：{self._worst}</span>'
             "</span>"
         )
         self.setText(html)
@@ -1083,6 +1096,8 @@ class WhatIFTreeWidget(QTreeWidget):
         self.setSelectionMode(QAbstractItemView.NoSelection)
         self.setItemDelegate(_TreeHtmlDelegate(self))
         self.setStyleSheet("QTreeWidget::item { padding: 1px 0; }")
+        # 展开标记由委托画在“分叉点后面”，隐藏行首原生箭头
+        self.setRootIsDecorated(False)
         # 换行 + 非统一行高：长路径换行撑高行距（必须 False 才能按内容算高度）
         self.setWordWrap(True)
         self.setUniformRowHeights(False)
@@ -1150,13 +1165,31 @@ class WhatIFTreeWidget(QTreeWidget):
 
         frame = self.frameWidth() * 2
         total += frame
-        screen = QApplication.primaryScreen()
-        cap = (
-            screen.availableGeometry().height() - 120
-            if screen is not None
-            else 1200
-        )
+        # 高度封顶：最多占父容器 45%，保证上方多轮正常计算日志始终可见不被挤没
+        parent = self.parentWidget()
+        cap = 1200
+
+        if parent is not None and parent.height() > 100:
+            cap = max(140, int(parent.height() * 0.45))
+        else:
+            screen = QApplication.primaryScreen()
+
+            if screen is not None:
+                cap = max(140, int(screen.availableGeometry().height() * 0.45))
+
         return QSize(super().sizeHint().width(), min(max(40, total), cap))
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        """点击可展开节点即切换展开/折叠（展开标记在分叉点后，整行可点）。"""
+        if event.button() == Qt.LeftButton:
+            item = self.itemAt(event.pos())
+
+            if item is not None and item.childCount() > 0:
+                self.setItemExpanded(item, not item.isExpanded())
+                event.accept()
+                return
+
+        super().mousePressEvent(event)
 
     @staticmethod
     def _item(text: str) -> QTreeWidgetItem:
@@ -1192,8 +1225,8 @@ class WhatIFTreeWidget(QTreeWidget):
         def join_steps(steps: List[str]) -> str:
             return "-".join(abbr_fn(str(s), compact=False) for s in steps)
 
-        # 顶部“WhatIF:最高平均伤害/保底伤害”由独立的 WhatIFRainbowLabel 展示
-        # （彩虹循环变色），树内不再重复放该行。
+        # 顶部“WhatIF: / 最高平均伤害：X，保底伤害：Y”由 WhatIFRainbowLabel
+        # 独立展示（彩虹变色），树内不再重复该行。
 
         # 根：指引路径（到第一个分支卡，如 币-刀-行骗）
         root_steps = [str(s) for s in (tree.get("root") or [])]
@@ -1210,6 +1243,31 @@ class WhatIFTreeWidget(QTreeWidget):
             mana = int(tb.get("mana_left") or 0)
             children = tb.get("children") or []
             mid = [str(s) for s in (tb.get("mid") or [])]
+
+            # 单分叉不展开：只有一种可能性的分叉（如 行骗(晦)）直接并入路径显示
+            if len(children) == 1:
+                ch = children[0]
+                card = str(ch.get("card") or "")
+                tail = WhatIFTreeWidget._tail_steps(ch.get("path") or [], card)
+                merged = list(mid)
+
+                if tail:
+                    if merged and tail and str(merged[-1]) == str(tail[0]):
+                        merged = merged[:-1]
+
+                    merged += tail
+
+                node = self._item(
+                    (join_steps(merged) if merged else "")
+                    + f"({int(ch.get('damage') or 0)}伤余{int(ch.get('mana_left') or 0)}费)"
+                )
+
+                if root_item is not None:
+                    root_item.addChild(node)
+                else:
+                    self.addTopLevelItem(node)
+
+                continue
 
             if children:
                 # 次级：完整中间路径（如 行骗(牛)-暗(刀2)-步(刀2)-…-持枪要挟）
@@ -1728,6 +1786,29 @@ class CalculationWorker(QThread):
                                     )
                                     >= 2
                                 ]
+
+                        # 单分叉不展开：只有一种可能性的分叉（如 行骗(晦)）直接并入
+                        # 路径，默认不当作分叉计算（不生成可展开子节点）。
+                        if len(node.get("children") or []) == 1:
+                            ch = node["children"][0]
+                            card = str(ch.get("card") or "")
+                            tail = WhatIFTreeWidget._tail_steps(
+                                ch.get("path") or [], card
+                            )
+                            merged = list(node.get("mid") or [])
+
+                            if tail:
+                                if merged and str(merged[-1]) == str(tail[0]):
+                                    merged = merged[:-1]
+
+                                merged += tail
+
+                            node["mid"] = merged
+                            node["damage"] = int(ch.get("damage") or 0)
+                            node["dragons"] = int(ch.get("dragons") or 0)
+                            node["mana_left"] = int(ch.get("mana_left") or 0)
+                            node.pop("children", None)
+                            node.pop("next", None)
                         else:
                             node["mid"] = [str(s) for s in path_i[ddi:]]
 
@@ -2579,18 +2660,18 @@ class MainWindow(QWidget):
 
         result_box = QGroupBox("计算结果")
         result_layout = QVBoxLayout(result_box)
-        # WhatIF 卡片置顶：标题（彩虹）+ 分支树，不遮挡下方正常计算日志
+        # 正常计算（多轮）优先：占主空间可滚动，不被下方 WhatIF 挤没
+        self.result_text = QPlainTextEdit()
+        self.result_text.setReadOnly(True)
+        self.result_text.setMaximumBlockCount(5000)
+        result_layout.addWidget(self.result_text, 1)
+        # WhatIF 卡片：标题（彩虹）+ 分支树，高度封顶（≤父容器 45%）
         self.whatif_header = WhatIFRainbowLabel()
         self.whatif_header.setVisible(False)
         result_layout.addWidget(self.whatif_header)
         self.whatif_tree = WhatIFTreeWidget()
         self.whatif_tree.setVisible(False)
         result_layout.addWidget(self.whatif_tree)
-        # 正常计算日志：可滚动、自动扩展
-        self.result_text = QPlainTextEdit()
-        self.result_text.setReadOnly(True)
-        self.result_text.setMaximumBlockCount(5000)
-        result_layout.addWidget(self.result_text, 1)
         right_layout.addWidget(result_box, 1)
 
         top.addWidget(right)
@@ -3897,18 +3978,18 @@ class MiniWindow(QWidget):
         self.mini_calc_button.clicked.connect(self.start_calc)
         root.addWidget(self.mini_calc_button)
 
-        # WhatIF 卡片置顶：标题（彩虹）+ 分支树，固定在上方，不遮挡正常计算日志
+        self.mini_result = QTextBrowser()
+        self.mini_result.setReadOnly(True)
+        self.mini_result.document().setMaximumBlockCount(3000)
+        # 正常计算（多轮）优先：占主空间可滚动，不被下方 WhatIF 挤没
+        root.addWidget(self.mini_result, 1)
+        # WhatIF 卡片：标题（彩虹）+ 分支树，高度封顶（≤父容器 45%）
         self.mini_whatif_header = WhatIFRainbowLabel()
         self.mini_whatif_header.setVisible(False)
         root.addWidget(self.mini_whatif_header)
         self.mini_whatif_tree = WhatIFTreeWidget()
         self.mini_whatif_tree.setVisible(False)
         root.addWidget(self.mini_whatif_tree)
-        # 正常计算日志：可滚动、自动扩展，始终不被 WhatIF 覆盖
-        self.mini_result = QTextBrowser()
-        self.mini_result.setReadOnly(True)
-        self.mini_result.document().setMaximumBlockCount(3000)
-        root.addWidget(self.mini_result, 1)
         self.set_formula_font(self.main.mini_font_size())
 
         grip = QSizeGrip(self)
