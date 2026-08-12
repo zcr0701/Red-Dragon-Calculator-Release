@@ -293,6 +293,7 @@ def _keep_value(
     hand: Optional[List[dict]] = None,
     health: Optional[int] = None,
     fish_on_board: bool = False,
+    board: Optional[List[dict]] = None,
 ) -> float:
     """随从保留分：结合手牌与牛池动态判断（场面上的随从价值随持有情况变化）。
 
@@ -343,6 +344,36 @@ def _keep_value(
         return 90.0  # 其他组合（如 幻+其他）
 
     if name == "暗影施法者":
+        if not in_hand and (hand or board):
+            # 暗影施法者是复制引擎：有回手引擎（舞动全场/战略转移/暗影步在手，
+            # 或 赤烟·腾武 在场上）且存在值得复制的目标（手牌/牛池/场上有
+            # 阿莱克丝塔萨）时，暗被 舞动全场 弹回后可反复复制龙，价值极高。
+            # 依 20260813_015341：交换把 暗 送掉后只剩 16 伤，留着暗 舞 回来
+            # 能打 32（暗影施法者（阿莱克丝塔萨5nd）），因此不能被当 30 分
+            # 的普通随从拿去换空位。
+            has_return_engine = any(
+                str(h.get("name", ""))
+                in ("舞动全场（ft.迦罗娜）", "战略转移", "暗影步")
+                for h in (hand or [])
+            ) or any(
+                str(b.get("name", "")) == "赤烟·腾武" for b in (board or [])
+            )
+
+            if has_return_engine:
+                dragon_src = any(
+                    str(h.get("name", "")) == "生命的缚誓者阿莱克丝塔萨"
+                    for h in (hand or [])
+                ) or (
+                    etc_band
+                    and "生命的缚誓者阿莱克丝塔萨" in etc_band
+                ) or any(
+                    str(b.get("name", "")) == "生命的缚誓者阿莱克丝塔萨"
+                    for b in (board or [])
+                )
+
+                if dragon_src:
+                    return 110.0
+
         return 12.0 if in_hand else 30.0
 
     if name == "赤烟·腾武":
@@ -413,6 +444,7 @@ def exchange_heuristic(
             hand,
             int(item.get("health") or 0),
             fish_on_board,
+            board,
         )
         keep_score += keep
 
