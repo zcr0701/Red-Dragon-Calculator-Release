@@ -1388,7 +1388,7 @@ class WhatIFTreeWidget(QTreeWidget):
 
 
 class _ClickLabel(QLabel):
-    """可点击的 QLabel（按钮样式、文本可换行）：用作分叉结果选择。"""
+    """可点击的 QLabel（按钮样式、文本可换行）：分叉结果选择。"""
 
     clicked = pyqtSignal()
 
@@ -1401,67 +1401,62 @@ class _ClickLabel(QLabel):
         super().mousePressEvent(event)
 
 
-class WhatIFGuidePanel(QWidget):
-    """引导式 WhatIF 面板（彻底重写前端）：
+class WhatIFDistPanel(QWidget):
+    """WhatIF 前端（彻底重写）：
 
-    - 顶部：WhatIF 最高伤害 / 平均伤害 / 保底伤害 + “值不值得”评估
-      （与正常线对比：保底 ≥ 正常线=稳赚；平均 ≥ 正常线=值得一试；否则有风险）；
-    - 中部：指引路径——跟着一路出牌，主干末尾是分支卡；
-    - 分叉处：每个可能结果一个可点击按钮（含该结果伤害），点选后继续显示后续；
-    - 可随时“回到主干”重新走别的分叉。
+    WhatIF（彩虹渐变）
+    [96(a%)|80(b%)|64(c%)|48(d%)……16(n%)]        ← 当前子树所有可能伤害及其路径占比
+    币-刀-牛(舞龙)-暗(刀2)-刀-垂钓时光             ← 路径，到分支点停下
+    [垂钓时光(分支1)([96(…)|80(…)])]              ← 每个分叉选项，括号内是该子树伤害占比
+    ……
+    [返回上级 | 回到主干]
+
+    点选分叉选项进入该子树；返回上级逐级回退，回到主干直接回根。
+    “显示说明”开关控制每行的灰色注释。
     """
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._data: Optional[Dict[str, object]] = None
-        self._root: List[str] = []
-        # 当前段路径（从上一个分叉到现在的“新步骤”，不重复已显示的前半部分）
-        self._segment: List[str] = []
-        self._next_card: str = ""
-        self._options: List[Dict[str, object]] = []
-        self._final: str = ""
-        self._max_damage = 0
-        self._avg: Optional[float] = None
-        self._worst = 0
+        self._root_node: Optional[Dict[str, object]] = None
+        self._current: Optional[Dict[str, object]] = None
+        self._stack: List[Dict[str, object]] = []
         self._normal: Optional[int] = None
         self._colors = True
         self._hue = 0
         self._build_ui()
         self._timer = QTimer(self)
-        self._timer.timeout.connect(self._render_summary)
+        self._timer.timeout.connect(self._render_title)
         self._timer.start(150)
-        self._render_summary()
+        self._render_title()
         self.setVisible(False)
+
+    # ---- UI ----
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 2, 4, 2)
         root.setSpacing(3)
 
-        self.summary_label = QLabel()
-        self.summary_label.setTextFormat(Qt.RichText)
-        self.summary_label.setWordWrap(True)
-        root.addWidget(self.summary_label)
+        self.title_label = QLabel()
+        self.title_label.setTextFormat(Qt.RichText)
+        self.title_label.setWordWrap(True)
+        root.addWidget(self.title_label)
 
-        self.worth_label = QLabel()
-        self.worth_label.setTextFormat(Qt.RichText)
-        self.worth_label.setWordWrap(True)
-        root.addWidget(self.worth_label)
+        self.dist_label = QLabel()
+        self.dist_label.setTextFormat(Qt.RichText)
+        self.dist_label.setWordWrap(True)
+        root.addWidget(self.dist_label)
+
+        self.avg_label = QLabel()
+        self.avg_label.setTextFormat(Qt.RichText)
+        self.avg_label.setWordWrap(True)
+        root.addWidget(self.avg_label)
 
         self.path_label = QLabel()
         self.path_label.setTextFormat(Qt.RichText)
         self.path_label.setWordWrap(True)
         root.addWidget(self.path_label)
-
-        self.next_label = QLabel()
-        self.next_label.setTextFormat(Qt.RichText)
-        self.next_label.setWordWrap(True)
-        root.addWidget(self.next_label)
-
-        self.fork_label = QLabel()
-        self.fork_label.setTextFormat(Qt.RichText)
-        self.fork_label.setWordWrap(True)
-        root.addWidget(self.fork_label)
 
         self.options_box = QWidget()
         self.options_layout = QVBoxLayout(self.options_box)
@@ -1469,14 +1464,20 @@ class WhatIFGuidePanel(QWidget):
         self.options_layout.setSpacing(2)
         root.addWidget(self.options_box)
 
-        self.result_label = QLabel()
-        self.result_label.setTextFormat(Qt.RichText)
-        self.result_label.setWordWrap(True)
-        root.addWidget(self.result_label)
-
-        self.reset_btn = QPushButton("回到主干")
-        self.reset_btn.clicked.connect(self._reset)
-        root.addWidget(self.reset_btn)
+        btn_row = QHBoxLayout()
+        self.back_btn = QPushButton("返回上级")
+        self.back_btn.clicked.connect(self._back)
+        btn_row.addWidget(self.back_btn)
+        self.home_btn = QPushButton("回到主干")
+        self.home_btn.clicked.connect(self._home)
+        btn_row.addWidget(self.home_btn)
+        self.notes_check = QCheckBox("显示说明")
+        self.notes_check.setChecked(True)
+        self.notes_check.toggled.connect(self._render)
+        self.notes_check.toggled.connect(self._render_title)
+        btn_row.addWidget(self.notes_check)
+        btn_row.addStretch(1)
+        root.addLayout(btn_row)
 
     # ---- 数据 ----
 
@@ -1495,52 +1496,41 @@ class WhatIFGuidePanel(QWidget):
 
         self._data = data
         self._colors = bool(colors)
-        self._max_damage = int(data.get("max_damage") or 0)
-        avg = data.get("whatif_average") or {}
-        self._avg = avg.get("damage")
-        self._worst = int(tree.get("worst") or 0)
         self._normal = int(normal_damage) if normal_damage else None
-        self._root = [str(s) for s in (tree.get("root") or [])]
-        self._render_summary()
-        self._reset()
+        root = [str(s) for s in (tree.get("root") or [])]
+        node: Dict[str, object] = self._mk_node(root)
+
+        for tb in branches:
+            node["options"].append(self._mk_option(tb))
+
+        self._root_node = node
+        self._stack = []
+        self._current = node
+        self._render()
         self.setVisible(True)
 
-    def _reset(self, *_args) -> None:
-        tree = (self._data or {}).get("whatif_tree") or {}
-        branches = tree.get("branches") or []
-        # 主干末尾是分支卡：当前段 = 主干到分支卡之前；下一步明确提示分支卡
-        self._segment = list(self._root[:-1]) if self._root else []
-        self._next_card = str(self._root[-1]) if self._root else ""
-        self._options = [self._mk_option(b) for b in branches]
-        self._final = ""
-        self._render()
+    # ---- 树构建 ----
 
     @staticmethod
-    def _mk_option(tb: Dict[str, object]) -> Dict[str, object]:
-        mid = [str(s) for s in (tb.get("mid") or [])]
-
+    def _mk_node(path: List[str], damage: int = 0, mana: int = 0) -> Dict[str, object]:
         return {
-            "label": str(mid[0]) if mid else str(tb.get("outcome") or "?"),
-            "tail": mid[1:],
-            "children": tb.get("children") or [],
-            "damage": int(tb.get("damage") or 0),
-            "mana": int(tb.get("mana_left") or 0),
+            "path": [str(s) for s in path],
+            "options": [],
+            "damage": int(damage),
+            "mana": int(mana),
         }
 
-    def _abbr(self, step: str) -> str:
-        if self._colors:
-            return abbreviate_step_html(str(step), compact=False)
-
-        return abbreviate_step(str(step), compact=False)
-
-    def _choose(self, opt: Dict[str, object]) -> None:
-        # 只展示从本分叉往后的新步骤（前半部分已在上面显示过，不重复）
-        self._segment = [str(opt["label"])]
-        tail = list(opt["tail"])
-        children = opt["children"]
+    @classmethod
+    def _mk_option(cls, tb: Dict[str, object]) -> Dict[str, object]:
+        """把一个分叉结果 tb 构建为 {label, child}。"""
+        mid = [str(s) for s in (tb.get("mid") or tb.get("path") or [])]
+        label = str(mid[0]) if mid else str(tb.get("outcome") or "?")
+        tail = mid[1:]
+        children = tb.get("children") or []
+        damage = int(tb.get("damage") or 0)
+        mana = int(tb.get("mana_left") or 0)
 
         if children:
-            # 定位本分支最后一个抽牌/持枪标记 = 更深分叉卡；路径走到其之前
             fork_idx = -1
 
             for k, s in enumerate(tail):
@@ -1550,12 +1540,7 @@ class WhatIFGuidePanel(QWidget):
                     fork_idx = k
 
             cont = tail[:fork_idx] if fork_idx >= 0 else tail
-            self._segment.extend(cont)
-            fork_step = (
-                str(tail[fork_idx]) if fork_idx >= 0 else ""
-            )
-            self._next_card = re.sub(r"[（(].*[）)]$", "", fork_step)
-            self._options = []
+            child = cls._mk_node([label] + cont)
 
             for ch in children:
                 card = str(ch.get("card") or "")
@@ -1563,80 +1548,155 @@ class WhatIFGuidePanel(QWidget):
                     [str(s) for s in (ch.get("mid") or ch.get("path") or [])],
                     card,
                 )
-                self._options.append(
-                    {
-                        "label": str(ch_steps[0]) if ch_steps else card,
-                        "tail": ch_steps[1:],
-                        "children": ch.get("children") or [],
-                        "damage": int(ch.get("damage") or 0),
-                        "mana": int(ch.get("mana_left") or 0),
-                    }
-                )
+                child["options"].append(cls._mk_option(ch))
 
-            self._final = ""
-        else:
-            self._segment.extend(tail)
-            self._next_card = ""
-            self._options = []
-            self._final = f"({opt['damage']}伤余{opt['mana']}费)"
+            return {"label": label, "child": child, "damage": damage, "mana": mana}
 
+        child = cls._mk_node([label] + tail, damage, mana)
+        return {"label": label, "child": child, "damage": damage, "mana": mana}
+
+    # ---- 伤害分布 ----
+
+    @classmethod
+    def _leaves(cls, node: Dict[str, object]) -> List[int]:
+        if not node.get("options"):
+            return [int(node.get("damage") or 0)]
+
+        out: List[int] = []
+
+        for opt in node.get("options") or []:
+            out.extend(cls._leaves(opt["child"]))
+
+        return out
+
+    @classmethod
+    def _dist_of(cls, node: Dict[str, object]) -> List[Tuple[int, float]]:
+        leaves = cls._leaves(node)
+        total = max(1, len(leaves))
+        counts: Dict[int, int] = {}
+
+        for d in leaves:
+            counts[d] = counts.get(d, 0) + 1
+
+        return [
+            (d, counts[d] / total * 100.0) for d in sorted(counts, reverse=True)
+        ]
+
+    def _dist_html(self, dist: List[Tuple[int, float]]) -> str:
+        dmax = max((d for d, _ in dist), default=1)
+        segs = []
+
+        for d, p in dist:
+            hue = int(120 * max(0, d) / dmax) if dmax > 0 else 120
+            pct = f"{p:.0f}" if p >= 9.5 else f"{p:.1f}"
+            segs.append(
+                '<span style="color:hsl(%d,72%%,40%%);font-weight:bold;">%d(%s%%)</span>'
+                % (hue, d, pct)
+            )
+
+        return "|".join(segs)
+
+    def _avg_of(self, node: Dict[str, object]) -> Optional[float]:
+        leaves = self._leaves(node)
+
+        if not leaves:
+            return None
+
+        return sum(leaves) / len(leaves)
+
+    # ---- 交互 ----
+
+    def _drill(self, opt: Dict[str, object]) -> None:
+        if self._current is not None:
+            self._stack.append(self._current)
+
+        self._current = opt["child"]
+        self._render()
+
+    def _back(self, *_args) -> None:
+        if self._stack:
+            self._current = self._stack.pop()
+            self._render()
+
+    def _home(self, *_args) -> None:
+        self._stack = []
+        self._current = self._root_node
         self._render()
 
     # ---- 渲染 ----
 
-    def _render_summary(self) -> None:
+    def _note(self, text: str) -> str:
+        if not self.notes_check.isChecked():
+            return ""
+
+        return '<br><span style="color:#888888;">' + text + "</span>"
+
+    def _abbr(self, step: str) -> str:
+        if self._colors:
+            return abbreviate_step_html(str(step), compact=False)
+
+        return abbreviate_step(str(step), compact=False)
+
+    def _render_title(self) -> None:
         self._hue = (self._hue + 8) % 360
         prefix = "".join(
             '<span style="color:hsl(%d,100%%,60%%);font-weight:bold;">%s</span>'
             % ((self._hue + i * 50) % 360, ch)
             for i, ch in enumerate("WhatIF")
         )
-        avg_txt = _fmt_avg(self._avg) if self._avg is not None else "?"
-        html = (
-            prefix
-            + f': 最高伤害 <span style="color:#0E7490;font-weight:bold;">{self._max_damage}</span>'
-            f'｜平均 <span style="color:#B45309;font-weight:bold;">{avg_txt}</span>'
-            f'｜保底 <span style="color:#B91C1C;font-weight:bold;">{self._worst}</span>'
+        self.title_label.setText(
+            prefix + self._note("保持颜色渐变")
         )
-        self.summary_label.setText(html)
 
-        if self._normal is None:
-            self.worth_label.setText("")
-        elif self._worst >= self._normal:
-            self.worth_label.setText(
-                f'<span style="color:#15803D;font-weight:bold;">值得：最差保底 '
-                f"{self._worst} ≥ 正常线 {self._normal}，稳赚</span>"
-            )
-        elif self._avg is not None and self._avg >= self._normal:
-            self.worth_label.setText(
-                f'<span style="color:#B45309;font-weight:bold;">值得一试：平均 '
-                f"{_fmt_avg(self._avg)} ≥ 正常线 {self._normal}</span>"
-            )
-        else:
-            avg_show = (
-                _fmt_avg(self._avg) if self._avg is not None else "?"
-            )
-            self.worth_label.setText(
-                f'<span style="color:#B91C1C;font-weight:bold;">有风险：平均 '
-                f"{avg_show} < 正常线 {self._normal}，可能不如正常线</span>"
-            )
+    def _render(self, *_args) -> None:
+        node = self._current
 
-    def _render(self) -> None:
+        if node is None:
+            self.setVisible(False)
+            return
+
+        dist = self._dist_of(node)
+        self.dist_label.setText(
+            "[" + self._dist_html(dist) + "]"
+            + self._note("各伤害值及其路径数量在分支树中的占比")
+        )
+
+        avg = self._avg_of(node)
+        avg_txt = _fmt_avg(avg) if avg is not None else "?"
+        worst = min((d for d, _ in dist), default=0)
+        best = max((d for d, _ in dist), default=0)
+        worth = ""
+
+        if self._normal is not None:
+            if worst >= self._normal:
+                worth = (
+                    f'<span style="color:#15803D;font-weight:bold;">值得（保底{worst}'
+                    f"≥正常线{self._normal}）</span>"
+                )
+            elif avg is not None and avg >= self._normal:
+                worth = (
+                    f'<span style="color:#B45309;font-weight:bold;">值得一试（平均'
+                    f"{_fmt_avg(avg)}≥正常线{self._normal}）</span>"
+                )
+            else:
+                worth = (
+                    f'<span style="color:#B91C1C;font-weight:bold;">有风险（平均'
+                    f"{avg_txt}&lt;正常线{self._normal}）</span>"
+                )
+
+        self.avg_label.setText(
+            f"最高{best}｜平均{avg_txt}｜保底{worst}"
+            + (("　" + worth) if worth else "")
+        )
+
         path_text = (
-            "-".join(self._abbr(s) for s in self._segment)
-            if self._segment
+            "-".join(self._abbr(s) for s in node.get("path") or [])
+            if node.get("path")
             else "（起点）"
         )
-        self.path_label.setText("指引路径（当前段）：<br>" + path_text)
-
-        if self._next_card:
-            self.next_label.setText(
-                "下一步："
-                + self._abbr(self._next_card)
-                + '<span style="color:#0E7490;font-weight:bold;">（打出后选择分叉结果）</span>'
-            )
-        else:
-            self.next_label.setText("")
+        self.path_label.setText(
+            path_text + self._note("路径，到分支点停下")
+        )
 
         while self.options_layout.count():
             item = self.options_layout.takeAt(0)
@@ -1645,43 +1705,34 @@ class WhatIFGuidePanel(QWidget):
             if w is not None:
                 w.deleteLater()
 
-        if self._options:
-            self.fork_label.setText("下一步（点选你实际得到的结果）：")
-
-            for opt in self._options:
-                label_txt = (
-                    self._abbr(opt["label"])
-                    + f" ({opt['damage']}伤余{opt['mana']}费)"
-                )
-                btn = _ClickLabel(label_txt)
-                btn.setTextFormat(Qt.RichText if self._colors else Qt.PlainText)
-                btn.setWordWrap(True)
-                # 分支字加大：比面板字体再大 2px 并加粗，可点击感更强
-                btn_font = QFont(self.font())
-                btn_font.setBold(True)
-                px = btn_font.pixelSize()
-
-                if px > 0:
-                    btn_font.setPixelSize(px + 2)
-                else:
-                    btn_font.setPointSize(btn_font.pointSize() + 2)
-
-                btn.setFont(btn_font)
-                btn.setCursor(QCursor(Qt.PointingHandCursor))
-                btn.setStyleSheet(
-                    "border:1px solid #0E7490;background:#E0F2FE;"
-                    "padding:5px 8px;border-radius:4px;color:#000000;"
-                )
-                btn.clicked.connect(lambda o=opt: self._choose(o))
-                self.options_layout.addWidget(btn)
-
-            self.result_label.setText("")
-        else:
-            self.fork_label.setText("")
-            self.result_label.setText(
-                "结果：" + self._final if self._final else ""
+        for opt in node.get("options") or []:
+            o_dist = self._dist_of(opt["child"])
+            label_txt = (
+                self._abbr(opt["label"])
+                + "([" + self._dist_html(o_dist) + "])"
             )
+            btn = _ClickLabel(label_txt)
+            btn.setTextFormat(Qt.RichText if self._colors else Qt.PlainText)
+            btn.setWordWrap(True)
+            btn_font = QFont(self.font())
+            btn_font.setBold(True)
+            px = btn_font.pixelSize()
 
+            if px > 0:
+                btn_font.setPixelSize(px + 2)
+            else:
+                btn_font.setPointSize(btn_font.pointSize() + 2)
+
+            btn.setFont(btn_font)
+            btn.setCursor(QCursor(Qt.PointingHandCursor))
+            btn.setStyleSheet(
+                "border:1px solid #0E7490;background:#E0F2FE;"
+                "padding:5px 8px;border-radius:4px;color:#000000;"
+            )
+            btn.clicked.connect(lambda o=opt: self._drill(o))
+            self.options_layout.addWidget(btn)
+
+        self.back_btn.setEnabled(bool(self._stack))
         self._content_changed()
 
     def _content_changed(self, *_args) -> None:
@@ -3072,7 +3123,7 @@ class MainWindow(QWidget):
         self.result_text.setMaximumBlockCount(5000)
         result_layout.addWidget(self.result_text, 1)
         # WhatIF 引导面板（指引出牌 + 分叉点选 + 最高/平均/保底/值得），高度封顶（≤父容器 45%）
-        self.whatif_guide = WhatIFGuidePanel()
+        self.whatif_guide = WhatIFDistPanel()
         self.whatif_guide.setVisible(False)
         self.whatif_guide.setFont(self.result_text.font())
         result_layout.addWidget(self.whatif_guide)
@@ -4395,7 +4446,7 @@ class MiniWindow(QWidget):
         # 正常计算（多轮）优先：占主空间可滚动，不被下方 WhatIF 挤没
         root.addWidget(self.mini_result, 1)
         # WhatIF 引导面板（指引出牌 + 分叉点选 + 最高/平均/保底/值得）
-        self.mini_whatif_guide = WhatIFGuidePanel()
+        self.mini_whatif_guide = WhatIFDistPanel()
         self.mini_whatif_guide.setVisible(False)
         root.addWidget(self.mini_whatif_guide)
         self.set_formula_font(self.main.mini_font_size())
