@@ -1046,6 +1046,11 @@ class WhatIFTreeWidget(QTreeWidget):
         def join_steps(steps: List[str]) -> str:
             return "-".join(abbr_fn(str(s), compact=False) for s in steps)
 
+        # 根：指引路径（到第一个分支卡，如 币-刀-行骗）
+        root_steps = [str(s) for s in (tree.get("root") or [])]
+        root_item = self._item(join_steps(root_steps) if root_steps else "")
+        self.addTopLevelItem(root_item)
+
         # 保底 / 平均
         worst = int(tree.get("worst") or 0)
         self.addTopLevelItem(self._item(f"保底伤害：{worst}"))
@@ -1059,77 +1064,42 @@ class WhatIFTreeWidget(QTreeWidget):
                 )
             )
 
-        # 指引主干 = 主线抽取结果的最优叶子（如 行骗(牛) → 持枪(脱水) → 96 伤）
-        main_outcome = str(tree.get("main_outcome") or "")
-        main_branch = next(
-            (b for b in branches if str(b.get("outcome") or "") == main_outcome),
-            None,
-        )
-        main_branch = main_branch if main_branch is not None else branches[0]
-        main_children = main_branch.get("children") or []
+        # 次级：每个抽取结果（行骗(牛)/行骗(狐)…）
+        for tb in branches:
+            outcome = str(tb.get("outcome") or "")
+            dmg = int(tb.get("damage") or 0)
+            mana = int(tb.get("mana_left") or 0)
+            children = tb.get("children") or []
+            mid = [str(s) for s in (tb.get("mid") or [])]
 
-        if main_children:
-            trunk_leaf = max(
-                main_children,
-                key=lambda c: int(c.get("damage") or 0),
-            )
-            trunk = [str(s) for s in (trunk_leaf.get("path") or [])]
-            qd_alts = [c for c in main_children if c is not trunk_leaf]
-        else:
-            trunk = [str(s) for s in (main_branch.get("path") or [])]
-            qd_alts = []
+            if children:
+                # 次级：完整中间路径（如 行骗(牛)-暗(刀2)-步(刀2)-…-持枪要挟）
+                node = self._item(join_steps(mid) if mid else "")
+                root_item.addChild(node)
 
-        draw_alts = [b for b in branches if b is not main_branch]
-        draw_markers = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光")
-        di = next(
-            (
-                i
-                for i, s in enumerate(trunk)
-                if any(m in str(s or "") for m in draw_markers)
-            ),
-            -1,
-        )
-        qi = next(
-            (
-                i
-                for i, s in enumerate(trunk)
-                if "持枪要挟" in str(s or "")
-            ),
-            -1,
-        )
-
-        # 主干逐步展示（每步一个节点），分支卡处折叠挂替代路径（点击展开）
-        for i, step in enumerate(trunk):
-            item = self._item(abbr_fn(str(step), compact=False))
-            self.addTopLevelItem(item)
-
-            if i == di:
-                for b in draw_alts:
-                    alt_path = [str(s) for s in (b.get("path") or [])]
-
-                    if not alt_path:
-                        alt_path = [str(s) for s in (b.get("mid") or [])]
-
-                    node = self._item(
-                        (join_steps(alt_path) if alt_path else "")
-                        + f"({int(b.get('damage') or 0)}伤"
-                        + f"余{int(b.get('mana_left') or 0)}费)"
-                    )
-                    item.addChild(node)
-
-            if i == qi:
-                for c in qd_alts:
+                # 次次级：持枪要挟发现结果
+                for ch in children:
+                    card = str(ch.get("card") or "")
+                    cdmg = int(ch.get("damage") or 0)
+                    cmana = int(ch.get("mana_left") or 0)
+                    # 叶子：从该发现牌的步骤开始到结尾的完整路径
                     tail = WhatIFTreeWidget._tail_steps(
-                        c.get("path") or [], str(c.get("card") or "")
+                        ch.get("path") or [], card
                     )
-                    node = self._item(
+                    leaf = self._item(
                         (join_steps(tail) if tail else "")
-                        + f"({int(c.get('damage') or 0)}伤"
-                        + f"余{int(c.get('mana_left') or 0)}费)"
+                        + f"({cdmg}伤余{cmana}费)"
                     )
-                    item.addChild(node)
+                    node.addChild(leaf)
+            else:
+                # 次级本身就是叶子：完整路径
+                node = self._item(
+                    (join_steps(mid) if mid else "")
+                    + f"({dmg}伤余{mana}费)"
+                )
+                root_item.addChild(node)
 
-        # 默认折叠：替代路径全部收起，跟随主干不被其他路径干扰
+        # 默认折叠（用户自行展开查看各分支/路径）
 
     @staticmethod
     def _tail_steps(path: List[str], start_marker: str) -> List[str]:
@@ -1143,81 +1113,46 @@ class WhatIFTreeWidget(QTreeWidget):
 
 
 def _whatif_tree_text(data: Dict[str, object]) -> str:
-    """WhatIF 指引树日志文本：指引主干逐步列出，分支卡下缩进列出替代路径。"""
+    """WhatIF 指引树日志文本：根 → 次级（抽取结果完整路径）→ 次次级（发现结果完整路径）。"""
     tree = data.get("whatif_tree") or {}
     branches = tree.get("branches") or []
 
     if not branches:
         return ""
 
-    main_outcome = str(tree.get("main_outcome") or "")
-    main_branch = next(
-        (b for b in branches if str(b.get("outcome") or "") == main_outcome),
-        None,
-    )
-    main_branch = main_branch if main_branch is not None else branches[0]
-    main_children = main_branch.get("children") or []
+    root_steps = [str(s) for s in (tree.get("root") or [])]
+    lines = [
+        "WhatIF指引树：",
+        "-".join(abbreviate_step(s, compact=False) for s in root_steps)
+        if root_steps
+        else "",
+    ]
 
-    if main_children:
-        trunk_leaf = max(
-            main_children,
-            key=lambda c: int(c.get("damage") or 0),
-        )
-        trunk = [str(s) for s in (trunk_leaf.get("path") or [])]
-        qd_alts = [c for c in main_children if c is not trunk_leaf]
-    else:
-        trunk = [str(s) for s in (main_branch.get("path") or [])]
-        qd_alts = []
+    for tb in branches:
+        dmg = int(tb.get("damage") or 0)
+        mana = int(tb.get("mana_left") or 0)
+        children = tb.get("children") or []
+        mid = [str(s) for s in (tb.get("mid") or [])]
+        mid_text = "-".join(abbreviate_step(s, compact=False) for s in mid)
 
-    draw_alts = [b for b in branches if b is not main_branch]
-    draw_markers = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光")
-    di = next(
-        (
-            i
-            for i, s in enumerate(trunk)
-            if any(m in str(s or "") for m in draw_markers)
-        ),
-        -1,
-    )
-    qi = next(
-        (i for i, s in enumerate(trunk) if "持枪要挟" in str(s or "")),
-        -1,
-    )
+        if children:
+            lines.append("    " + mid_text)
 
-    lines = ["WhatIF指引树："]
-
-    for i, step in enumerate(trunk):
-        lines.append(f"{i + 1:2d}. " + abbreviate_step(str(step), compact=False))
-
-        if i == di:
-            for b in draw_alts:
-                alt_path = [str(s) for s in (b.get("path") or [])]
-
-                if not alt_path:
-                    alt_path = [str(s) for s in (b.get("mid") or [])]
-
-                lines.append(
-                    "      └ 替代："
-                    + "-".join(
-                        abbreviate_step(s, compact=False) for s in alt_path
-                    )
-                    + f"({int(b.get('damage') or 0)}伤"
-                    + f"余{int(b.get('mana_left') or 0)}费)"
-                )
-
-        if i == qi:
-            for c in qd_alts:
-                tail = WhatIFTreeWidget._tail_steps(
-                    c.get("path") or [], str(c.get("card") or "")
+            for ch in children:
+                card = str(ch.get("card") or "")
+                cdmg = int(ch.get("damage") or 0)
+                cmana = int(ch.get("mana_left") or 0)
+                tail = WhatIFTreeWidget._tail_steps(ch.get("path") or [], card)
+                tail_text = "-".join(
+                    abbreviate_step(s, compact=False) for s in tail
                 )
                 lines.append(
-                    "      └ 替代："
-                    + "-".join(
-                        abbreviate_step(s, compact=False) for s in tail
-                    )
-                    + f"({int(c.get('damage') or 0)}伤"
-                    + f"余{int(c.get('mana_left') or 0)}费)"
+                    "        "
+                    + tail_text
+                    + f"({cdmg}伤余{cmana}费)"
                 )
+        else:
+            lines.append("    " + mid_text + f"({dmg}伤余{mana}费)")
 
     lines.append(f"保底伤害：{int(tree.get('worst') or 0)}（最差随机组合）")
     return "\n".join(lines)
