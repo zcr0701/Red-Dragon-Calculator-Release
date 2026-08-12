@@ -717,6 +717,8 @@ class PowerLogParser:
             if item["ghostly"]
             or (ent.card_id or "") in DEADLY_SHADOW_CARD_IDS
             or (ent.initial_card_id or "") in DEADLY_SHADOW_CARD_IDS
+            # 殒命暗影变形体（已变形成法术复制，如 行骗[殒]）：Power.log 用 VALEERASHADOW 标记
+            or bool(ent.tags.get(GameTag.VALEERASHADOW))
         ]
 
         crystals: Optional[int] = None
