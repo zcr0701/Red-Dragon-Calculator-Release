@@ -1036,47 +1036,6 @@ class _TreeHtmlDelegate(QStyledItemDelegate):
         return QSize(width + 8, int(doc.size().height()) + 10)
 
 
-class WhatIFRainbowLabel(QLabel):
-    """WhatIF 首行：'WhatIF' 每个字初始颜色不同并整体循环变色（彩虹），
-    第二行固定显示 最高平均伤害（金色）/ 保底伤害（红色）。"""
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setTextFormat(Qt.RichText)
-        self.setWordWrap(True)
-        self._avg: Optional[float] = None
-        self._worst = 0
-        self._hue = 0
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._render)
-        self._timer.start(300)
-        self._render()
-
-    def set_data(self, avg: Optional[float], worst: int) -> None:
-        """外部更新数据：avg=最高平均伤害（可 None），worst=保底伤害。"""
-        self._avg = avg
-        self._worst = int(worst or 0)
-        self._render()
-
-    def _render(self) -> None:
-        self._hue = (self._hue + 5) % 360
-        prefix = "".join(
-            '<span style="color:hsl(%d,100%%,60%%);font-weight:bold;">%s</span>'
-            % ((self._hue + i * 50) % 360, ch)
-            for i, ch in enumerate("WhatIF")
-        )
-        avg_txt = _fmt_avg(self._avg) if self._avg is not None else "?"
-        html = (
-            '<span style="font-size:14px;">'
-            + prefix
-            + ":<br>"
-            f'<span style="color:#FFD700;font-weight:bold;">最高平均伤害：{avg_txt}</span>'
-            f'<span style="color:#FF6B6B;font-weight:bold;">，保底伤害：{self._worst}</span>'
-            "</span>"
-        )
-        self.setText(html)
-
-
 class WhatIFTreeWidget(QTreeWidget):
     """WhatIF 分支树：主路径按轮次为根节点，行骗/持枪要挟同级分支为子节点。
 
@@ -1107,6 +1066,39 @@ class WhatIFTreeWidget(QTreeWidget):
         self.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum))
         self.expanded.connect(self._content_changed)
         self.collapsed.connect(self._content_changed)
+        # WhatIF 首行（彩虹变色）作为树内第一项，与路径展开放在一起
+        self._header_item: Optional[QTreeWidgetItem] = None
+        self._header_avg: Optional[float] = None
+        self._header_worst = 0
+        self._header_hue = 0
+        self._header_timer = QTimer(self)
+        self._header_timer.timeout.connect(self._render_header)
+        self._header_timer.start(300)
+        self._render_header()
+
+    def _render_header(self) -> None:
+        """刷新树内首行：'WhatIF' 逐字彩虹循环变色 + 数据行（平均金/保底红）。"""
+        if self._header_item is None:
+            return
+
+        self._header_hue = (self._header_hue + 5) % 360
+        prefix = "".join(
+            '<span style="color:hsl(%d,100%%,60%%);font-weight:bold;">%s</span>'
+            % ((self._header_hue + i * 50) % 360, ch)
+            for i, ch in enumerate("WhatIF")
+        )
+        avg_txt = _fmt_avg(self._header_avg) if self._header_avg is not None else "?"
+        html = (
+            '<span style="font-size:14px;">'
+            + prefix
+            + ":<br>"
+            f'<span style="color:#FFD700;font-weight:bold;">最高平均伤害：{avg_txt}</span>'
+            f'<span style="color:#FF6B6B;font-weight:bold;">，保底伤害：{self._header_worst}</span>'
+            "</span>"
+        )
+        self._header_item.setData(0, Qt.UserRole, html)
+        self._header_item.setText(0, re.sub(r"<[^>]+>", "", html))
+        self.update(self.indexFromItem(self._header_item))
 
     def _content_changed(self, *_args) -> None:
         """内容（展开/折叠/字体/数据）变化：通知父布局重新排布。"""
@@ -1185,7 +1177,7 @@ class WhatIFTreeWidget(QTreeWidget):
             item = self.itemAt(event.pos())
 
             if item is not None and item.childCount() > 0:
-                self.setItemExpanded(item, not item.isExpanded())
+                item.setExpanded(not item.isExpanded())
                 event.accept()
                 return
 
@@ -1214,6 +1206,7 @@ class WhatIFTreeWidget(QTreeWidget):
 
     def set_whatif(self, data: Dict[str, object], colors: bool = True) -> None:
         self.clear()
+        self._header_item = None
         tree = data.get("whatif_tree") or {}
         branches = tree.get("branches") or []
 
@@ -1225,8 +1218,14 @@ class WhatIFTreeWidget(QTreeWidget):
         def join_steps(steps: List[str]) -> str:
             return "-".join(abbr_fn(str(s), compact=False) for s in steps)
 
-        # 顶部“WhatIF: / 最高平均伤害：X，保底伤害：Y”由 WhatIFRainbowLabel
-        # 独立展示（彩虹变色），树内不再重复该行。
+        # 树内首行：WhatIF 两行彩虹标题（与路径展开放在一起，不单独占标题卡）
+        worst = int(tree.get("worst") or 0)
+        avg = data.get("whatif_average") or {}
+        self._header_avg = avg.get("damage") if avg else None
+        self._header_worst = worst
+        self._header_item = self._item("")
+        self.addTopLevelItem(self._header_item)
+        self._render_header()
 
         # 根：指引路径（到第一个分支卡，如 币-刀-行骗）
         root_steps = [str(s) for s in (tree.get("root") or [])]
@@ -2665,10 +2664,7 @@ class MainWindow(QWidget):
         self.result_text.setReadOnly(True)
         self.result_text.setMaximumBlockCount(5000)
         result_layout.addWidget(self.result_text, 1)
-        # WhatIF 卡片：标题（彩虹）+ 分支树，高度封顶（≤父容器 45%）
-        self.whatif_header = WhatIFRainbowLabel()
-        self.whatif_header.setVisible(False)
-        result_layout.addWidget(self.whatif_header)
+        # WhatIF 分支树（首行为彩虹标题，与路径展开放一起），高度封顶（≤父容器 45%）
         self.whatif_tree = WhatIFTreeWidget()
         self.whatif_tree.setVisible(False)
         result_layout.addWidget(self.whatif_tree)
@@ -3545,10 +3541,6 @@ class MainWindow(QWidget):
         )
         self.whatif_tree.set_whatif(data, colors=self.mini_color_enabled())
         self.whatif_tree.setVisible(has_whatif)
-        wt_avg = (data.get("whatif_average") or {}).get("damage")
-        wt_worst = int(((data.get("whatif_tree") or {}).get("worst")) or 0)
-        self.whatif_header.set_data(wt_avg, wt_worst)
-        self.whatif_header.setVisible(has_whatif)
 
         wb = data.get("wb")
         if wb:
@@ -3983,10 +3975,7 @@ class MiniWindow(QWidget):
         self.mini_result.document().setMaximumBlockCount(3000)
         # 正常计算（多轮）优先：占主空间可滚动，不被下方 WhatIF 挤没
         root.addWidget(self.mini_result, 1)
-        # WhatIF 卡片：标题（彩虹）+ 分支树，高度封顶（≤父容器 45%）
-        self.mini_whatif_header = WhatIFRainbowLabel()
-        self.mini_whatif_header.setVisible(False)
-        root.addWidget(self.mini_whatif_header)
+        # WhatIF 分支树（首行为彩虹标题，与路径展开放一起），高度封顶（≤父容器 45%）
         self.mini_whatif_tree = WhatIFTreeWidget()
         self.mini_whatif_tree.setVisible(False)
         root.addWidget(self.mini_whatif_tree)
@@ -4243,10 +4232,6 @@ class MiniWindow(QWidget):
         )
         self.mini_whatif_tree.set_whatif(data, colors=colors)
         self.mini_whatif_tree.setVisible(has_whatif)
-        wt_avg = (data.get("whatif_average") or {}).get("damage")
-        wt_worst = int(((data.get("whatif_tree") or {}).get("worst")) or 0)
-        self.mini_whatif_header.set_data(wt_avg, wt_worst)
-        self.mini_whatif_header.setVisible(has_whatif)
 
     def _mini_original_text(
         self,
