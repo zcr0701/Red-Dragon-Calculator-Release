@@ -1742,14 +1742,17 @@ def _dist_text(dist: List[Tuple[int, float]]) -> str:
 
 
 def _whatif_text_block(data: Dict[str, object]) -> str:
-    """主窗口纯文本 WhatIF（严格格式，与正常计算放一起并进日志）：
+    """主窗口纯文本 WhatIF —— 记录完整树（与正常计算放一起并进日志）：
 
     WhatIF
     [|8N(a%)|8(N-1)(b%)|……|16(y%)|8(z%)|]
     A-B-C-D-E(8N)
     [E1([|…|])]
+        Ex-F-G-H-I-J-K(8N)
+        [K1([|…|])]
+            ……
     [E2([|…|])]
-    ……
+        ……
     """
     tree = data.get("whatif_tree") or {}
     branches = tree.get("branches") or []
@@ -1766,30 +1769,41 @@ def _whatif_text_block(data: Dict[str, object]) -> str:
 
     dist = WhatIFDistPanel._dist_of(root)
     lines = ["WhatIF", "[" + _dist_text(dist) + "]"]
+    lines.extend(_node_text_lines(root))
+
+    return "\n".join(lines)
+
+
+def _node_text_lines(node: Dict[str, object], indent: str = "") -> List[str]:
+    """递归输出一个节点（路径 + 分叉选项），逐层缩进记录完整树。"""
+    lines: List[str] = []
+    dist = WhatIFDistPanel._dist_of(node)
     path = (
         "-".join(
             abbreviate_step(str(s), compact=False)
-            for s in (root.get("path") or [])
+            for s in (node.get("path") or [])
         )
-        if root.get("path")
+        if node.get("path")
         else "（起点）"
     )
     best = max((d for d, _ in dist), default=0)
 
-    if root.get("options"):
+    if node.get("options"):
         path += f"({best})"
 
-    lines.append(path)
+    lines.append(indent + path)
 
-    for opt in root.get("options") or []:
+    for opt in node.get("options") or []:
         o_dist = WhatIFDistPanel._dist_of(opt["child"])
         lines.append(
-            "["
+            indent
+            + "["
             + abbreviate_step(str(opt["label"]), compact=False)
             + "([" + _dist_text(o_dist) + "])]"
         )
+        lines.extend(_node_text_lines(opt["child"], indent + "    "))
 
-    return "\n".join(lines)
+    return lines
 
 
 def _whatif_tree_text(data: Dict[str, object]) -> str:
