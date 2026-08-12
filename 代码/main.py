@@ -26,7 +26,7 @@ import threading
 import time
 import urllib.request
 import webbrowser
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -1876,6 +1876,41 @@ class CalculationWorker(QThread):
     def stop(self) -> None:
         self._stop = True
 
+    def _branch_score(
+        self, node: Dict[str, object]
+    ) -> Tuple[Optional[float], List[int]]:
+        """按当前策略给一棵分叉树打分（叶子分布），返回 (score, 叶子伤害列表)。"""
+        strategy = str(self.options.get("branch_strategy") or "kill")
+        child = WhatIFDistPanel._mk_option(node)["child"]
+        leaves = WhatIFDistPanel._leaves(child)
+
+        if not leaves:
+            return None, leaves
+
+        if strategy == "max":
+            return float(max(leaves)), leaves
+
+        if strategy == "expect":
+            return sum(leaves) / max(1, len(leaves)), leaves
+
+        if strategy == "floor":
+            return float(min(leaves)), leaves
+
+        enemy = self.snapshot.get("opponent_hero") or {}
+        h = int(enemy.get("health") or 0) + int(enemy.get("armor") or 0)
+        kill = sum(1 for d in leaves if d >= h)
+        return kill / max(1, len(leaves)), leaves
+
+    def _branch_score_optimal(self, score: float, strategy: str) -> bool:
+        """策略是否已达到理论最优：达到后可直接放弃其余树的搜索。"""
+        if strategy == "kill":
+            return score >= 1.0
+
+        if strategy == "max":
+            return score >= int(self.options.get("max_alex") or 10) * 16
+
+        return False  # expect / floor 无有限上界，需搜完全部
+
     def _apply_branch_strategy(self, whatif_tree: Dict[str, object]) -> None:
         """从 whatif_tree 顶层分叉树中按策略选一棵，重排 root/branches 呈现它。
 
@@ -1885,33 +1920,18 @@ class CalculationWorker(QThread):
           expect 最高期望伤害：叶子伤害加权平均最高
           floor  最高平均保底伤害：最低叶子伤害最高（保底）
         """
-        strategy = str(self.options.get("branch_strategy") or "kill")
         branches = list(whatif_tree.get("branches") or [])
 
         if len(branches) <= 1:
             return
 
-        enemy = self.snapshot.get("opponent_hero") or {}
-        h = int(enemy.get("health") or 0) + int(enemy.get("armor") or 0)
         scored: List[Tuple[float, Dict[str, object]]] = []
 
         for tb in branches:
-            leaves = WhatIFDistPanel._leaves(
-                WhatIFDistPanel._mk_option(tb)["child"]
-            )
+            score, _leaves = self._branch_score(tb)
 
-            if not leaves:
+            if score is None:
                 continue
-
-            if strategy == "max":
-                score = float(max(leaves))
-            elif strategy == "expect":
-                score = sum(leaves) / max(1, len(leaves))
-            elif strategy == "floor":
-                score = float(min(leaves))
-            else:  # kill
-                kill = sum(1 for d in leaves if d >= h)
-                score = kill / max(1, len(leaves))
 
             scored.append((score, tb))
 
@@ -2355,12 +2375,44 @@ class CalculationWorker(QThread):
 
                     # 多个抽取分支并行搜索（独立 exe 进程），配合截断把复杂 WhatIF
                     # 的整体耗时压进 10s；结果按分支池顺序汇总。
+                    # 筛选树优化：按分支树搜索策略实时打分，一旦某棵树达到策略
+                    # 理论最优（斩杀比例 100% / 最高伤害达上限），直接放弃其余
+                    # 尚未开始的树（cancel 排队中的搜索），缩短整体耗时。
+                    strategy = str(self.options.get("branch_strategy") or "kill")
                     with ThreadPoolExecutor(
                         max_workers=min(3, pool_n), thread_name_prefix="whatif"
                     ) as pool:
-                        for node in pool.map(_search_branch, branch_pool):
-                            if node is not None and not self._stop:
-                                tree_branches.append(node)
+                        futs = {
+                            pool.submit(_search_branch, mn): mn for mn in branch_pool
+                        }
+                        node_by_mn: Dict[str, Optional[Dict[str, object]]] = {}
+                        best_score: Optional[float] = None
+
+                        for fut in as_completed(futs):
+                            mn = futs[fut]
+                            node = fut.result()
+
+                            if node is None or self._stop:
+                                continue
+
+                            node_by_mn[mn] = node
+                            score, _ = self._branch_score(node)
+
+                            if score is None:
+                                continue
+
+                            if best_score is None or score > best_score:
+                                best_score = score
+
+                            if self._branch_score_optimal(score, strategy):
+                                pool.shutdown(wait=False, cancel_futures=True)
+                                break
+
+                    for mn in branch_pool:
+                        node = node_by_mn.get(mn)
+
+                        if node is not None and not self._stop:
+                            tree_branches.append(node)
 
                     if not tree_branches:
                         return None
