@@ -245,6 +245,14 @@ def abbreviate_card_name(name: str) -> str:
     return CARD_ABBREVIATIONS.get(resolved, name)
 
 
+def _abbr_name_index(part: str) -> str:
+    """目标标注中的 卡名+序号（如 斯卡布斯·刀油3）→ 刀3；纯卡名则原样缩写。"""
+    m = re.match(r"^(.*?)(\d+)$", part.strip())
+    if m:
+        return abbreviate_card_name(m.group(1).strip()) + m.group(2)
+    return abbreviate_card_name(part)
+
+
 def abbreviate_step(step: str, compact: bool = False) -> str:
     """把引擎路径一步（如 赤烟·腾武（斯卡布斯·刀油））转成缩写格式。
 
@@ -290,10 +298,10 @@ def abbreviate_step(step: str, compact: bool = False) -> str:
         # 持枪要挟（误炸）-> 持枪要挟(误炸)
         elif name == "持枪要挟":
             target = "(" + abbreviate_card_name(inner.strip()) + ")"
-        # 误炸（刀、刀、晦）-> 误炸(刀刀晦)：目标随从缩写连写
+        # 误炸（刀1、狐2、刀3）-> 误炸(刀1狐2刀3)：目标随从缩写连写并带 board 序号
         elif name == "误炸" and "、" in inner:
             target = "(" + "".join(
-                abbreviate_card_name(p.strip()) for p in inner.split("、")
+                _abbr_name_index(p) for p in inner.split("、")
             ) + ")"
         else:
             parts = []
@@ -310,8 +318,9 @@ def abbreviate_step(step: str, compact: bool = False) -> str:
                 if m:
                     parts.append(abbreviate_card_name(m.group(1).strip()) + m.group(2))
                 else:
-                    # 牛头人乐队选择（-> 连接）或无效目标等：无序号，保持原名
-                    parts.append(abbreviate_card_name(p))
+                    # 牛头人乐队选择（-> 连接）或无效目标等：无序号，保持原名；
+                    # 脱水/袋底藏沙/不许乱动等带 board 序号（如 斯卡布斯·刀油2）一并缩写
+                    parts.append(_abbr_name_index(p))
 
             # 牛头人乐队多个选择直接连写（如 牛(舞龙)），不加分隔符
             target = "(" + "".join(parts) + ")"
@@ -2839,7 +2848,7 @@ class MainWindow(QWidget):
         )
 
         if self._auto_exchange_cache is not None and self._auto_exchange_cache[0] == fingerprint:
-            return list(self._auto_exchange_cache[1])
+            return list(self._auto_exchange_cache[1][:top_n])
 
         # 一次算全量排序清单（上限 1000 个计划），按需切片 top_n；
         # 不能只取默认 top_n=3，否则 N=4~10 的调试框拿不到更多场面。
@@ -2848,7 +2857,7 @@ class MainWindow(QWidget):
             board, enemy, hand=hand, etc_band=etc_band, hero=hero,
             top_n=1000, diversity=diversity,
         )
-        plans = [list(plan) for plan, _rb, _sc, _feat in ranked]
+        plans = [list(plan) for plan, _rb, _sc in ranked]
         self._auto_exchange_cache = (fingerprint, plans)
         return plans[:top_n]
 

@@ -556,21 +556,30 @@ static vector<State> discover_fixed_choices(const State& base) {
     return out;
 }
 
-// 舞动全场：按进场顺序全部回手（1 费），手牌满则按进场顺序爆牌
+// 舞动全场：按进场顺序全部回手（1 费），手牌满则按进场顺序爆牌。
+// 回手会清除随从身上的附魔（暗施/药水 1/1 复制、buff 等还原为原始身材），
+// 仅保留殒命暗影变形标记；费用统一变为 1。
 static State breakdance_branch(const State& base) {
     State s = base.clone_reserved();
     vector<Card> returning = s.board;
     s.board.clear();
+    auto revert_to_original = [](Card& m) {
+        Card orig = make_card(m.name());
+        orig.is_deadly_shadow = m.is_deadly_shadow;
+        orig.temp_cost = 1;
+        m = orig;
+    };
     int free_slots = std::max(0, MAX_HAND - s.hand_size());
     if ((int)returning.size() <= free_slots) {
-        for (auto& m : returning) {
-            m.temp_cost = 1;
+        for (Card& m : returning) {
+            revert_to_original(m);
             add_card_to_hand_or_burn(s, m);
         }
     } else {
         for (int i = 0; i < free_slots; i++) {
-            returning[i].temp_cost = 1;
-            add_card_to_hand_or_burn(s, returning[i]);
+            Card& m = returning[i];
+            revert_to_original(m);
+            add_card_to_hand_or_burn(s, m);
         }
         s.burned_cards += (int)returning.size() - free_slots;
     }
@@ -883,7 +892,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
                 string names;
                 for (size_t x : idxs) {
                     if (!names.empty()) names += "、";
-                    names += b[x].name();
+                    names += b[x].name() + std::to_string(x + 1);  // 带 board 序号
                 }
                 s.path_mut().back() += "（" + names + "）";
             }
@@ -945,7 +954,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
                 State s = base.clone_reserved();
                 s.board.erase(s.board.begin() + i);
                 if (!s.path().empty()) {
-                    s.path_mut().back() += "（" + target.name() + "）";
+                    s.path_mut().back() += "（" + target.name() + std::to_string(i + 1) + "）";
                 }
                 states.push_back(std::move(s));
             }
@@ -966,7 +975,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
                 State s = base.clone_reserved();
                 s.board.erase(s.board.begin() + i);
                 if (!s.path().empty()) {
-                    s.path_mut().back() += "（" + target.name() + "）";
+                    s.path_mut().back() += "（" + target.name() + std::to_string(i + 1) + "）";
                 }
                 states.push_back(std::move(s));
             }
@@ -987,7 +996,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
                 State s = base.clone_reserved();
                 s.board.erase(s.board.begin() + i);
                 if (!s.path().empty()) {
-                    s.path_mut().back() += "（" + target.name() + "）";
+                    s.path_mut().back() += "（" + target.name() + std::to_string(i + 1) + "）";
                 }
                 states.push_back(std::move(s));
             }
