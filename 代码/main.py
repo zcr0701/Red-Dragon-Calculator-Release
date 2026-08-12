@@ -1117,23 +1117,16 @@ class WhatIFTreeWidget(QTreeWidget):
         self.update(self.indexFromItem(self._header_item))
 
     def _content_changed(self, *_args) -> None:
-        """内容（展开/折叠/字体/数据）变化：通知父布局重新排布。"""
+        """内容（展开/折叠/字体/数据）变化：通知父布局重新排布。
+
+        不再自动撑高小窗（展开后最后一行会把窗口边框顶下去）：
+        树的高度由 sizeHint 封顶（≤父容器 45%），超出部分在树内滚动。
+        """
         self.updateGeometry()
         parent = self.parentWidget()
 
         if parent is not None:
             parent.updateGeometry()
-
-            # 小窗：让窗口高度随树内容伸缩（框随内容自动伸缩）
-            if isinstance(parent, MiniWindow):
-                screen = QApplication.primaryScreen()
-                max_h = (
-                    screen.availableGeometry().height() - 40
-                    if screen is not None
-                    else 1400
-                )
-                hint_h = parent.sizeHint().height()
-                parent.resize(parent.width(), min(max(180, hint_h), max_h))
 
     def _item_height(self, item: QTreeWidgetItem) -> int:
         """单行高度：按视口宽度换行后的实际高度（经委托测量）。"""
@@ -1173,11 +1166,18 @@ class WhatIFTreeWidget(QTreeWidget):
 
         frame = self.frameWidth() * 2
         total += frame
-        # 高度封顶：最多占父容器 45%，保证上方多轮正常计算日志始终可见不被挤没
         parent = self.parentWidget()
         cap = 1200
 
-        if parent is not None and parent.height() > 100:
+        if isinstance(parent, MiniWindow):
+            # 小窗：展开后最后一行会把窗口边框往下顶（窗口自动长高），
+            # 高度只受屏幕限制，不再按 45% 封顶
+            screen = QApplication.primaryScreen()
+
+            if screen is not None:
+                cap = max(200, screen.availableGeometry().height() - 40)
+        elif parent is not None and parent.height() > 100:
+            # 主窗：固定布局，仍按 45% 封顶，避免挤没上方多轮正常计算日志
             cap = max(140, int(parent.height() * 0.45))
         else:
             screen = QApplication.primaryScreen()
