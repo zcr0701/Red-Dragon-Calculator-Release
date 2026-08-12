@@ -1270,7 +1270,8 @@ class WhatIFTreeWidget(QTreeWidget):
 
                 return
 
-            node = self._item(first)
+            # 可展开行：标签带本行结果 (X伤害余N费)；展开的完整路径结尾不再带
+            node = self._item(first + f"({dmg}伤余{mana}费)")
 
             if parent is not None:
                 parent.addChild(node)
@@ -1282,12 +1283,7 @@ class WhatIFTreeWidget(QTreeWidget):
                 cont = rest if not children else rest[:-1]
 
                 if cont:
-                    node.addChild(
-                        self._item(
-                            join_steps(cont)
-                            + ("" if children else f"({dmg}伤余{mana}费)")
-                        )
-                    )
+                    node.addChild(self._item(join_steps(cont)))
 
             for ch in children:
                 ch_steps = [
