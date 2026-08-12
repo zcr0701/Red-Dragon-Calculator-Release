@@ -47,6 +47,7 @@ from PyQt5.QtCore import (
 from PyQt5.QtGui import (
     QColor,
     QCursor,
+    QFont,
     QPainter,
     QPen,
     QPixmap,
@@ -1414,7 +1415,9 @@ class WhatIFGuidePanel(QWidget):
         super().__init__(parent)
         self._data: Optional[Dict[str, object]] = None
         self._root: List[str] = []
-        self._path: List[str] = []
+        # 当前段路径（从上一个分叉到现在的“新步骤”，不重复已显示的前半部分）
+        self._segment: List[str] = []
+        self._next_card: str = ""
         self._options: List[Dict[str, object]] = []
         self._final: str = ""
         self._max_damage = 0
@@ -1449,6 +1452,11 @@ class WhatIFGuidePanel(QWidget):
         self.path_label.setTextFormat(Qt.RichText)
         self.path_label.setWordWrap(True)
         root.addWidget(self.path_label)
+
+        self.next_label = QLabel()
+        self.next_label.setTextFormat(Qt.RichText)
+        self.next_label.setWordWrap(True)
+        root.addWidget(self.next_label)
 
         self.fork_label = QLabel()
         self.fork_label.setTextFormat(Qt.RichText)
@@ -1500,8 +1508,9 @@ class WhatIFGuidePanel(QWidget):
     def _reset(self, *_args) -> None:
         tree = (self._data or {}).get("whatif_tree") or {}
         branches = tree.get("branches") or []
-        # 主干末尾是分支卡：当前路径走到分支卡之前，下一步选分叉结果
-        self._path = list(self._root[:-1]) if self._root else []
+        # 主干末尾是分支卡：当前段 = 主干到分支卡之前；下一步明确提示分支卡
+        self._segment = list(self._root[:-1]) if self._root else []
+        self._next_card = str(self._root[-1]) if self._root else ""
         self._options = [self._mk_option(b) for b in branches]
         self._final = ""
         self._render()
@@ -1525,7 +1534,8 @@ class WhatIFGuidePanel(QWidget):
         return abbreviate_step(str(step), compact=False)
 
     def _choose(self, opt: Dict[str, object]) -> None:
-        self._path.append(str(opt["label"]))
+        # 只展示从本分叉往后的新步骤（前半部分已在上面显示过，不重复）
+        self._segment = [str(opt["label"])]
         tail = list(opt["tail"])
         children = opt["children"]
 
@@ -1540,7 +1550,11 @@ class WhatIFGuidePanel(QWidget):
                     fork_idx = k
 
             cont = tail[:fork_idx] if fork_idx >= 0 else tail
-            self._path.extend(cont)
+            self._segment.extend(cont)
+            fork_step = (
+                str(tail[fork_idx]) if fork_idx >= 0 else ""
+            )
+            self._next_card = re.sub(r"[（(].*[）)]$", "", fork_step)
             self._options = []
 
             for ch in children:
@@ -1561,7 +1575,8 @@ class WhatIFGuidePanel(QWidget):
 
             self._final = ""
         else:
-            self._path.extend(tail)
+            self._segment.extend(tail)
+            self._next_card = ""
             self._options = []
             self._final = f"({opt['damage']}伤余{opt['mana']}费)"
 
@@ -1607,8 +1622,21 @@ class WhatIFGuidePanel(QWidget):
             )
 
     def _render(self) -> None:
-        path_text = "-".join(self._abbr(s) for s in self._path) if self._path else "（起点）"
-        self.path_label.setText("指引路径：<br>" + path_text)
+        path_text = (
+            "-".join(self._abbr(s) for s in self._segment)
+            if self._segment
+            else "（起点）"
+        )
+        self.path_label.setText("指引路径（当前段）：<br>" + path_text)
+
+        if self._next_card:
+            self.next_label.setText(
+                "下一步："
+                + self._abbr(self._next_card)
+                + '<span style="color:#0E7490;font-weight:bold;">（打出后选择分叉结果）</span>'
+            )
+        else:
+            self.next_label.setText("")
 
         while self.options_layout.count():
             item = self.options_layout.takeAt(0)
@@ -1628,10 +1656,21 @@ class WhatIFGuidePanel(QWidget):
                 btn = _ClickLabel(label_txt)
                 btn.setTextFormat(Qt.RichText if self._colors else Qt.PlainText)
                 btn.setWordWrap(True)
+                # 分支字加大：比面板字体再大 2px 并加粗，可点击感更强
+                btn_font = QFont(self.font())
+                btn_font.setBold(True)
+                px = btn_font.pixelSize()
+
+                if px > 0:
+                    btn_font.setPixelSize(px + 2)
+                else:
+                    btn_font.setPointSize(btn_font.pointSize() + 2)
+
+                btn.setFont(btn_font)
                 btn.setCursor(QCursor(Qt.PointingHandCursor))
                 btn.setStyleSheet(
                     "border:1px solid #0E7490;background:#E0F2FE;"
-                    "padding:2px 4px;border-radius:3px;color:#000000;"
+                    "padding:5px 8px;border-radius:4px;color:#000000;"
                 )
                 btn.clicked.connect(lambda o=opt: self._choose(o))
                 self.options_layout.addWidget(btn)
