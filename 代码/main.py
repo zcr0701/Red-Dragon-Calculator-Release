@@ -1859,6 +1859,7 @@ class CalculationWorker(QThread):
 
     progress = pyqtSignal(int, int, int)
     found = pyqtSignal(int, int)
+    normal_ready = pyqtSignal(dict)   # 第一阶段：正常计算完成即发，先显示正常结果
     finished_ok = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
@@ -2023,6 +2024,10 @@ class CalculationWorker(QThread):
                     exchanges=[],
                     **common_kwargs,
                 )
+
+            # 第一阶段：正常计算完成，先显示正常结果（WhatIF 稍后单独显示）
+            if not self._stop:
+                self.normal_ready.emit(dict(result))
 
             # ========== 统一 W-B 机制（WhatIf-Branch）==========
             # 分支卡（抽随从卡/持枪要挟）的全部分支直接在 C++ 束宽搜索内展开；
@@ -2632,6 +2637,21 @@ class CalculationWorker(QThread):
 
             if whatif_tree is not None:
                 self._apply_branch_strategy(whatif_tree)
+                # WhatIF 全 0 伤害（分布 [0(100%)]）：不显示
+                root_node = WhatIFDistPanel._mk_node(
+                    [str(s) for s in (whatif_tree.get("root") or [])]
+                )
+
+                for tb in whatif_tree.get("branches") or []:
+                    root_node["options"].append(WhatIFDistPanel._mk_option(tb))
+
+                root_leaves = WhatIFDistPanel._leaves(root_node)
+
+                if root_leaves and max(root_leaves) <= 0:
+                    whatif_tree = None
+                    draw_branches = None
+                    quickdraw_branches = []
+                    whatif_average = None
 
             result["whatif_tree"] = whatif_tree
             result["original"] = result.get("original") or None
@@ -4023,6 +4043,7 @@ class MainWindow(QWidget):
         self.worker.progress.connect(self._on_progress)
         self.worker.found.connect(self._on_found)
         self.worker.finished_ok.connect(self._on_result)
+        self.worker.normal_ready.connect(self._on_normal_ready)
         self.worker.failed.connect(self._on_error)
         self.worker.finished.connect(self._on_worker_done)
         self.worker.start()
@@ -4122,6 +4143,35 @@ class MainWindow(QWidget):
         return "\n".join(lines)
 
     def _on_result(self, data: Dict[str, object]) -> None:
+        """最终结果：正常计算 + WhatIF 一起显示，并写日志/上传。"""
+        self._render_main_text(data, include_whatif=True)
+
+        try:
+            LOGS_DIR.mkdir(exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_path = LOGS_DIR / f"red_dragon_all_paths_{stamp}.txt"
+            out_path.write_text(
+                self.result_text.toPlainText(),
+                encoding="utf-8",
+            )
+            self.engine_label.setText(f"结果已保存：{out_path.name}")
+        except OSError as exc:
+            self.engine_label.setText(f"结果保存失败：{exc}")
+
+        # 静默上传计算记录到云端公式库（后台线程，不阻塞、不弹窗）
+        cloud_report.upload_async(data.get("upload_payload"))
+        self._show_wb_tree(data.get("wb"))
+        self._sync_mini_result(data)
+
+    def _on_normal_ready(self, data: Dict[str, object]) -> None:
+        """第一阶段：正常计算完成立即显示（WhatIF 尚未计算，不写日志/不上传）。"""
+        self._render_main_text(data, include_whatif=False)
+        self._sync_mini_result(data)
+
+    def _render_main_text(
+        self, data: Dict[str, object], include_whatif: bool = True
+    ) -> None:
+        """把正常计算（+ 可选 WhatIF）渲染到主窗口结果文本。"""
         # 主窗口结果 = 正常线（V1.2.1 逻辑：行骗/挖掘宝藏/潜伏帷幕/垂钓时光可打出，
         # 抽牌按“抽杂牌”确定性处理），与 小窗 正常线 段完全一致。
         orig = data.get("original") or {}
@@ -4158,11 +4208,12 @@ class MainWindow(QWidget):
             lines.append("  （无路径）")
 
         # WhatIF 纯文本：与正常计算放一起（严格格式）
-        whatif_txt = _whatif_text_block(data)
+        if include_whatif:
+            whatif_txt = _whatif_text_block(data)
 
-        if whatif_txt:
-            lines.append("")
-            lines.extend(whatif_txt.splitlines())
+            if whatif_txt:
+                lines.append("")
+                lines.extend(whatif_txt.splitlines())
 
         wb = data.get("wb")
         if wb:
@@ -4171,23 +4222,6 @@ class MainWindow(QWidget):
 
         text = "\n".join(lines)
         self.result_text.setPlainText(text)
-
-        try:
-            LOGS_DIR.mkdir(exist_ok=True)
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            out_path = LOGS_DIR / f"red_dragon_all_paths_{stamp}.txt"
-            out_path.write_text(
-                text,
-                encoding="utf-8",
-            )
-            self.engine_label.setText(f"结果已保存：{out_path.name}")
-        except OSError as exc:
-            self.engine_label.setText(f"结果保存失败：{exc}")
-
-        # 静默上传计算记录到云端公式库（后台线程，不阻塞、不弹窗）
-        cloud_report.upload_async(data.get("upload_payload"))
-        self._show_wb_tree(data.get("wb"))
-        self._sync_mini_result(data)
 
     def _show_wb_tree(self, wb: Optional[Dict[str, object]]) -> None:
         """W-B 分支树在独立大窗口展示（有数据则填充并显示）。"""
