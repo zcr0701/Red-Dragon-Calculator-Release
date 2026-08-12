@@ -1448,11 +1448,6 @@ class WhatIFDistPanel(QWidget):
         self.dist_label.setWordWrap(True)
         root.addWidget(self.dist_label)
 
-        self.avg_label = QLabel()
-        self.avg_label.setTextFormat(Qt.RichText)
-        self.avg_label.setWordWrap(True)
-        root.addWidget(self.avg_label)
-
         self.path_label = QLabel()
         self.path_label.setTextFormat(Qt.RichText)
         self.path_label.setWordWrap(True)
@@ -1471,11 +1466,6 @@ class WhatIFDistPanel(QWidget):
         self.home_btn = QPushButton("回到主干")
         self.home_btn.clicked.connect(self._home)
         btn_row.addWidget(self.home_btn)
-        self.notes_check = QCheckBox("显示说明")
-        self.notes_check.setChecked(True)
-        self.notes_check.toggled.connect(self._render)
-        self.notes_check.toggled.connect(self._render_title)
-        btn_row.addWidget(self.notes_check)
         btn_row.addStretch(1)
         root.addLayout(btn_row)
 
@@ -1539,7 +1529,15 @@ class WhatIFDistPanel(QWidget):
                 ):
                     fork_idx = k
 
-            cont = tail[:fork_idx] if fork_idx >= 0 else tail
+            if fork_idx < 0:
+                fork_idx = max(0, len(tail) - 1)  # 兜底：最后一步是分叉卡
+
+            # 路径到分叉卡停下（含分叉卡，去掉结果标注，如 持枪要挟（补水）→ 持枪要挟）
+            cont = tail[: fork_idx + 1]
+
+            if cont:
+                cont[-1] = re.sub(r"[（(].*[）)]$", "", str(cont[-1]))
+
             child = cls._mk_node([label] + cont)
 
             for ch in children:
@@ -1572,14 +1570,20 @@ class WhatIFDistPanel(QWidget):
     @classmethod
     def _dist_of(cls, node: Dict[str, object]) -> List[Tuple[int, float]]:
         leaves = cls._leaves(node)
+
+        if not leaves:
+            return []
+
         total = max(1, len(leaves))
         counts: Dict[int, int] = {}
 
         for d in leaves:
-            counts[d] = counts.get(d, 0) + 1
+            b = max(0, (int(d) // 8) * 8)  # 伤害按 8 的倍数归桶
+            counts[b] = counts.get(b, 0) + 1
 
+        # 只列有路径的伤害桶（8 的倍数，降序），0% 空桶不显示
         return [
-            (d, counts[d] / total * 100.0) for d in sorted(counts, reverse=True)
+            (b, counts[b] / total * 100.0) for b in sorted(counts, reverse=True)
         ]
 
     def _dist_html(self, dist: List[Tuple[int, float]]) -> str:
@@ -1588,21 +1592,13 @@ class WhatIFDistPanel(QWidget):
 
         for d, p in dist:
             hue = int(120 * max(0, d) / dmax) if dmax > 0 else 120
-            pct = f"{p:.0f}" if p >= 9.5 else f"{p:.1f}"
+            pct = f"{p:.0f}"
             segs.append(
                 '<span style="color:hsl(%d,72%%,40%%);font-weight:bold;">%d(%s%%)</span>'
                 % (hue, d, pct)
             )
 
-        return "|".join(segs)
-
-    def _avg_of(self, node: Dict[str, object]) -> Optional[float]:
-        leaves = self._leaves(node)
-
-        if not leaves:
-            return None
-
-        return sum(leaves) / len(leaves)
+        return "|" + "|".join(segs) + "|"
 
     # ---- 交互 ----
 
@@ -1625,12 +1621,6 @@ class WhatIFDistPanel(QWidget):
 
     # ---- 渲染 ----
 
-    def _note(self, text: str) -> str:
-        if not self.notes_check.isChecked():
-            return ""
-
-        return '<br><span style="color:#888888;">' + text + "</span>"
-
     def _abbr(self, step: str) -> str:
         if self._colors:
             return abbreviate_step_html(str(step), compact=False)
@@ -1644,9 +1634,7 @@ class WhatIFDistPanel(QWidget):
             % ((self._hue + i * 50) % 360, ch)
             for i, ch in enumerate("WhatIF")
         )
-        self.title_label.setText(
-            prefix + self._note("保持颜色渐变")
-        )
+        self.title_label.setText(prefix)
 
     def _render(self, *_args) -> None:
         node = self._current
@@ -1656,47 +1644,22 @@ class WhatIFDistPanel(QWidget):
             return
 
         dist = self._dist_of(node)
-        self.dist_label.setText(
-            "[" + self._dist_html(dist) + "]"
-            + self._note("各伤害值及其路径数量在分支树中的占比")
-        )
+        self.dist_label.setText("[" + self._dist_html(dist) + "]")
 
-        avg = self._avg_of(node)
-        avg_txt = _fmt_avg(avg) if avg is not None else "?"
         worst = min((d for d, _ in dist), default=0)
         best = max((d for d, _ in dist), default=0)
-        worth = ""
-
-        if self._normal is not None:
-            if worst >= self._normal:
-                worth = (
-                    f'<span style="color:#15803D;font-weight:bold;">值得（保底{worst}'
-                    f"≥正常线{self._normal}）</span>"
-                )
-            elif avg is not None and avg >= self._normal:
-                worth = (
-                    f'<span style="color:#B45309;font-weight:bold;">值得一试（平均'
-                    f"{_fmt_avg(avg)}≥正常线{self._normal}）</span>"
-                )
-            else:
-                worth = (
-                    f'<span style="color:#B91C1C;font-weight:bold;">有风险（平均'
-                    f"{avg_txt}&lt;正常线{self._normal}）</span>"
-                )
-
-        self.avg_label.setText(
-            f"最高{best}｜平均{avg_txt}｜保底{worst}"
-            + (("　" + worth) if worth else "")
-        )
 
         path_text = (
             "-".join(self._abbr(s) for s in node.get("path") or [])
             if node.get("path")
             else "（起点）"
         )
-        self.path_label.setText(
-            path_text + self._note("路径，到分支点停下")
-        )
+
+        if node.get("options") and dist:
+            # 分叉卡处标注当前子树最大伤害：…-E(8N)
+            path_text += f"({best})"
+
+        self.path_label.setText(path_text)
 
         while self.options_layout.count():
             item = self.options_layout.takeAt(0)
