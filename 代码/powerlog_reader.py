@@ -30,6 +30,9 @@ from hslog.exceptions import MissingPlayerData
 from hslog.parser import LogParser
 from hslog.packets import (
     Block,
+    ChosenEntities,
+    Choices,
+    SendChoices,
     TagChange,
 )
 from hslog.player import coerce_to_entity_id
@@ -331,6 +334,9 @@ class PowerLogParser:
         self._last_turn_seen: Optional[int] = None
         self._sp_cost_expire_turn: Optional[int] = None
         self._cards_played_this_turn = 0
+        # 垂钓时光探底追踪：最近一次垂钓时光的选择（id/候选底牌），解析后写入 dredge_bottom
+        self._dredge_choice: Optional[dict] = None
+        self._dredge_bottom: List[str] = []
 
     def feed_line(self, line: str) -> None:
         try:
@@ -359,6 +365,72 @@ class PowerLogParser:
                 self._on_play_entity(entity_id, game)
             elif isinstance(packet, TagChange) and packet.tag == GameTag.TURN:
                 self._on_turn_change(packet.value)
+            elif isinstance(packet, Choices):
+                self._on_dredge_choices(packet, game)
+            elif isinstance(packet, (SendChoices, ChosenEntities)):
+                self._on_dredge_chosen(packet, game)
+
+    def _on_dredge_choices(self, packet, game) -> None:
+        """DebugPrintEntityChoices：Source=垂钓时光 时记录 3 张探底候选（复制实体带 card_id）。"""
+        src_id = getattr(packet, "source", None)
+
+        if src_id is None:
+            return
+
+        ent = game.find_entity_by_id(src_id)
+
+        if ent is None or (ent.card_id or "") != "TSC_916":
+            return
+
+        # 只追踪本机玩家的垂钓时光（对手的探底不建模）
+        if ent.tags.get(GameTag.CONTROLLER) != self.local_controller:
+            return
+
+        candidates: List[str] = []
+
+        for cid in packet.choices:
+            c = game.find_entity_by_id(cid)
+
+            if c is not None and c.card_id:
+                name = card_name(c.card_id)
+                if name not in candidates:
+                    candidates.append(name)
+
+        if not candidates:
+            return
+
+        self._dredge_choice = {"id": getattr(packet, "id", None), "candidates": candidates}
+
+    def _on_dredge_chosen(self, packet, game) -> None:
+        """DebugPrintEntitiesChosen / SendChoices：玩家选中的探底牌。
+
+        选到其中一张 → 剩余两张为已知（底部 = 2 已知 + 1 未知杂牌）；
+        没拿到/无法分辨 → 三张都按已知（底部 = 3 已知）。
+        """
+        if not self._dredge_choice:
+            return
+
+        if getattr(packet, "id", None) != self._dredge_choice["id"]:
+            return
+
+        chosen: List[str] = []
+
+        for cid in packet.choices:
+            c = game.find_entity_by_id(cid)
+
+            if c is not None and c.card_id:
+                name = card_name(c.card_id)
+                if name not in chosen:
+                    chosen.append(name)
+
+        candidates = self._dredge_choice["candidates"]
+
+        if chosen and any(ch in candidates for ch in chosen):
+            self._dredge_bottom = [n for n in candidates if n not in chosen]
+        else:
+            self._dredge_bottom = list(candidates)
+
+        self._dredge_choice = None
 
     def _export_new(self, tree):
         """把新增包增量喂给缓存的 hslog 导出器（旧实现每次全量 exporter.export()）。
@@ -499,6 +571,7 @@ class PowerLogParser:
                 "weapon": None,
                 "current_effects": [],
                 "deadly_shadow_hand_indexes": [],
+                "dredge_bottom": [],
                 "crystals": None,
                 "mana": None,
                 "player_hero": None,
@@ -539,6 +612,7 @@ class PowerLogParser:
                 "weapon": None,
                 "current_effects": [],
                 "deadly_shadow_hand_indexes": [],
+                "dredge_bottom": [],
                 "crystals": None,
                 "mana": None,
                 "player_hero": None,
@@ -706,6 +780,7 @@ class PowerLogParser:
             "etc_band": etc_band,
             "current_effects": current_effects,
             "deadly_shadow_hand_indexes": deadly_shadow_hand_indexes,
+            "dredge_bottom": list(self._dredge_bottom),
             "parser": "hslog",
             "line_errors": self.line_errors,
         }

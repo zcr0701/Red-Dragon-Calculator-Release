@@ -868,6 +868,11 @@ def build_payload(
         #   导致行骗等按“无随从/无法术”误判。）
         "deck_is_known": int(snapshot.get("deck_unknown_cards") or 0) == 0,
         "deck": [{"name": item["name"]} for item in snapshot.get("deck") or []],
+        # 垂钓时光探底已知牌（阅读器自动追踪；缺位视为未知杂牌）
+        "dredge_bottom": [
+            str(item["name"]) if isinstance(item, dict) else str(item)
+            for item in snapshot.get("dredge_bottom") or []
+        ],
         "hand": hand,
         "board": board,
         "enemy_board": enemy_board,

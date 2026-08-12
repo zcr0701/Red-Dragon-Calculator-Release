@@ -298,6 +298,7 @@ struct State {
     bool used_quickdraw = false;      // 路径中是否打出过持枪要挟（原版=不含持枪的最优线）
     bool used_draw_branch = false;    // 路径中是否打出过抽随从分支卡（行骗/挖掘宝藏/潜伏帷幕/垂钓时光）
     string last_draw_key;             // 最近一次抽随从分支卡抽到的随从集（如 “狐人老千”/“刀、狐”，空=未抽）
+    vector<string> dredge_bottom;     // 垂钓时光探底已知牌（牌库底 3 张中已知的部分，≤3；缺位=未知杂牌）
     std::shared_ptr<vector<string>> path_buf;  // 路径共享存储（克隆 O(1)，写时复制）
 
     const vector<string>& path() const {
@@ -359,6 +360,8 @@ struct State {
         c.used_quickdraw = used_quickdraw;
         c.used_draw_branch = used_draw_branch;
         c.last_draw_key = last_draw_key;
+        c.dredge_bottom.reserve(dredge_bottom.size() + 1);
+        c.dredge_bottom.assign(dredge_bottom.begin(), dredge_bottom.end());
         c.path_buf = path_buf;
         return c;
     }
@@ -1354,6 +1357,63 @@ static vector<State> generate_successors(const State& st) {
                 }
             }
         }
+        // 垂钓时光探底分叉（WhatIF/Branch）：阅读器追踪的牌库底已知牌作为分叉选项。
+        // 打出垂钓时光 = 从底 3 张选 1 张入手（连击额外抽 1 张）；每个已知底牌一个分支，
+        // 不足 3 张时补“未知杂牌”分支；选中后其余已知牌留在牌库底（下次垂钓时光再用）。
+        if (card.effect_id == "gone_fishin" && st.branch_expand && !st.dredge_bottom.empty()) {
+            const bool forced = !st.forced_draw_choice.empty();
+            vector<string> opts;
+            for (const string& n : st.dredge_bottom) {
+                if (std::find(opts.begin(), opts.end(), n) == opts.end()) opts.push_back(n);
+            }
+            if ((int)st.dredge_bottom.size() < 3) opts.push_back("未知杂牌");
+
+            if (forced) {
+                // WhatIF 强制抽到某张：只保留该分支（不在底池时无分支，正常线兜底）
+                if (st.forced_draw_choice == "未知杂牌") {
+                    opts = {"未知杂牌"};
+                } else if (std::find(opts.begin(), opts.end(),
+                                     st.forced_draw_choice) != opts.end()) {
+                    opts = {st.forced_draw_choice};
+                } else {
+                    opts.clear();
+                }
+            }
+
+            for (const string& pick : opts) {
+                State base = st.clone_reserved();
+                if (!play_card_base(base, hand_index, -1, false, false)) continue;
+                if (!apply_effect_inplace(base, "gone_fishin", card, -1, false)) continue;
+                if (!base.path().empty()) base.path_mut().back() += "（" + pick + "）";
+                if (pick == "未知杂牌") {
+                    Card junk = make_card("未知抽牌");
+                    add_card_to_hand_or_burn(base, junk);
+                } else {
+                    add_card_to_hand_or_burn(base, make_card(pick));
+                    // 选中后其余已知牌留在牌库底
+                    base.dredge_bottom.clear();
+                    for (const string& n : st.dredge_bottom) {
+                        if (n != pick) base.dredge_bottom.push_back(n);
+                    }
+                }
+                base.last_draw_key = pick;
+                base.used_draw_branch = true;  // 抽到具体底牌：不进正常线
+                if (card.is_spell_like()) transform_deadly_shadows(base, card);
+                base.cards_played_this_turn++;
+                out.push_back(std::move(base));
+            }
+            // 正常线（V1.2.1）：垂钓时光按“抽杂牌”打出，结果唯一确定（不进分叉）
+            if (!forced) {
+                State junk = st.clone_reserved();
+                if (play_card_base(junk, hand_index, -1, false, false)) {
+                    apply_effect_inplace(junk, "gone_fishin", card, -1, false);
+                    if (card.is_spell_like()) transform_deadly_shadows(junk, card);
+                    junk.cards_played_this_turn++;
+                    out.push_back(std::move(junk));
+                }
+            }
+            continue;  // 跳过下方常规展开（本卡已单独处理）
+        }
         // 纯随机法术抽牌（异教地图等）仍禁止，避免虚构抽牌后继
         // （无论是否展开抽随从卡分支都生效；抽随从分支开关只影响 minion 抽牌卡）
         if (!st.deck_is_known && card_is_unmodelable_random_draw(card)) continue;
@@ -1473,6 +1533,7 @@ static uint64_t state_hash(const State& s) {
     h = mix_hash(h, (uint64_t)s.next_two_cards_count);
     h = mix_hash(h, (uint64_t)s.sp_cost_inc);
     for (const auto& p : s.oil_stacks) h = mix_hash(h, (uint64_t)p.first * 31 + (uint64_t)p.second);
+    for (const auto& n : s.dredge_bottom) h = mix_hash(h, str_hash(n));
     return h;
 }
 
@@ -1906,6 +1967,24 @@ static int subchain_score(const State& s) {
                 break;
             }
         }
+    }
+    // ④ 鱼龙优先级（150953 等）：先鱼后龙几乎总优于先龙后鱼（龙鱼更优 <0.01%）。
+    //    a) 惩罚“刚打出龙、鲨鱼在手可打出却不在场”的状态——这一口龙白少 8 伤；
+    //    b) 奖励“鱼龙同场”状态——鲨鱼在场时龙必吃满 16，暗施还能借双战吼再复制两条龙。
+    if (shark_on == 0 && shark_in_hand > 0) {
+        const auto& p = s.path();
+        if (!p.empty() && p.back().find("生命的缚誓者") != string::npos) {
+            for (const auto& c : s.hand) {
+                int cc = effective_cost(s, c);
+                if (c.name() == "鲨鱼之灵" && cc >= 0 && cc <= s.mana) {
+                    score -= 24;
+                    break;
+                }
+            }
+        }
+    }
+    if (shark_on > 0 && board_d > 0) {
+        score += 24;
     }
     if (dragons > 0 && mother > 0) score += 12;
     if (dragons > 0 && shadowcaster > 0) score += 12;
@@ -2788,6 +2867,18 @@ static State state_from_json(const JVal& root) {
         for (const auto& item : deck->arr) {
             st.deck.push_back(make_card(item.get_str("name")));
         }
+    }
+    // 垂钓时光探底已知牌：牌库底 3 张中已知的部分（阅读器自动追踪）；
+    // 缺位视为“未知杂牌”，作为垂钓时光的分叉选项。
+    const JVal* db = root.find("dredge_bottom");
+    if (db && db->type == JVal::ARR) {
+        for (const auto& item : db->arr) {
+            if (item.type != JVal::STR) continue;
+            string n = item.str;
+            if (n.empty() || n == "未知杂牌" || n == "未知抽牌") continue;
+            st.dredge_bottom.push_back(n);
+        }
+        if (st.dredge_bottom.size() > 3) st.dredge_bottom.resize(3);
     }
     const JVal* effects = root.find("current_effects");
     if (effects && effects->type == JVal::ARR) {

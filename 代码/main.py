@@ -1394,6 +1394,18 @@ class CalculationWorker(QThread):
                     root_steps = [str(s) for s in best_path[:di]]
                     branch_card = re.sub(r"[（(].*[）)]$", "", str(best_path[di]))
                     root_steps.append(branch_card)
+                    # 垂钓时光分叉池 = 阅读器追踪的探底已知牌（底 3 张，缺位补“未知杂牌”）；
+                    # 其余抽随从卡仍是“卡组随从 - 已有随从”的缺失池。
+                    if branch_card == "垂钓时光":
+                        branch_pool = [
+                            str(n)
+                            for n in (self.snapshot.get("dredge_bottom") or [])
+                            if str(n)
+                        ]
+                        if len(branch_pool) < 3:
+                            branch_pool.append("未知杂牌")
+                    else:
+                        branch_pool = missing_draw
                     tree_branches: List[Dict[str, object]] = []
                     # 性能优化：主线抽取（如 行骗(牛)）用 11s + 束宽 3000 挖深线
                     # （96 伤），其 C++ quickdraw_branches 已含各发现牌的深线结果
@@ -1401,7 +1413,7 @@ class CalculationWorker(QThread):
                     # 其余抽取 5s（结果本来就较低，无需深挖）。
                     is_auto_beam = int(self.options.get("beam_width") or 0) <= 0
 
-                    for mn in missing_draw:
+                    for mn in branch_pool:
                         if self._stop:
                             break
 
