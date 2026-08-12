@@ -1289,6 +1289,79 @@ class CalculationWorker(QThread):
                     -1,
                 )
 
+                # 第一个分支卡也可能是持枪要挟（手牌没有抽牌卡时）：
+                # 直接用主搜索的 quickdraw_branches（各发现结果）构建指引树。
+                qi = next(
+                    (
+                        i
+                        for i, s in enumerate(best_path)
+                        if "持枪要挟" in str(s or "")
+                    ),
+                    -1,
+                )
+
+                if di <= 0 and qi > 0 and self._stop is False:
+                    root_steps = [str(s) for s in best_path[:qi]]
+                    root_steps.append("持枪要挟")
+                    mq = re.search(r"持枪要挟[（(](.+?)[）)]", str(best_path[qi]))
+                    main_qd = mq.group(1) if mq else ""
+                    qd_tree: List[Dict[str, object]] = []
+
+                    for b in (result.get("quickdraw_branches") or []):
+                        card = str(b.get("card") or "")
+                        pth = list(b.get("path") or [])
+                        tail = WhatIFTreeWidget._tail_steps(pth, card)
+                        qd_tree.append(
+                            {
+                                "outcome": card,
+                                "damage": int(b.get("damage") or 0),
+                                "dragons": int(b.get("dragons") or 0),
+                                "mana_left": int(b.get("mana_left") or 0),
+                                "mid": [str(s) for s in (tail or pth)],
+                                "path": pth,
+                            }
+                        )
+
+                    if qd_tree:
+                        leaf_damages = [int(tb.get("damage") or 0) for tb in qd_tree]
+                        whatif_tree = {
+                            "root": root_steps,
+                            "branches": qd_tree,
+                            "worst": min(leaf_damages) if leaf_damages else 0,
+                            "main_outcome": main_qd,
+                        }
+                        quickdraw_branches = list(qd_tree)
+                        total_w = sum(
+                            int(
+                                engine.QUICKDRAW_WEIGHTS.get(
+                                    tb.get("outcome") or "", 1
+                                )
+                            )
+                            for tb in qd_tree
+                        )
+                        whatif_average = {
+                            "damage": sum(
+                                int(tb.get("damage") or 0)
+                                * int(
+                                    engine.QUICKDRAW_WEIGHTS.get(
+                                        tb.get("outcome") or "", 1
+                                    )
+                                )
+                                for tb in qd_tree
+                            )
+                            / total_w,
+                            "dragons": sum(
+                                int(tb.get("dragons") or 0)
+                                * int(
+                                    engine.QUICKDRAW_WEIGHTS.get(
+                                        tb.get("outcome") or "", 1
+                                    )
+                                )
+                                for tb in qd_tree
+                            )
+                            / total_w,
+                        }
+
                 if di > 0 and self._stop is False:
                     prefix_draw = list(best_path[:di])
                     # 分支点缺失池 = 界面勾选的卡组随从 - 手牌/战场已有随从
