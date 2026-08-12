@@ -1088,13 +1088,12 @@ class WhatIFTreeWidget(QTreeWidget):
             for i, ch in enumerate("WhatIF")
         )
         avg_txt = _fmt_avg(self._header_avg) if self._header_avg is not None else "?"
+        # 不加固定字号：继承树/公式字号，与正常计算部分路径的字一样大
         html = (
-            '<span style="font-size:14px;">'
-            + prefix
+            prefix
             + ":<br>"
             f'<span style="color:#FFD700;font-weight:bold;">最高平均伤害：{avg_txt}</span>'
             f'<span style="color:#FF6B6B;font-weight:bold;">，保底伤害：{self._header_worst}</span>'
-            "</span>"
         )
         self._header_item.setData(0, Qt.UserRole, html)
         self._header_item.setText(0, re.sub(r"<[^>]+>", "", html))
@@ -1235,75 +1234,69 @@ class WhatIFTreeWidget(QTreeWidget):
             root_item = self._item(join_steps(root_steps))
             self.addTopLevelItem(root_item)
 
-        # 次级：每个抽取结果（行骗(牛)/行骗(狐)…）
-        for tb in branches:
-            outcome = str(tb.get("outcome") or "")
-            dmg = int(tb.get("damage") or 0)
-            mana = int(tb.get("mana_left") or 0)
-            children = tb.get("children") or []
-            mid = [str(s) for s in (tb.get("mid") or [])]
+        # 分叉结果默认折叠成短行（如 垂钓时光(晦)▶），点了哪个再展开哪个的路径；
+        # 单分叉（如 行骗(晦)）已由 worker 并入路径，不再生成可展开子节点。
+        def add_outcome(parent, steps, children, dmg, mana):
+            if not steps:
+                return
 
-            # 单分叉不展开：只有一种可能性的分叉（如 行骗(晦)）直接并入路径显示
-            if len(children) == 1:
-                ch = children[0]
-                card = str(ch.get("card") or "")
-                tail = WhatIFTreeWidget._tail_steps(ch.get("path") or [], card)
-                merged = list(mid)
+            first = abbr_fn(str(steps[0]), compact=False)
+            rest = [str(s) for s in steps[1:]]
 
-                if tail:
-                    if merged and tail and str(merged[-1]) == str(tail[0]):
-                        merged = merged[:-1]
+            if not rest and not children:
+                item = self._item(first + f"({dmg}伤余{mana}费)")
 
-                    merged += tail
-
-                node = self._item(
-                    (join_steps(merged) if merged else "")
-                    + f"({int(ch.get('damage') or 0)}伤余{int(ch.get('mana_left') or 0)}费)"
-                )
-
-                if root_item is not None:
-                    root_item.addChild(node)
+                if parent is not None:
+                    parent.addChild(item)
                 else:
-                    self.addTopLevelItem(node)
+                    self.addTopLevelItem(item)
 
-                continue
+                return
 
-            if children:
-                # 次级：完整中间路径（如 行骗(牛)-暗(刀2)-步(刀2)-…-持枪要挟）
-                node = self._item(join_steps(mid) if mid else "")
+            node = self._item(first)
 
-                if root_item is not None:
-                    root_item.addChild(node)
-                else:
-                    self.addTopLevelItem(node)
-
-                # 次次级：持枪要挟发现结果
-                for ch in children:
-                    card = str(ch.get("card") or "")
-                    cdmg = int(ch.get("damage") or 0)
-                    cmana = int(ch.get("mana_left") or 0)
-                    # 叶子：从该发现牌的步骤开始到结尾的完整路径
-                    tail = WhatIFTreeWidget._tail_steps(
-                        ch.get("path") or [], card
-                    )
-                    leaf = self._item(
-                        (join_steps(tail) if tail else "")
-                        + f"({cdmg}伤余{cmana}费)"
-                    )
-                    node.addChild(leaf)
+            if parent is not None:
+                parent.addChild(node)
             else:
-                # 次级本身就是叶子：完整路径
-                node = self._item(
-                    (join_steps(mid) if mid else "")
-                    + f"({dmg}伤余{mana}费)"
+                self.addTopLevelItem(node)
+
+            if rest:
+                # 到下一个分叉卡之前的路径（若有更深分叉）；否则整段延续路径
+                cont = rest if not children else rest[:-1]
+
+                if cont:
+                    node.addChild(
+                        self._item(
+                            join_steps(cont)
+                            + ("" if children else f"({dmg}伤余{mana}费)")
+                        )
+                    )
+
+            for ch in children:
+                ch_steps = [
+                    str(s) for s in (ch.get("mid") or ch.get("path") or [])
+                ]
+                add_outcome(
+                    node,
+                    ch_steps,
+                    ch.get("children") or [],
+                    int(ch.get("damage") or 0),
+                    int(ch.get("mana_left") or 0),
                 )
 
-                if root_item is not None:
-                    root_item.addChild(node)
-                else:
-                    self.addTopLevelItem(node)
+        for tb in branches:
+            add_outcome(
+                root_item,
+                [str(s) for s in (tb.get("mid") or [])],
+                tb.get("children") or [],
+                int(tb.get("damage") or 0),
+                int(tb.get("mana_left") or 0),
+            )
 
-        # 默认折叠（用户自行展开查看各分支/路径）
+        # 主干默认展开显示各分叉结果；分叉结果本身默认折叠
+        if root_item is not None:
+            root_item.setExpanded(True)
+
         self._content_changed()
 
     @staticmethod
