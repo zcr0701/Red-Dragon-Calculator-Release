@@ -56,6 +56,7 @@ from PyQt5.QtGui import (
 from PyQt5.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QButtonGroup,
     QCheckBox,
     QDialog,
     QDoubleSpinBox,
@@ -1875,6 +1876,55 @@ class CalculationWorker(QThread):
     def stop(self) -> None:
         self._stop = True
 
+    def _apply_branch_strategy(self, whatif_tree: Dict[str, object]) -> None:
+        """从 whatif_tree 顶层分叉树中按策略选一棵，重排 root/branches 呈现它。
+
+        策略（互斥，默认 kill）：
+          kill   斩杀伤害比例最大：Dn ≥ 敌方血量+护甲 的叶子占比最高
+          max    小概率最高伤害：只看最大叶子伤害（无论概率多小）
+          expect 最高期望伤害：叶子伤害加权平均最高
+          floor  最高平均保底伤害：最低叶子伤害最高（保底）
+        """
+        strategy = str(self.options.get("branch_strategy") or "kill")
+        branches = list(whatif_tree.get("branches") or [])
+
+        if len(branches) <= 1:
+            return
+
+        enemy = self.snapshot.get("opponent_hero") or {}
+        h = int(enemy.get("health") or 0) + int(enemy.get("armor") or 0)
+        scored: List[Tuple[float, Dict[str, object]]] = []
+
+        for tb in branches:
+            leaves = WhatIFDistPanel._leaves(
+                WhatIFDistPanel._mk_option(tb)["child"]
+            )
+
+            if not leaves:
+                continue
+
+            if strategy == "max":
+                score = float(max(leaves))
+            elif strategy == "expect":
+                score = sum(leaves) / max(1, len(leaves))
+            elif strategy == "floor":
+                score = float(min(leaves))
+            else:  # kill
+                kill = sum(1 for d in leaves if d >= h)
+                score = kill / max(1, len(leaves))
+
+            scored.append((score, tb))
+
+        if not scored:
+            return
+
+        scored.sort(key=lambda x: -x[0])
+        best = scored[0][1]
+        opt = WhatIFDistPanel._mk_option(best)
+        child_path = list(opt["child"].get("path") or [])
+        whatif_tree["root"] = list(whatif_tree.get("root") or []) + child_path
+        whatif_tree["branches"] = best.get("children") or []
+
     def run(self) -> None:
         try:
             beam = int(self.options.get("beam_width") or 0)
@@ -2527,6 +2577,10 @@ class CalculationWorker(QThread):
             result["quickdraw_branches"] = quickdraw_branches or None
             result["draw_branches"] = draw_branches
             result["whatif_average"] = whatif_average
+
+            if whatif_tree is not None:
+                self._apply_branch_strategy(whatif_tree)
+
             result["whatif_tree"] = whatif_tree
             result["original"] = result.get("original") or None
 
@@ -3115,6 +3169,34 @@ class MainWindow(QWidget):
         trunc_row.addWidget(self.truncate_exchange_check)
         trunc_row.addStretch(1)
         param_grid.addLayout(trunc_row, 12, 0, 1, 2)
+
+        # 分支树搜索策略：搜索森林中选一棵呈现在 WhatIF（互斥单选，默认斩杀伤害比例最大）
+        strategy_row = QHBoxLayout()
+        strategy_row.addWidget(QLabel("分支树搜索策略："))
+        self.strategy_group = QButtonGroup(self)
+        self.strategy_group.setExclusive(True)
+        self.strategy_checks: List[Tuple[str, QCheckBox]] = []
+
+        for key, label in (
+            ("kill", "斩杀伤害比例最大"),
+            ("max", "小概率最高伤害"),
+            ("expect", "最高期望伤害"),
+            ("floor", "最高平均保底伤害"),
+        ):
+            box = QCheckBox(label)
+            box.setToolTip(
+                "kill：选 Dn≥敌方血量+护甲 的叶子占比最高的一棵树；"
+                "max：只看最高伤害（无论概率）；"
+                "expect：叶子伤害加权平均最高；"
+                "floor：最低叶子伤害最高（保底）"
+            )
+            self.strategy_group.addButton(box)
+            self.strategy_checks.append((key, box))
+            strategy_row.addWidget(box)
+
+        self.strategy_checks[0][1].setChecked(True)
+        strategy_row.addStretch(1)
+        param_grid.addLayout(strategy_row, 13, 0, 1, 2)
         right_layout.addWidget(param_box)
 
         run_row = QHBoxLayout()
@@ -3743,6 +3825,10 @@ class MainWindow(QWidget):
             "truncate_normal": self.truncate_normal_check.isChecked(),
             "truncate_branch": self.truncate_branch_check.isChecked(),
             "truncate_exchange": self.truncate_exchange_check.isChecked(),
+            "branch_strategy": next(
+                (k for k, b in self.strategy_checks if b.isChecked()),
+                "kill",
+            ),
         }
 
     def current_exchange_plans(self, top_n: int) -> List[List[Tuple[int, int]]]:
