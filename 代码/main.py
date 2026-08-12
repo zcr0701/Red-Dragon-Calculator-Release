@@ -332,7 +332,10 @@ def abbreviate_step(step: str, compact: bool = False) -> str:
             # 牛头人乐队多个选择直接连写（如 牛(舞龙)），不加分隔符
             target = "(" + "".join(parts) + ")"
 
-    return abbreviate_card_name(name) + target + deadly
+    # 显示统一用英文括号
+    return (abbreviate_card_name(name) + target + deadly).replace(
+        "（", "("
+    ).replace("）", ")")
 
 
 def abbreviate_step_html(step: str, compact: bool = False) -> str:
@@ -388,7 +391,8 @@ def abbreviate_step_html(step: str, compact: bool = False) -> str:
         else:
             parts.append("[殒]")
 
-    return "".join(parts)
+    # 显示统一用英文括号
+    return "".join(parts).replace("（", "(").replace("）", ")")
 
 
 def split_path_rounds(path: List[str]) -> List[List[str]]:
@@ -1513,6 +1517,13 @@ class WhatIFDistPanel(QWidget):
     def _mk_option(cls, tb: Dict[str, object]) -> Dict[str, object]:
         """把一个分叉结果 tb 构建为 {label, child}。"""
         mid = [str(s) for s in (tb.get("mid") or tb.get("path") or [])]
+        # 子分叉（持枪要挟/再次抽牌）的 path 可能是完整路径（含前缀“币”）：
+        # 从该结果卡截取尾部，避免选项标签显示成“币”
+        card = str(tb.get("card") or "")
+
+        if card and mid and card not in str(mid[0]):
+            mid = WhatIFTreeWidget._tail_steps(mid, card)
+
         label = str(mid[0]) if mid else str(tb.get("outcome") or "?")
         tail = mid[1:]
         children = tb.get("children") or []
