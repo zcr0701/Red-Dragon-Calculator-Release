@@ -1387,7 +1387,16 @@ class CalculationWorker(QThread):
                             / total_w,
                         }
 
-                if di > 0 and self._stop is False:
+                def _build_draw_tree(best_path, di):
+                    """从给定主线路径构建抽牌分支树（一条主干 + 分支卡处叉点）。
+
+                    所有分支都以同一前缀（branch_prefix）重新搜索，保证分叉结果
+                    与主干一致；返回 (whatif_tree, draw_branches, quickdraw_branches,
+                    whatif_average) 或 None。
+                    """
+                    if self._stop:
+                        return None
+
                     prefix_draw = list(best_path[:di])
                     # 分支点缺失池 = 界面勾选的卡组随从 - 手牌/战场已有随从
                     # （第一个抽牌分支点之前没有抽牌，快照手牌/战场即分支点手牌/战场）
@@ -1429,12 +1438,11 @@ class CalculationWorker(QThread):
                     # 其余抽取 5s（结果本来就较低，无需深挖）。
                     is_auto_beam = int(self.options.get("beam_width") or 0) <= 0
                     trunc_branch = bool(self.options.get("truncate_branch", True))
-                    # 框2=W-B机制 精确截断：所有分支搜索共享敌方血量+护甲阈值
-                    lethal = (
-                        _lethal_threshold(self.snapshot, best_exchange)
-                        if trunc_branch
-                        else -1
-                    )
+                    # 分支搜索不启用精确截断：全局截断会在找到斩杀后立即停止，
+                    # 把分叉延续（如 行骗→晦→龙→龙 的 48 伤）截成半截（16 伤），
+                    # WhatIF 分叉显示不完整；分支搜索的时间预算（下方 draw_budget）
+                    # 已把整体耗时压在 ~10s 内。
+                    lethal = -1
                     pool_n = max(1, len(branch_pool))
 
                     def _search_branch(mn: str) -> Optional[Dict[str, object]]:
@@ -1485,13 +1493,33 @@ class CalculationWorker(QThread):
                             should_stop=lambda: self._stop,
                             **draw_kwargs,
                         )
-                        best_i = next(
-                            (
-                                b
-                                for b in (res_i.get("draw_branches") or [])
-                                if b.get("card") == mn and (b.get("path") or [])
-                            ),
-                            (res_i.get("results") or [{}])[0],
+                        # 强制搜索的 draw_branches 按“最后一张抽牌”命名：探底抽到行骗
+                        # 后又行骗抽到晦时，完整延续被命名为“晦鳞巢母”。因此优先选
+                        # “路径里包含该强制结果”且伤害/余费最高的分支（精确同名仅兜底）。
+                        draw_matched = [
+                            b
+                            for b in (res_i.get("draw_branches") or [])
+                            if (b.get("path") or [])
+                            and any(mn in str(s) for s in b["path"])
+                        ]
+                        best_i = (
+                            max(
+                                draw_matched,
+                                key=lambda b: (
+                                    int(b.get("damage") or 0),
+                                    int(b.get("mana_left") or 0),
+                                ),
+                            )
+                            if draw_matched
+                            else next(
+                                (
+                                    b
+                                    for b in (res_i.get("draw_branches") or [])
+                                    if b.get("card") == mn
+                                    and (b.get("path") or [])
+                                ),
+                                (res_i.get("results") or [{}])[0],
+                            )
                         )
                         path_i = list(best_i.get("path") or [])
                         # 强制搜索可能把抽牌卡放到不同位置（如 暗(刀2) 先行骗后），
@@ -1554,6 +1582,17 @@ class CalculationWorker(QThread):
                                         "path": list(c.get("path") or []),
                                     }
                                     for c in (res_i.get("draw_branches") or [])
+                                    # 只保留“叉点后又确实抽了牌”的子分支：子路径里
+                                    # 至少出现两个抽牌标记（如 垂钓时光(行骗)+行骗(晦)）；
+                                    # 否则“探底行骗但没打”会作为无延续的死胡同重复出现。
+                                    if sum(
+                                        1
+                                        for s in (c.get("path") or [])
+                                        if any(
+                                            m in str(s) for m in draw_markers
+                                        )
+                                    )
+                                    >= 2
                                 ]
                         else:
                             node["mid"] = [str(s) for s in path_i[ddi:]]
@@ -1569,68 +1608,126 @@ class CalculationWorker(QThread):
                             if node is not None and not self._stop:
                                 tree_branches.append(node)
 
-                    if tree_branches:
-                        # 保底伤害 = 所有叶子（完整随机组合）的最小伤害
-                        leaf_damages: List[int] = []
+                    if not tree_branches:
+                        return None
 
-                        for tb in tree_branches:
-                            if tb.get("children"):
-                                leaf_damages.extend(
-                                    int(ch.get("damage") or 0)
-                                    for ch in tb["children"]
+                    draw_branches: Optional[List[Dict[str, object]]] = None
+                    quickdraw_branches: Optional[List[Dict[str, object]]] = []
+                    whatif_average: Optional[Dict[str, float]] = None
+
+                    # 保底伤害 = 所有叶子（完整随机组合）的最小伤害
+                    leaf_damages: List[int] = []
+
+                    for tb in tree_branches:
+                        if tb.get("children"):
+                            leaf_damages.extend(
+                                int(ch.get("damage") or 0)
+                                for ch in tb["children"]
+                            )
+                        else:
+                            leaf_damages.append(int(tb.get("damage") or 0))
+
+                    whatif_tree = {
+                        "root": root_steps,
+                        "branches": tree_branches,
+                        "worst": min(leaf_damages) if leaf_damages else 0,
+                        "main_outcome": main_draw_key,
+                    }
+                    # 平均沿用主线（主抽取结果）的持枪叶子加权平均；
+                    # 无持枪叶子时 = 各抽取结果等权平均。
+                    main_branch = next(
+                        (
+                            tb
+                            for tb in tree_branches
+                            if tb.get("outcome") == main_draw_key
+                        ),
+                        None,
+                    )
+                    main_children = main_branch.get("children") if main_branch else None
+
+                    if main_children:
+                        quickdraw_branches = list(main_children)
+                        total_w = sum(
+                            int(
+                                engine.QUICKDRAW_WEIGHTS.get(
+                                    ch.get("card") or "", 1
                                 )
-                            else:
-                                leaf_damages.append(int(tb.get("damage") or 0))
-
-                        whatif_tree = {
-                            "root": root_steps,
-                            "branches": tree_branches,
-                            "worst": min(leaf_damages) if leaf_damages else 0,
-                            "main_outcome": main_draw_key,
-                        }
-                        # 平均沿用主线（主抽取结果）的持枪叶子加权平均
-                        main_branch = next(
-                            (
-                                tb
-                                for tb in tree_branches
-                                if tb.get("outcome") == main_draw_key
-                            ),
-                            None,
+                            )
+                            for ch in main_children
                         )
-                        main_children = main_branch.get("children") if main_branch else None
-
-                        if main_children:
-                            quickdraw_branches = list(main_children)
-                            total_w = sum(
-                                int(
+                        whatif_average = {
+                            "damage": sum(
+                                int(ch.get("damage") or 0)
+                                * int(
                                     engine.QUICKDRAW_WEIGHTS.get(
                                         ch.get("card") or "", 1
                                     )
                                 )
                                 for ch in main_children
                             )
-                            whatif_average = {
-                                "damage": sum(
-                                    int(ch.get("damage") or 0)
-                                    * int(
-                                        engine.QUICKDRAW_WEIGHTS.get(
-                                            ch.get("card") or "", 1
-                                        )
+                            / total_w,
+                            "dragons": sum(
+                                int(ch.get("dragons") or 0)
+                                * int(
+                                    engine.QUICKDRAW_WEIGHTS.get(
+                                        ch.get("card") or "", 1
                                     )
-                                    for ch in main_children
                                 )
-                                / total_w,
-                                "dragons": sum(
-                                    int(ch.get("dragons") or 0)
-                                    * int(
-                                        engine.QUICKDRAW_WEIGHTS.get(
-                                            ch.get("card") or "", 1
-                                        )
-                                    )
-                                    for ch in main_children
-                                )
-                                / total_w,
-                            }
+                                for ch in main_children
+                            )
+                            / total_w,
+                        }
+                    elif tree_branches:
+                        n_b = max(1, len(tree_branches))
+                        whatif_average = {
+                            "damage": sum(
+                                int(tb.get("damage") or 0) for tb in tree_branches
+                            )
+                            / n_b,
+                            "dragons": sum(
+                                int(tb.get("dragons") or 0) for tb in tree_branches
+                            )
+                            / n_b,
+                        }
+
+                    return whatif_tree, draw_branches, quickdraw_branches, whatif_average
+
+                if di > 0 and self._stop is False:
+                    built = _build_draw_tree(best_path, di)
+
+                    if built is not None:
+                        whatif_tree, draw_branches, quickdraw_branches, whatif_average = built
+
+                # 主路径不含分支卡但主搜索展开了分支（如最高伤线没用垂钓时光）：
+                # 以主搜索 draw_branches 中最高伤分支为指引主干，重新构建
+                # “一条主干 + 分支卡处叉点”的 WhatIF 树（所有分叉同前缀重搜）。
+                if whatif_tree is None and not self._stop:
+                    guide_draw = list(result.get("draw_branches") or [])
+
+                    if guide_draw:
+                        guide = max(
+                            guide_draw,
+                            key=lambda b: (
+                                int(b.get("damage") or 0),
+                                int(b.get("mana_left") or 0),
+                                len(b.get("path") or []),
+                            ),
+                        )
+                        gpath = [str(s) for s in (guide.get("path") or [])]
+                        gi = next(
+                            (
+                                i
+                                for i, s in enumerate(gpath)
+                                if any(m in str(s or "") for m in draw_markers)
+                            ),
+                            -1,
+                        )
+
+                        if gi > 0:
+                            built = _build_draw_tree(gpath, gi)
+
+                            if built is not None:
+                                whatif_tree, draw_branches, quickdraw_branches, whatif_average = built
 
                 # 主路径为空（0 伤/无路径）时：主搜索仍返回了分支卡的全部分支
                 # （draw_branches/quickdraw_branches，修复后含“行骗[殒]双抽”等
