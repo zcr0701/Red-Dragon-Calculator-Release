@@ -1986,6 +1986,67 @@ static int subchain_score(const State& s) {
     if (shark_on > 0 && board_d > 0) {
         score += 24;
     }
+    // ⑤ 分叉卡独立评估（行骗/挖掘宝藏/潜伏帷幕/持枪要挟/垂钓时光各有用途时段）：
+    //    a) 抽随从卡只在组合未齐时有价值（路径前期凑齐随从）；
+    //    b) 持枪要挟只在随从栏接近满时有价值（后期找误炸清格子）；
+    //    c) 垂钓时光只在已知牌库底有高价值牌时有价值（殒命/暗影步/持枪/关键随从/抽随从卡）。
+    //    各维度独立触发，避免“无脑给分叉卡加分”误导搜索、拖慢复杂局面。
+    {
+        bool has_draw_card = false;
+        for (const auto& c : s.hand) {
+            const string& n = c.name();
+            if (n == "行骗" || n == "挖掘宝藏" || n == "潜伏帷幕") {
+                int cc = effective_cost(s, c);
+                if (cc >= 0 && cc <= s.mana) { has_draw_card = true; break; }
+            }
+        }
+        if (has_draw_card && !combo_minion_set_complete(s)) score += 12;
+    }
+    // 持枪要挟评估（严格限定后期）：已下过 ≥2 龙（第二轮后）、随从栏满/差一格、
+    // 且手里有可打出的随从被卡住 → 才给“找误炸清格”的加分；其他状态一律不加，
+    // 避免给揣着持枪的早期状态乱加分（150953 等价线曾因此被挤出束宽）。
+    {
+        bool has_qd = false;
+        for (const auto& c : s.hand) {
+            if (c.name() == "持枪要挟") {
+                int cc = effective_cost(s, c);
+                if (cc >= 0 && cc <= s.mana) { has_qd = true; break; }
+            }
+        }
+        if (has_qd && s.alex_play_count >= 2) {
+            int free_slots = MAX_BOARD - (int)s.board.size();
+            if (free_slots <= 1) {
+                bool stuck_minion = false;
+                for (const auto& c : s.hand) {
+                    if (c.card_type == "minion" || c.card_type == "unknown") {
+                        int cc = effective_cost(s, c);
+                        if (cc >= 0 && cc <= s.mana) { stuck_minion = true; break; }
+                    }
+                }
+                if (stuck_minion) score += 8;
+            }
+        }
+    }
+    {
+        bool has_fishin = false;
+        for (const auto& c : s.hand) {
+            if (c.name() == "垂钓时光") {
+                int cc = effective_cost(s, c);
+                if (cc >= 0 && cc <= s.mana) { has_fishin = true; break; }
+            }
+        }
+        if (has_fishin) {
+            for (const auto& n : s.dredge_bottom) {
+                if (n == "殒命暗影" || n == "暗影步" || n == "持枪要挟" ||
+                    n == "行骗" || n == "挖掘宝藏" || n == "潜伏帷幕" ||
+                    n == "鲨鱼之灵" || n == "狐人老千" || n == "斯卡布斯·刀油" ||
+                    n == "暗影施法者" || n == "乐队经理精英牛头人酋长" ||
+                    n == "晦鳞巢母" || n == "赤烟·腾武") {
+                    score += 8;
+                }
+            }
+        }
+    }
     if (dragons > 0 && mother > 0) score += 12;
     if (dragons > 0 && shadowcaster > 0) score += 12;
     if (dragons > 0 && (dance > 0 || potion > 0)) score += 12;

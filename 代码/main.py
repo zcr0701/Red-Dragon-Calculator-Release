@@ -26,6 +26,7 @@ import threading
 import time
 import urllib.request
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -1281,6 +1282,8 @@ class CalculationWorker(QThread):
             whatif_average: Optional[Dict[str, float]] = None
             whatif_tree: Optional[Dict[str, object]] = None
 
+            whatif_t0 = time.perf_counter()
+
             if bool(self.options.get("draw_whatif", True)):
                 best_path = (result.get("results") or [{}])
                 best_path = list((best_path[0].get("path") or []) if best_path else [])
@@ -1412,14 +1415,44 @@ class CalculationWorker(QThread):
                     # （脱水=96/补水=80…），不再逐张发现牌独立搜索；
                     # 其余抽取 5s（结果本来就较低，无需深挖）。
                     is_auto_beam = int(self.options.get("beam_width") or 0) <= 0
+                    trunc_branch = bool(self.options.get("truncate_branch", True))
+                    # 框2=W-B机制 精确截断：所有分支搜索共享敌方血量+护甲阈值
+                    lethal = (
+                        _lethal_threshold(self.snapshot, best_exchange)
+                        if trunc_branch
+                        else -1
+                    )
+                    pool_n = max(1, len(branch_pool))
 
-                    for mn in branch_pool:
+                    def _search_branch(mn: str) -> Optional[Dict[str, object]]:
+                        """单个抽取结果的分支搜索：可选截断 + 10s 总预算自适应。"""
                         if self._stop:
-                            break
+                            return None
 
                         is_main = mn == main_draw_key
-                        # 主线抽取 11s（96 深线）；其余抽取 6s（狐分支行骗[殒]抽牛=48）
-                        draw_budget = 11.0 if is_main else 6.0
+
+                        if trunc_branch:
+                            # 10s 总预算：主搜索后剩余预算按分支数分摊
+                            # （主线约占 45%，其余共享 55%），保证复杂局面整体不超时
+                            elapsed = time.perf_counter() - whatif_t0
+                            remaining = max(2.0, 10.0 - elapsed)
+
+                            if pool_n <= 1:
+                                cap = remaining
+                            else:
+                                cap = (
+                                    remaining * 0.45
+                                    if is_main
+                                    else remaining * 0.55 / (pool_n - 1)
+                                )
+
+                            draw_budget = min(
+                                11.0 if is_main else 6.0, max(1.5, cap)
+                            )
+                        else:
+                            # 未勾选框2：保留原深挖预算（质量优先，不保证 10s）
+                            draw_budget = 11.0 if is_main else 6.0
+
                         draw_kwargs = dict(common_kwargs)
                         draw_kwargs["time_budget_sec"] = draw_budget
                         # 96 深线需约 150 万展开：1M 上限会提前截断，叶子数据变脏
@@ -1435,6 +1468,8 @@ class CalculationWorker(QThread):
                             branch_prefix=prefix_draw,
                             forced_draw_choice=mn,
                             exchanges=best_exchange,
+                            lethal_threshold=lethal,
+                            should_stop=lambda: self._stop,
                             **draw_kwargs,
                         )
                         best_i = next(
@@ -1510,7 +1545,16 @@ class CalculationWorker(QThread):
                         else:
                             node["mid"] = [str(s) for s in path_i[ddi:]]
 
-                        tree_branches.append(node)
+                        return node
+
+                    # 多个抽取分支并行搜索（独立 exe 进程），配合截断把复杂 WhatIF
+                    # 的整体耗时压进 10s；结果按分支池顺序汇总。
+                    with ThreadPoolExecutor(
+                        max_workers=min(3, pool_n), thread_name_prefix="whatif"
+                    ) as pool:
+                        for node in pool.map(_search_branch, branch_pool):
+                            if node is not None and not self._stop:
+                                tree_branches.append(node)
 
                     if tree_branches:
                         # 保底伤害 = 所有叶子（完整随机组合）的最小伤害
