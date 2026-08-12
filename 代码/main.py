@@ -1019,6 +1019,51 @@ class _TreeHtmlDelegate(QStyledItemDelegate):
         return QSize(width + 8, int(doc.size().height()) + 10)
 
 
+class WhatIFRainbowLabel(QLabel):
+    """WhatIF 标题卡：'WhatIF' 逐字符彩虹循环变色，后接数据（平均伤害金色、保底伤害红色）。
+
+    QLabel + 富文本 + QTimer：每 300ms 让色相整体滚动（字符间距 50°，
+    每个字符初始颜色不同，整体像彩虹一样向右流动）；数据部分静态不变，
+    方便快速定位数值。
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setTextFormat(Qt.RichText)
+        self.setWordWrap(True)
+        self._avg: Optional[float] = None
+        self._worst = 0
+        self._hue = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._render)
+        self._timer.start(300)
+        self._render()
+
+    def set_data(self, avg: Optional[float], worst: int) -> None:
+        """外部更新数据：avg=最高平均伤害（可 None），worst=保底伤害。"""
+        self._avg = avg
+        self._worst = int(worst or 0)
+        self._render()
+
+    def _render(self) -> None:
+        self._hue = (self._hue + 5) % 360
+        prefix = "".join(
+            '<span style="color:hsl(%d,100%%,60%%);font-weight:bold;">%s</span>'
+            % ((self._hue + i * 50) % 360, ch)
+            for i, ch in enumerate("WhatIF")
+        )
+        avg_txt = _fmt_avg(self._avg) if self._avg is not None else "?"
+        html = (
+            '<span style="font-size:14px;">'
+            + prefix
+            + ":"
+            f'<span style="color:#FFD700;font-weight:bold;">最高平均伤害:{avg_txt}</span>'
+            f'<span style="color:#FF6B6B;font-weight:bold;">，保底伤害:{self._worst}</span>'
+            "</span>"
+        )
+        self.setText(html)
+
+
 class WhatIFTreeWidget(QTreeWidget):
     """WhatIF 分支树：主路径按轮次为根节点，行骗/持枪要挟同级分支为子节点。
 
@@ -1147,19 +1192,8 @@ class WhatIFTreeWidget(QTreeWidget):
         def join_steps(steps: List[str]) -> str:
             return "-".join(abbr_fn(str(s), compact=False) for s in steps)
 
-        # 顶部一行：WhatIF 标题 + 最高平均伤害 + 保底伤害（并列）
-        worst = int(tree.get("worst") or 0)
-        avg = data.get("whatif_average") or {}
-
-        if avg:
-            header = (
-                f"WhatIF:最高平均伤害:{_fmt_avg(avg.get('damage'))}，"
-                f"保底伤害{worst}"
-            )
-        else:
-            header = f"WhatIF:保底伤害{worst}"
-
-        self.addTopLevelItem(self._item(header))
+        # 顶部“WhatIF:最高平均伤害/保底伤害”由独立的 WhatIFRainbowLabel 展示
+        # （彩虹循环变色），树内不再重复放该行。
 
         # 根：指引路径（到第一个分支卡，如 币-刀-行骗）
         root_steps = [str(s) for s in (tree.get("root") or [])]
@@ -2545,13 +2579,18 @@ class MainWindow(QWidget):
 
         result_box = QGroupBox("计算结果")
         result_layout = QVBoxLayout(result_box)
-        self.result_text = QPlainTextEdit()
-        self.result_text.setReadOnly(True)
-        self.result_text.setMaximumBlockCount(5000)
-        result_layout.addWidget(self.result_text)
+        # WhatIF 卡片置顶：标题（彩虹）+ 分支树，不遮挡下方正常计算日志
+        self.whatif_header = WhatIFRainbowLabel()
+        self.whatif_header.setVisible(False)
+        result_layout.addWidget(self.whatif_header)
         self.whatif_tree = WhatIFTreeWidget()
         self.whatif_tree.setVisible(False)
         result_layout.addWidget(self.whatif_tree)
+        # 正常计算日志：可滚动、自动扩展
+        self.result_text = QPlainTextEdit()
+        self.result_text.setReadOnly(True)
+        self.result_text.setMaximumBlockCount(5000)
+        result_layout.addWidget(self.result_text, 1)
         right_layout.addWidget(result_box, 1)
 
         top.addWidget(right)
@@ -3425,6 +3464,10 @@ class MainWindow(QWidget):
         )
         self.whatif_tree.set_whatif(data, colors=self.mini_color_enabled())
         self.whatif_tree.setVisible(has_whatif)
+        wt_avg = (data.get("whatif_average") or {}).get("damage")
+        wt_worst = int(((data.get("whatif_tree") or {}).get("worst")) or 0)
+        self.whatif_header.set_data(wt_avg, wt_worst)
+        self.whatif_header.setVisible(has_whatif)
 
         wb = data.get("wb")
         if wb:
@@ -3854,18 +3897,18 @@ class MiniWindow(QWidget):
         self.mini_calc_button.clicked.connect(self.start_calc)
         root.addWidget(self.mini_calc_button)
 
+        # WhatIF 卡片置顶：标题（彩虹）+ 分支树，固定在上方，不遮挡正常计算日志
+        self.mini_whatif_header = WhatIFRainbowLabel()
+        self.mini_whatif_header.setVisible(False)
+        root.addWidget(self.mini_whatif_header)
+        self.mini_whatif_tree = WhatIFTreeWidget()
+        self.mini_whatif_tree.setVisible(False)
+        root.addWidget(self.mini_whatif_tree)
+        # 正常计算日志：可滚动、自动扩展，始终不被 WhatIF 覆盖
         self.mini_result = QTextBrowser()
         self.mini_result.setReadOnly(True)
         self.mini_result.document().setMaximumBlockCount(3000)
-        # 正常线按内容高度完整显示（贴到自己的底边），WhatIF 树紧贴其下方，
-        # 而不是和 WhatIF 各占一半把正常线截断。
-        self.mini_result.setSizePolicy(
-            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        )
-        root.addWidget(self.mini_result, 0)
-        self.mini_whatif_tree = WhatIFTreeWidget()
-        self.mini_whatif_tree.setVisible(False)
-        root.addWidget(self.mini_whatif_tree, 1)
+        root.addWidget(self.mini_result, 1)
         self.set_formula_font(self.main.mini_font_size())
 
         grip = QSizeGrip(self)
@@ -4119,6 +4162,10 @@ class MiniWindow(QWidget):
         )
         self.mini_whatif_tree.set_whatif(data, colors=colors)
         self.mini_whatif_tree.setVisible(has_whatif)
+        wt_avg = (data.get("whatif_average") or {}).get("damage")
+        wt_worst = int(((data.get("whatif_tree") or {}).get("worst")) or 0)
+        self.mini_whatif_header.set_data(wt_avg, wt_worst)
+        self.mini_whatif_header.setVisible(has_whatif)
 
     def _mini_original_text(
         self,
