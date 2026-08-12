@@ -1042,7 +1042,16 @@ class _TreeHtmlDelegate(QStyledItemDelegate):
                 depth += 1
                 p = p.parent()
 
-            view_width -= widget.indentation() * depth + 14
+            view_width -= widget.indentation() * depth + 20
+
+        if option.rect.width() > 50:
+            # 布局/绘制时 option.rect 已给真实行宽：按绘制同款宽度测量，杜绝低估
+            width = max(80, int(option.rect.width() - 6))
+            doc = QTextDocument()
+            doc.setDefaultFont(option.font)
+            doc.setHtml(html_txt + self._fork_glyph(option.widget, index))
+            doc.setTextWidth(float(width))
+            return QSize(width + 8, int(doc.size().height()) + 10)
 
         width = max(80, view_width)
         doc = QTextDocument()
@@ -1073,6 +1082,8 @@ class WhatIFTreeWidget(QTreeWidget):
         self.setStyleSheet("QTreeWidget::item { padding: 1px 0; }")
         # 展开标记由委托画在“分叉点后面”，隐藏行首原生箭头
         self.setRootIsDecorated(False)
+        # 子项缩进收紧，减小“路径与展开节点”之间的空隙
+        self.setIndentation(10)
         # 换行 + 非统一行高：长路径换行撑高行距（必须 False 才能按内容算高度）
         self.setWordWrap(True)
         self.setUniformRowHeights(False)
@@ -1253,8 +1264,20 @@ class WhatIFTreeWidget(QTreeWidget):
 
         # 分叉结果默认折叠成短行（如 垂钓时光(晦)▶），点了哪个再展开哪个的路径；
         # 单分叉（如 行骗(晦)）已由 worker 并入路径，不再生成可展开子节点。
-        def add_outcome(parent, steps, children, dmg, mana):
+        def add_outcome(parent, steps, children, dmg, mana, fallback_card=""):
             if not steps:
+                # 子分叉路径为空：用结果卡名兜底生成叶子，保证展开选项有内容
+                if fallback_card:
+                    item = self._item(
+                        abbr_fn(fallback_card, compact=False)
+                        + f"({dmg}伤余{mana}费)"
+                    )
+
+                    if parent is not None:
+                        parent.addChild(item)
+                    else:
+                        self.addTopLevelItem(item)
+
                 return
 
             first = abbr_fn(str(steps[0]), compact=False)
@@ -1278,16 +1301,6 @@ class WhatIFTreeWidget(QTreeWidget):
                         text += "-" + join_steps(tail)
 
                 item = self._item(text)
-
-                if parent is not None:
-                    parent.addChild(item)
-                else:
-                    self.addTopLevelItem(item)
-
-                return
-
-            if not rest and not children:
-                item = self._item(first + f"({dmg}伤余{mana}费)")
 
                 if parent is not None:
                     parent.addChild(item)
@@ -1321,21 +1334,16 @@ class WhatIFTreeWidget(QTreeWidget):
                     ch.get("children") or [],
                     int(ch.get("damage") or 0),
                     int(ch.get("mana_left") or 0),
+                    fallback_card=card,
                 )
 
                 if node.childCount() > before:
                     added = True
 
             if not added:
-                # 无实际可展开内容：降级为叶子，不显示无意义的 ▶
-                item = self._item(first + f"({dmg}伤余{mana}费)")
-
-                if parent is not None:
-                    parent.addChild(item)
-                else:
-                    self.addTopLevelItem(item)
-
-                return
+                # >0 伤害结果按规则必须有展开选项：无延续时用整条路径兜底
+                node.addChild(self._item(join_steps(steps)))
+                added = True
 
             if parent is not None:
                 parent.addChild(node)
