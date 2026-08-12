@@ -2230,6 +2230,20 @@ class CalculationWorker(QThread):
                     if self._stop:
                         return None
 
+                    # 分支树搜索策略（外层循环与子树剪枝共用）：
+                    # kill 策略可以增量剪枝——某棵树已见到的“不足斩杀”叶子越多，
+                    # 其最终斩杀比例上界越低；一旦上界已低于当前最优树，直接放弃。
+                    # max/expect/floor 必须探索完全部叶子才知道结果，无法这样剪枝。
+                    strategy = str(self.options.get("branch_strategy") or "kill")
+                    enemy = self.snapshot.get("opponent_hero") or {}
+                    kill_h = int(enemy.get("health") or 0) + int(
+                        enemy.get("armor") or 0
+                    )
+                    shared_best: Dict[str, object] = {
+                        "lock": threading.Lock(),
+                        "best": None,
+                    }
+
                     prefix_draw = list(best_path[:di])
                     # 分支点缺失池 = 界面勾选的卡组随从 - 手牌/战场已有随从
                     # （第一个抽牌分支点之前没有抽牌，快照手牌/战场即分支点手牌/战场）
@@ -2399,7 +2413,15 @@ class CalculationWorker(QThread):
                                 # quickdraw_branches，其前缀状态可能与 mid 不同，
                                 # 导致少写 不许乱动(刀) 这类腾格子步骤）。
                                 qd_prefix = [str(s) for s in path_i[:nd]]
-                                node["children"] = _search_qd_children(qd_prefix)
+                                qd_children, qd_pruned = _search_qd_children(
+                                    qd_prefix
+                                )
+
+                                if qd_pruned:
+                                    # 该树已不可能超过当前最优树，整棵放弃
+                                    return None
+
+                                node["children"] = qd_children
                             else:
                                 # 抽牌结果后又抽牌（如 行骗 → 行骗[殒]）
                                 node["next"] = re.sub(
@@ -2460,11 +2482,13 @@ class CalculationWorker(QThread):
 
                     def _search_qd_children(
                         qd_prefix: List[str],
-                    ) -> List[Dict[str, object]]:
+                    ) -> Tuple[List[Dict[str, object]], bool]:
                         """持枪要挟子分支：从分叉点对每个发现牌独立回溯搜索。
 
                         前缀把“持枪要挟（X）”钉在分支点（exact 重放），保证子路径
                         与 mid 场面一致；并行执行，单个预算由剩余时间自适应。
+                        返回 (children, pruned)：kill 策略下若本树已不可能超过
+                        当前最优树则提前放弃（pruned=True），不再等剩余子搜索。
                         """
                         qd_pool = [str(c) for c in engine.QUICKDRAW_CHOICES]
                         qd_pool += [
@@ -2473,7 +2497,7 @@ class CalculationWorker(QThread):
                         ]
 
                         if self._stop:
-                            return []
+                            return [], False
 
                         elapsed = time.perf_counter() - whatif_t0
                         remaining = max(1.5, 10.0 - elapsed)
@@ -2494,9 +2518,10 @@ class CalculationWorker(QThread):
                                 int(qd_kwargs.get("threads", 4) / 2),
                             ),
                         )
+                        tree_abort = {"flag": False}
 
                         def _one(card: str) -> Dict[str, object]:
-                            if self._stop:
+                            if self._stop or tree_abort["flag"]:
                                 return {
                                     "card": card,
                                     "damage": 0,
@@ -2548,28 +2573,69 @@ class CalculationWorker(QThread):
                                 "path": pth_x,
                             }
 
-                        children: List[Dict[str, object]] = []
+                        children_by_card: Dict[str, Dict[str, object]] = {}
+                        pruned = False
 
                         with ThreadPoolExecutor(
                             max_workers=min(4, len(qd_pool)),
                             thread_name_prefix="whatif-qd",
                         ) as pool:
-                            futs = [pool.submit(_one, c) for c in qd_pool]
+                            futs = {
+                                pool.submit(_one, c): c for c in qd_pool
+                            }
 
-                            for fut in futs:
-                                if self._stop:
+                            # 按完成顺序收集：剪枝检查尽早触发（等 fut[0] 这种
+                            # 慢分支会拖到所有子搜索都快结束时才检查，白剪）
+                            for fut in as_completed(futs):
+                                if self._stop or tree_abort["flag"]:
+                                    tree_abort["flag"] = True
                                     break
 
-                                children.append(fut.result())
+                                card = futs[fut]
+                                children_by_card[card] = fut.result()
 
-                        return children
+                                if (
+                                    strategy == "kill"
+                                    and len(qd_pool) > 1
+                                    and not tree_abort["flag"]
+                                ):
+                                    with shared_best["lock"]:
+                                        best_now = shared_best["best"]
+
+                                    if best_now is not None:
+                                        known = len(children_by_card)
+                                        suff = sum(
+                                            1
+                                            for c in children_by_card.values()
+                                            if int(c.get("damage") or 0)
+                                            >= kill_h
+                                        )
+                                        # 剩余叶子全斩杀时的最高可能比例
+                                        upper = (
+                                            suff + (len(qd_pool) - known)
+                                        ) / len(qd_pool)
+
+                                        # 严格小于才剪：平局（kill 比例相等）保留，
+                                        # 交给外层按分支顺序稳定决出，避免运行抖动
+                                        if upper < best_now:
+                                            tree_abort["flag"] = True
+                                            pruned = True
+                                            break
+
+                        # 按标准牌池顺序返回，保证前端显示顺序稳定
+                        children = [
+                            children_by_card[c]
+                            for c in qd_pool
+                            if c in children_by_card
+                        ]
+
+                        return children, pruned
 
                     # 多个抽取分支并行搜索（独立 exe 进程），配合截断把复杂 WhatIF
                     # 的整体耗时压进 10s；结果按分支池顺序汇总。
                     # 筛选树优化：按分支树搜索策略实时打分，一旦某棵树达到策略
                     # 理论最优（斩杀比例 100% / 最高伤害达上限），直接放弃其余
                     # 尚未开始的树（cancel 排队中的搜索），缩短整体耗时。
-                    strategy = str(self.options.get("branch_strategy") or "kill")
                     with ThreadPoolExecutor(
                         max_workers=min(3, pool_n), thread_name_prefix="whatif"
                     ) as pool:
@@ -2577,7 +2643,6 @@ class CalculationWorker(QThread):
                             pool.submit(_search_branch, mn): mn for mn in branch_pool
                         }
                         node_by_mn: Dict[str, Optional[Dict[str, object]]] = {}
-                        best_score: Optional[float] = None
 
                         for fut in as_completed(futs):
                             mn = futs[fut]
@@ -2592,8 +2657,12 @@ class CalculationWorker(QThread):
                             if score is None:
                                 continue
 
-                            if best_score is None or score > best_score:
-                                best_score = score
+                            with shared_best["lock"]:
+                                if (
+                                    shared_best["best"] is None
+                                    or score > shared_best["best"]
+                                ):
+                                    shared_best["best"] = score
 
                             if self._branch_score_optimal(score, strategy):
                                 pool.shutdown(wait=False, cancel_futures=True)
