@@ -95,6 +95,8 @@ from powerlog_reader import LogWatcher
 
 BASE_DIR = Path(__file__).resolve().parent
 
+DRAW_FORK_MARKERS = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光")
+
 if getattr(sys, "frozen", False):
     # PyInstaller 打包：程序文件（引擎 exe / 卡名映射 / 日志目录）都放在主程序同目录
     BASE_DIR = Path(sys.executable).resolve().parent
@@ -1382,6 +1384,298 @@ class WhatIFTreeWidget(QTreeWidget):
                 return [str(x) for x in path[i:]]
 
         return [str(x) for x in path]
+
+
+class _ClickLabel(QLabel):
+    """可点击的 QLabel（按钮样式、文本可换行）：用作分叉结果选择。"""
+
+    clicked = pyqtSignal()
+
+    def mousePressEvent(self, event):  # noqa: N802 - Qt 命名
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+
+        super().mousePressEvent(event)
+
+
+class WhatIFGuidePanel(QWidget):
+    """引导式 WhatIF 面板（彻底重写前端）：
+
+    - 顶部：WhatIF 最高伤害 / 平均伤害 / 保底伤害 + “值不值得”评估
+      （与正常线对比：保底 ≥ 正常线=稳赚；平均 ≥ 正常线=值得一试；否则有风险）；
+    - 中部：指引路径——跟着一路出牌，主干末尾是分支卡；
+    - 分叉处：每个可能结果一个可点击按钮（含该结果伤害），点选后继续显示后续；
+    - 可随时“回到主干”重新走别的分叉。
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._data: Optional[Dict[str, object]] = None
+        self._root: List[str] = []
+        self._path: List[str] = []
+        self._options: List[Dict[str, object]] = []
+        self._final: str = ""
+        self._max_damage = 0
+        self._avg: Optional[float] = None
+        self._worst = 0
+        self._normal: Optional[int] = None
+        self._colors = True
+        self._hue = 0
+        self._build_ui()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._render_summary)
+        self._timer.start(150)
+        self._render_summary()
+        self.setVisible(False)
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(4, 2, 4, 2)
+        root.setSpacing(3)
+
+        self.summary_label = QLabel()
+        self.summary_label.setTextFormat(Qt.RichText)
+        self.summary_label.setWordWrap(True)
+        root.addWidget(self.summary_label)
+
+        self.worth_label = QLabel()
+        self.worth_label.setTextFormat(Qt.RichText)
+        self.worth_label.setWordWrap(True)
+        root.addWidget(self.worth_label)
+
+        self.path_label = QLabel()
+        self.path_label.setTextFormat(Qt.RichText)
+        self.path_label.setWordWrap(True)
+        root.addWidget(self.path_label)
+
+        self.fork_label = QLabel()
+        self.fork_label.setTextFormat(Qt.RichText)
+        self.fork_label.setWordWrap(True)
+        root.addWidget(self.fork_label)
+
+        self.options_box = QWidget()
+        self.options_layout = QVBoxLayout(self.options_box)
+        self.options_layout.setContentsMargins(0, 0, 0, 0)
+        self.options_layout.setSpacing(2)
+        root.addWidget(self.options_box)
+
+        self.result_label = QLabel()
+        self.result_label.setTextFormat(Qt.RichText)
+        self.result_label.setWordWrap(True)
+        root.addWidget(self.result_label)
+
+        self.reset_btn = QPushButton("回到主干")
+        self.reset_btn.clicked.connect(self._reset)
+        root.addWidget(self.reset_btn)
+
+    # ---- 数据 ----
+
+    def set_whatif(
+        self,
+        data: Dict[str, object],
+        colors: bool = True,
+        normal_damage: Optional[int] = None,
+    ) -> None:
+        tree = data.get("whatif_tree") or {}
+        branches = tree.get("branches") or []
+
+        if not branches:
+            self.setVisible(False)
+            return
+
+        self._data = data
+        self._colors = bool(colors)
+        self._max_damage = int(data.get("max_damage") or 0)
+        avg = data.get("whatif_average") or {}
+        self._avg = avg.get("damage")
+        self._worst = int(tree.get("worst") or 0)
+        self._normal = int(normal_damage) if normal_damage else None
+        self._root = [str(s) for s in (tree.get("root") or [])]
+        self._render_summary()
+        self._reset()
+        self.setVisible(True)
+
+    def _reset(self, *_args) -> None:
+        tree = (self._data or {}).get("whatif_tree") or {}
+        branches = tree.get("branches") or []
+        # 主干末尾是分支卡：当前路径走到分支卡之前，下一步选分叉结果
+        self._path = list(self._root[:-1]) if self._root else []
+        self._options = [self._mk_option(b) for b in branches]
+        self._final = ""
+        self._render()
+
+    @staticmethod
+    def _mk_option(tb: Dict[str, object]) -> Dict[str, object]:
+        mid = [str(s) for s in (tb.get("mid") or [])]
+
+        return {
+            "label": str(mid[0]) if mid else str(tb.get("outcome") or "?"),
+            "tail": mid[1:],
+            "children": tb.get("children") or [],
+            "damage": int(tb.get("damage") or 0),
+            "mana": int(tb.get("mana_left") or 0),
+        }
+
+    def _abbr(self, step: str) -> str:
+        if self._colors:
+            return abbreviate_step_html(str(step), compact=False)
+
+        return abbreviate_step(str(step), compact=False)
+
+    def _choose(self, opt: Dict[str, object]) -> None:
+        self._path.append(str(opt["label"]))
+        tail = list(opt["tail"])
+        children = opt["children"]
+
+        if children:
+            # 定位本分支最后一个抽牌/持枪标记 = 更深分叉卡；路径走到其之前
+            fork_idx = -1
+
+            for k, s in enumerate(tail):
+                if "持枪要挟" in str(s) or any(
+                    m in str(s) for m in DRAW_FORK_MARKERS
+                ):
+                    fork_idx = k
+
+            cont = tail[:fork_idx] if fork_idx >= 0 else tail
+            self._path.extend(cont)
+            self._options = []
+
+            for ch in children:
+                card = str(ch.get("card") or "")
+                ch_steps = WhatIFTreeWidget._tail_steps(
+                    [str(s) for s in (ch.get("mid") or ch.get("path") or [])],
+                    card,
+                )
+                self._options.append(
+                    {
+                        "label": str(ch_steps[0]) if ch_steps else card,
+                        "tail": ch_steps[1:],
+                        "children": ch.get("children") or [],
+                        "damage": int(ch.get("damage") or 0),
+                        "mana": int(ch.get("mana_left") or 0),
+                    }
+                )
+
+            self._final = ""
+        else:
+            self._path.extend(tail)
+            self._options = []
+            self._final = f"({opt['damage']}伤余{opt['mana']}费)"
+
+        self._render()
+
+    # ---- 渲染 ----
+
+    def _render_summary(self) -> None:
+        self._hue = (self._hue + 8) % 360
+        prefix = "".join(
+            '<span style="color:hsl(%d,100%%,60%%);font-weight:bold;">%s</span>'
+            % ((self._hue + i * 50) % 360, ch)
+            for i, ch in enumerate("WhatIF")
+        )
+        avg_txt = _fmt_avg(self._avg) if self._avg is not None else "?"
+        html = (
+            prefix
+            + f': 最高伤害 <span style="color:#0E7490;font-weight:bold;">{self._max_damage}</span>'
+            f'｜平均 <span style="color:#B45309;font-weight:bold;">{avg_txt}</span>'
+            f'｜保底 <span style="color:#B91C1C;font-weight:bold;">{self._worst}</span>'
+        )
+        self.summary_label.setText(html)
+
+        if self._normal is None:
+            self.worth_label.setText("")
+        elif self._worst >= self._normal:
+            self.worth_label.setText(
+                f'<span style="color:#15803D;font-weight:bold;">值得：最差保底 '
+                f"{self._worst} ≥ 正常线 {self._normal}，稳赚</span>"
+            )
+        elif self._avg is not None and self._avg >= self._normal:
+            self.worth_label.setText(
+                f'<span style="color:#B45309;font-weight:bold;">值得一试：平均 '
+                f"{_fmt_avg(self._avg)} ≥ 正常线 {self._normal}</span>"
+            )
+        else:
+            avg_show = (
+                _fmt_avg(self._avg) if self._avg is not None else "?"
+            )
+            self.worth_label.setText(
+                f'<span style="color:#B91C1C;font-weight:bold;">有风险：平均 '
+                f"{avg_show} < 正常线 {self._normal}，可能不如正常线</span>"
+            )
+
+    def _render(self) -> None:
+        path_text = "-".join(self._abbr(s) for s in self._path) if self._path else "（起点）"
+        self.path_label.setText("指引路径：<br>" + path_text)
+
+        while self.options_layout.count():
+            item = self.options_layout.takeAt(0)
+            w = item.widget()
+
+            if w is not None:
+                w.deleteLater()
+
+        if self._options:
+            self.fork_label.setText("下一步（点选你实际得到的结果）：")
+
+            for opt in self._options:
+                label_txt = (
+                    self._abbr(opt["label"])
+                    + f" ({opt['damage']}伤余{opt['mana']}费)"
+                )
+                btn = _ClickLabel(label_txt)
+                btn.setTextFormat(Qt.RichText if self._colors else Qt.PlainText)
+                btn.setWordWrap(True)
+                btn.setCursor(QCursor(Qt.PointingHandCursor))
+                btn.setStyleSheet(
+                    "border:1px solid #0E7490;background:#E0F2FE;"
+                    "padding:2px 4px;border-radius:3px;color:#000000;"
+                )
+                btn.clicked.connect(lambda o=opt: self._choose(o))
+                self.options_layout.addWidget(btn)
+
+            self.result_label.setText("")
+        else:
+            self.fork_label.setText("")
+            self.result_label.setText(
+                "结果：" + self._final if self._final else ""
+            )
+
+        self._content_changed()
+
+    def _content_changed(self, *_args) -> None:
+        self.updateGeometry()
+        parent = self.parentWidget()
+
+        if parent is not None:
+            parent.updateGeometry()
+
+            if isinstance(parent, MiniWindow):
+                screen = QApplication.primaryScreen()
+                max_h = (
+                    screen.availableGeometry().height() - 40
+                    if screen is not None
+                    else 1400
+                )
+                hint_h = parent.sizeHint().height()
+                parent.resize(parent.width(), min(max(180, hint_h), max_h))
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt 命名
+        sh = super().sizeHint()
+        parent = self.parentWidget()
+        cap = 1200
+
+        if isinstance(parent, MiniWindow):
+            screen = QApplication.primaryScreen()
+
+            if screen is not None:
+                cap = max(200, screen.availableGeometry().height() - 40)
+        elif parent is not None and parent.height() > 100:
+            cap = max(140, int(parent.height() * 0.45))
+
+        return QSize(sh.width(), min(max(60, sh.height()), cap))
 
 
 def _whatif_tree_text(data: Dict[str, object]) -> str:
@@ -2738,12 +3032,11 @@ class MainWindow(QWidget):
         self.result_text.setReadOnly(True)
         self.result_text.setMaximumBlockCount(5000)
         result_layout.addWidget(self.result_text, 1)
-        # WhatIF 分支树（首行为彩虹标题，与路径展开放一起），高度封顶（≤父容器 45%）
-        self.whatif_tree = WhatIFTreeWidget()
-        self.whatif_tree.setVisible(False)
-        # 树内全部文字（标题/路径/分叉）与正常计算日志同字号
-        self.whatif_tree.setFont(self.result_text.font())
-        result_layout.addWidget(self.whatif_tree)
+        # WhatIF 引导面板（指引出牌 + 分叉点选 + 最高/平均/保底/值得），高度封顶（≤父容器 45%）
+        self.whatif_guide = WhatIFGuidePanel()
+        self.whatif_guide.setVisible(False)
+        self.whatif_guide.setFont(self.result_text.font())
+        result_layout.addWidget(self.whatif_guide)
         right_layout.addWidget(result_box, 1)
 
         top.addWidget(right)
@@ -3615,8 +3908,19 @@ class MainWindow(QWidget):
             or data.get("quickdraw_branches")
             or data.get("draw_branches")
         )
-        self.whatif_tree.set_whatif(data, colors=self.mini_color_enabled())
-        self.whatif_tree.setVisible(has_whatif)
+        orig = data.get("original") or {}
+        normal_dmg = int(orig.get("damage") or 0)
+
+        if normal_dmg <= 0:
+            res0 = data.get("results") or []
+            normal_dmg = int((res0[0].get("damage") if res0 else 0) or 0)
+
+        self.whatif_guide.set_whatif(
+            data,
+            colors=self.mini_color_enabled(),
+            normal_damage=normal_dmg,
+        )
+        self.whatif_guide.setVisible(has_whatif)
 
         wb = data.get("wb")
         if wb:
@@ -4051,10 +4355,10 @@ class MiniWindow(QWidget):
         self.mini_result.document().setMaximumBlockCount(3000)
         # 正常计算（多轮）优先：占主空间可滚动，不被下方 WhatIF 挤没
         root.addWidget(self.mini_result, 1)
-        # WhatIF 分支树（首行为彩虹标题，与路径展开放一起），高度封顶（≤父容器 45%）
-        self.mini_whatif_tree = WhatIFTreeWidget()
-        self.mini_whatif_tree.setVisible(False)
-        root.addWidget(self.mini_whatif_tree)
+        # WhatIF 引导面板（指引出牌 + 分叉点选 + 最高/平均/保底/值得）
+        self.mini_whatif_guide = WhatIFGuidePanel()
+        self.mini_whatif_guide.setVisible(False)
+        root.addWidget(self.mini_whatif_guide)
         self.set_formula_font(self.main.mini_font_size())
 
         grip = QSizeGrip(self)
@@ -4066,8 +4370,8 @@ class MiniWindow(QWidget):
         font.setPixelSize(int(size))
         self.mini_result.setFont(font)
         self.mini_result.document().setDefaultFont(font)
-        self.mini_whatif_tree.setFont(font)
-        self.mini_whatif_tree._content_changed()
+        self.mini_whatif_guide.setFont(font)
+        self.mini_whatif_guide._content_changed()
 
     # ---- 拖动 / 吸附 / 调整大小 ----
 
@@ -4300,14 +4604,23 @@ class MiniWindow(QWidget):
         else:
             self.mini_result.setPlainText(text)
 
-        # 2) WhatIF 分支树（QTreeWidget）
+        # 2) WhatIF 引导面板
         has_whatif = bool(
             data.get("whatif_tree")
             or data.get("quickdraw_branches")
             or data.get("draw_branches")
         )
-        self.mini_whatif_tree.set_whatif(data, colors=colors)
-        self.mini_whatif_tree.setVisible(has_whatif)
+        orig = data.get("original") or {}
+        normal_dmg = int(orig.get("damage") or 0)
+
+        if normal_dmg <= 0:
+            res0 = data.get("results") or []
+            normal_dmg = int((res0[0].get("damage") if res0 else 0) or 0)
+
+        self.mini_whatif_guide.set_whatif(
+            data, colors=colors, normal_damage=normal_dmg
+        )
+        self.mini_whatif_guide.setVisible(has_whatif)
 
     def _mini_original_text(
         self,
