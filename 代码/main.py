@@ -1043,14 +1043,12 @@ class WhatIFTreeWidget(QTreeWidget):
 
         abbr_fn = abbreviate_step_html if colors else abbreviate_step
 
+        def join_steps(steps: List[str]) -> str:
+            return "-".join(abbr_fn(str(s), compact=False) for s in steps)
+
         # 根：指引路径（到第一个分支卡，如 币-刀-行骗）
         root_steps = [str(s) for s in (tree.get("root") or [])]
-        marker = root_steps[-1] if root_steps else "行骗"
-        root_item = self._item(
-            "-".join(abbr_fn(s, compact=False) for s in root_steps)
-            if root_steps
-            else marker
-        )
+        root_item = self._item(join_steps(root_steps) if root_steps else "")
         self.addTopLevelItem(root_item)
 
         # 保底 / 平均
@@ -1072,12 +1070,11 @@ class WhatIFTreeWidget(QTreeWidget):
             dmg = int(tb.get("damage") or 0)
             mana = int(tb.get("mana_left") or 0)
             children = tb.get("children") or []
+            mid = [str(s) for s in (tb.get("mid") or [])]
 
             if children:
-                next_name = str(tb.get("next") or "持枪要挟")
-                node = self._item(
-                    f"{marker}({abbreviate_card_name(outcome)})-……{next_name}"
-                )
+                # 次级：完整中间路径（如 行骗(牛)-暗(刀2)-步(刀2)-…-持枪要挟）
+                node = self._item(join_steps(mid) if mid else "")
                 root_item.addChild(node)
 
                 # 次次级：持枪要挟发现结果
@@ -1085,38 +1082,38 @@ class WhatIFTreeWidget(QTreeWidget):
                     card = str(ch.get("card") or "")
                     cdmg = int(ch.get("damage") or 0)
                     cmana = int(ch.get("mana_left") or 0)
+                    # 叶子：从该发现牌的步骤开始到结尾的完整路径
+                    tail = WhatIFTreeWidget._tail_steps(
+                        ch.get("path") or [], card
+                    )
                     leaf = self._item(
-                        f"{next_name}({abbreviate_card_name(card)})"
-                        f"({cdmg}伤余{cmana}费)"
+                        (join_steps(tail) if tail else "")
+                        + f"({cdmg}伤余{cmana}费)"
                     )
                     node.addChild(leaf)
-                    self._append_path(leaf, ch.get("path") or [], abbr_fn)
             else:
-                leaf = self._item(
-                    f"{marker}({abbreviate_card_name(outcome)})-……({dmg}伤余{mana}费)"
+                # 次级本身就是叶子：完整路径
+                node = self._item(
+                    (join_steps(mid) if mid else "")
+                    + f"({dmg}伤余{mana}费)"
                 )
-                root_item.addChild(leaf)
-                self._append_path(leaf, tb.get("path") or [], abbr_fn)
+                root_item.addChild(node)
 
-        self.expandToDepth(2)
+        # 默认折叠（用户自行展开查看各分支/路径）
 
     @staticmethod
-    def _append_path(
-        parent: QTreeWidgetItem,
-        path: List[str],
-        abbr_fn,
-    ) -> None:
-        for index, rnd in enumerate(split_path_rounds(path), start=1):
-            abbr = "-".join(abbr_fn(s, compact=False) for s in rnd)
-            parent.addChild(
-                WhatIFTreeWidget._item(
-                    f"[第{chinese_round_number(index)}轮]：　　{abbr}"
-                )
-            )
+    def _tail_steps(path: List[str], start_marker: str) -> List[str]:
+        """从路径中第一个含 start_marker 的步骤（分支卡标注）开始取尾部；
+        找不到时返回完整路径。"""
+        for i, s in enumerate(path):
+            if start_marker and start_marker in str(s):
+                return [str(x) for x in path[i:]]
+
+        return [str(x) for x in path]
 
 
 def _whatif_tree_text(data: Dict[str, object]) -> str:
-    """WhatIF 指引树日志文本：根 → 次级（抽取结果）→ 次次级（发现结果），层级缩进。"""
+    """WhatIF 指引树日志文本：根 → 次级（抽取结果完整路径）→ 次次级（发现结果完整路径）。"""
     tree = data.get("whatif_tree") or {}
     branches = tree.get("branches") or []
 
@@ -1124,41 +1121,38 @@ def _whatif_tree_text(data: Dict[str, object]) -> str:
         return ""
 
     root_steps = [str(s) for s in (tree.get("root") or [])]
-    marker = root_steps[-1] if root_steps else "行骗"
     lines = [
         "WhatIF指引树：",
         "-".join(abbreviate_step(s, compact=False) for s in root_steps)
         if root_steps
-        else marker,
+        else "",
     ]
 
     for tb in branches:
-        outcome = str(tb.get("outcome") or "")
         dmg = int(tb.get("damage") or 0)
         mana = int(tb.get("mana_left") or 0)
         children = tb.get("children") or []
+        mid = [str(s) for s in (tb.get("mid") or [])]
+        mid_text = "-".join(abbreviate_step(s, compact=False) for s in mid)
 
         if children:
-            next_name = str(tb.get("next") or "持枪要挟")
-            lines.append(
-                "    "
-                + f"{marker}({abbreviate_card_name(outcome)})-……{next_name}"
-            )
+            lines.append("    " + mid_text)
 
             for ch in children:
                 card = str(ch.get("card") or "")
                 cdmg = int(ch.get("damage") or 0)
                 cmana = int(ch.get("mana_left") or 0)
+                tail = WhatIFTreeWidget._tail_steps(ch.get("path") or [], card)
+                tail_text = "-".join(
+                    abbreviate_step(s, compact=False) for s in tail
+                )
                 lines.append(
                     "        "
-                    + f"{next_name}({abbreviate_card_name(card)})"
-                    + f"-……({cdmg}伤余{cmana}费)"
+                    + tail_text
+                    + f"({cdmg}伤余{cmana}费)"
                 )
         else:
-            lines.append(
-                "    "
-                + f"{marker}({abbreviate_card_name(outcome)})-……({dmg}伤余{mana}费)"
-            )
+            lines.append("    " + mid_text + f"({dmg}伤余{mana}费)")
 
     lines.append(f"保底伤害：{int(tree.get('worst') or 0)}（最差随机组合）")
     return "\n".join(lines)
@@ -1319,21 +1313,34 @@ class CalculationWorker(QThread):
                     branch_card = re.sub(r"[（(].*[）)]$", "", str(best_path[di]))
                     root_steps.append(branch_card)
                     tree_branches: List[Dict[str, object]] = []
-                    # 叶子搜索预算：持枪发现各做一次独立回溯，1.8s 足够挖到深线（96 伤）
-                    leaf_budget = min(
-                        1.8, float(self.options.get("time_budget_sec", 3.0))
-                    )
+                    # 性能优化：主线抽取（如 行骗(牛)）用 11s + 束宽 3000 挖深线
+                    # （96 伤），其 C++ quickdraw_branches 已含各发现牌的深线结果
+                    # （脱水=96/补水=80…），不再逐张发现牌独立搜索；
+                    # 其余抽取 5s（结果本来就较低，无需深挖）。
+                    is_auto_beam = int(self.options.get("beam_width") or 0) <= 0
 
                     for mn in missing_draw:
                         if self._stop:
                             break
+
+                        is_main = mn == main_draw_key
+                        draw_budget = 11.0 if is_main else 5.0
+                        draw_kwargs = dict(common_kwargs)
+                        draw_kwargs["time_budget_sec"] = draw_budget
+                        # 96 深线需约 150 万展开：1M 上限会提前截断，叶子数据变脏
+                        draw_kwargs["max_paths"] = max(
+                            3000000, int(self.options.get("max_paths") or 0)
+                        )
+
+                        if is_main and is_auto_beam:
+                            draw_kwargs["wide_widths"] = [3000]
 
                         res_i = engine.compute(
                             self.snapshot,
                             branch_prefix=prefix_draw,
                             forced_draw_choice=mn,
                             exchanges=best_exchange,
-                            **common_kwargs,
+                            **draw_kwargs,
                         )
                         best_i = next(
                             (
@@ -1344,11 +1351,22 @@ class CalculationWorker(QThread):
                             (res_i.get("results") or [{}])[0],
                         )
                         path_i = list(best_i.get("path") or [])
+                        # 强制搜索可能把抽牌卡放到不同位置（如 暗(刀2) 先行骗后），
+                        # 必须定位真正的抽取步骤，不能沿用主线里的下标 di。
+                        ddi = next(
+                            (
+                                j
+                                for j, s in enumerate(path_i)
+                                if mn in str(s)
+                                and any(m in str(s) for m in draw_markers)
+                            ),
+                            di,
+                        )
                         # 该抽取结果之后的下一个分支卡（持枪要挟 / 再次抽牌）
                         nd = next(
                             (
                                 j
-                                for j in range(di + 1, len(path_i))
+                                for j in range(ddi + 1, len(path_i))
                                 if "持枪要挟" in str(path_i[j])
                                 or any(m in str(path_i[j]) for m in draw_markers)
                             ),
@@ -1367,44 +1385,23 @@ class CalculationWorker(QThread):
 
                             if "持枪要挟" in next_card:
                                 node["next"] = "持枪要挟"
-                                # 从该抽取结果的持枪前缀，对每张发现牌独立回溯搜索
-                                qd_prefix = list(path_i[:nd])
-                                children: List[Dict[str, object]] = []
-
-                                for choice in (
-                                    *engine.QUICKDRAW_CHOICES,
-                                    engine.QUICKDRAW_OTHER_MINION,
-                                    engine.QUICKDRAW_OTHER_SPELL,
-                                ):
-                                    if self._stop:
-                                        break
-
-                                    leaf_kwargs = dict(common_kwargs)
-                                    leaf_kwargs["time_budget_sec"] = leaf_budget
-                                    res_c = engine.compute(
-                                        self.snapshot,
-                                        branch_prefix=qd_prefix,
-                                        discover_quickdraw_choice=choice,
-                                        exchanges=best_exchange,
-                                        **leaf_kwargs,
-                                    )
-                                    best_c = (res_c.get("results") or [{}])[0]
-                                    children.append(
-                                        {
-                                            "card": choice,
-                                            "damage": int(best_c.get("damage") or 0),
-                                            "dragons": int(best_c.get("dragons") or 0),
-                                            "mana_left": int(best_c.get("mana") or 0),
-                                            "path": list(best_c.get("path") or []),
-                                        }
-                                    )
-
-                                node["children"] = children
+                                node["mid"] = [str(s) for s in path_i[ddi : nd + 1]]
+                                node["children"] = [
+                                    {
+                                        "card": c.get("card") or "",
+                                        "damage": int(c.get("damage") or 0),
+                                        "dragons": int(c.get("dragons") or 0),
+                                        "mana_left": int(c.get("mana_left") or 0),
+                                        "path": list(c.get("path") or []),
+                                    }
+                                    for c in (res_i.get("quickdraw_branches") or [])
+                                ]
                             else:
                                 # 抽牌结果后又抽牌（如 行骗 → 行骗[殒]）
                                 node["next"] = re.sub(
                                     r"[（(].*[）)]$", "", next_card
                                 )
+                                node["mid"] = [str(s) for s in path_i[ddi : nd + 1]]
                                 node["children"] = [
                                     {
                                         "card": c.get("card") or "",
@@ -1415,6 +1412,8 @@ class CalculationWorker(QThread):
                                     }
                                     for c in (res_i.get("draw_branches") or [])
                                 ]
+                        else:
+                            node["mid"] = [str(s) for s in path_i[ddi:]]
 
                         tree_branches.append(node)
 
