@@ -1462,11 +1462,10 @@ class WhatIFDistPanel(QWidget):
         btn_row = QHBoxLayout()
         self.back_btn = QPushButton("返回上级")
         self.back_btn.clicked.connect(self._back)
-        btn_row.addWidget(self.back_btn)
+        btn_row.addWidget(self.back_btn, 1)
         self.home_btn = QPushButton("回到主干")
         self.home_btn.clicked.connect(self._home)
-        btn_row.addWidget(self.home_btn)
-        btn_row.addStretch(1)
+        btn_row.addWidget(self.home_btn, 1)
         root.addLayout(btn_row)
 
     # ---- 数据 ----
@@ -1655,10 +1654,6 @@ class WhatIFDistPanel(QWidget):
             else "（起点）"
         )
 
-        if node.get("options") and dist:
-            # 分叉卡处标注当前子树最大伤害：…-E(8N)
-            path_text += f"({best})"
-
         self.path_label.setText(path_text)
 
         while self.options_layout.count():
@@ -1786,11 +1781,6 @@ def _node_text_lines(node: Dict[str, object], indent: str = "") -> List[str]:
         if node.get("path")
         else "（起点）"
     )
-    best = max((d for d, _ in dist), default=0)
-
-    if node.get("options"):
-        path += f"({best})"
-
     lines.append(indent + path)
 
     for opt in node.get("options") or []:
