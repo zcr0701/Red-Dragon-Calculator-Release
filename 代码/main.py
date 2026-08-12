@@ -1006,6 +1006,9 @@ class _TreeHtmlDelegate(QStyledItemDelegate):
         else:
             painter.fillRect(option.rect, option.palette.base())
 
+        # 安全网：绘制裁剪到本行边界，避免换行溢出画到下一行被盖住
+        painter.setClipRect(option.rect)
+
         doc = QTextDocument()
         doc.setDefaultFont(option.font)
         doc.setHtml(html_txt + self._fork_glyph(option.widget, index))
@@ -1028,6 +1031,19 @@ class _TreeHtmlDelegate(QStyledItemDelegate):
             if widget is not None and widget.viewport() is not None
             else 320
         )
+        # 子项因缩进可用宽度更窄：按层级扣除缩进，并再多扣 14px 余量，
+        # 保证测量的换行高度 ≥ 实际绘制高度，展开后的长路径在窗口不够宽时
+        # 换行不会被下一行遮挡。
+        if widget is not None:
+            depth = 0
+            p = index.parent()
+
+            while p.isValid():
+                depth += 1
+                p = p.parent()
+
+            view_width -= widget.indentation() * depth + 14
+
         width = max(80, view_width)
         doc = QTextDocument()
         doc.setDefaultFont(option.font)
@@ -1073,7 +1089,8 @@ class WhatIFTreeWidget(QTreeWidget):
         self._header_hue = 0
         self._header_timer = QTimer(self)
         self._header_timer.timeout.connect(self._render_header)
-        self._header_timer.start(300)
+        # 彩虹滚动更快：150ms 每帧 +8°（约 3 倍速）
+        self._header_timer.start(150)
         self._render_header()
 
     def _render_header(self) -> None:
@@ -1081,19 +1098,19 @@ class WhatIFTreeWidget(QTreeWidget):
         if self._header_item is None:
             return
 
-        self._header_hue = (self._header_hue + 5) % 360
+        self._header_hue = (self._header_hue + 8) % 360
         prefix = "".join(
             '<span style="color:hsl(%d,100%%,60%%);font-weight:bold;">%s</span>'
             % ((self._header_hue + i * 50) % 360, ch)
             for i, ch in enumerate("WhatIF")
         )
         avg_txt = _fmt_avg(self._header_avg) if self._header_avg is not None else "?"
-        # 不加固定字号：继承树/公式字号，与正常计算部分路径的字一样大
+        # 不加固定字号：继承树/公式字号，与正常计算部分路径的字一样大；
+        # 数据行颜色为普通黑色（仅 WhatIF 逐字彩虹变色）。
         html = (
             prefix
             + ":<br>"
-            f'<span style="color:#FFD700;font-weight:bold;">最高平均伤害：{avg_txt}</span>'
-            f'<span style="color:#FF6B6B;font-weight:bold;">，保底伤害：{self._header_worst}</span>'
+            f'<span style="color:#000000;">最高平均伤害：{avg_txt}，保底伤害：{self._header_worst}</span>'
         )
         self._header_item.setData(0, Qt.UserRole, html)
         self._header_item.setText(0, re.sub(r"<[^>]+>", "", html))
@@ -2660,6 +2677,8 @@ class MainWindow(QWidget):
         # WhatIF 分支树（首行为彩虹标题，与路径展开放一起），高度封顶（≤父容器 45%）
         self.whatif_tree = WhatIFTreeWidget()
         self.whatif_tree.setVisible(False)
+        # 树内全部文字（标题/路径/分叉）与正常计算日志同字号
+        self.whatif_tree.setFont(self.result_text.font())
         result_layout.addWidget(self.whatif_tree)
         right_layout.addWidget(result_box, 1)
 
