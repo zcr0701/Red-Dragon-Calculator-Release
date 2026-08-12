@@ -2450,6 +2450,11 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
         std::atomic<long long> total_exp{0};
         int nstates = (int)level.size();
         int per = (nstates + inner - 1) / inner;
+        // 预分配：每个分片约处理 nstates/inner 个状态，每个状态平均 3~8 个后继，
+        // 避免 push_back 反复扩容搬移（BeamRawCand 内含 State，扩容代价高）
+        for (int t = 0; t < inner; t++) {
+            raw_buckets[t].reserve((size_t)(per) * 6 + 16);
+        }
         vector<BeamSliceArgs> args(inner);
         for (int t = 0; t < inner; t++) {
             args[t].level = &level;
@@ -2705,7 +2710,9 @@ static BeamResult run_beam_search(const State& start, const SearchParams& p, Pro
             ch_budgets[w].budget_sec = std::min(ch_budgets[w].budget_sec, 2.0);
         a.budget = &ch_budgets[w];
         a.best_damage = &shared_best;
-        a.inner = 1;  // 多通道并行，各通道单线程即可（分配瘦身后跨线程可缩放）
+        // 榨干 CPU：把总线程数按通道均分，多余线程作为各通道内部的并行展开线程
+        // （8 核 → 4 通道 × 2 内线程；16 线程 → 4 通道 × 4 内线程，内部上限 4）
+        a.inner = std::max(1, std::min(4, p.threads / wide_count));
         a.tid = 90 + w;
         wide_args.push_back(a);
     }

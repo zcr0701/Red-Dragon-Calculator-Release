@@ -20,6 +20,15 @@ from typing import Callable, Dict, List, Optional
 
 BASE_DIR = Path(__file__).resolve().parent
 
+
+def default_threads() -> int:
+    """按 CPU 逻辑核数自适应线程数（桌面机 8~16 核用满，4 通道并行展开）。"""
+    try:
+        n = os.cpu_count() or 4
+    except Exception:
+        n = 4
+    return max(4, min(16, n))
+
 # 随从栏容量（与 C++ MAX_BOARD 一致）
 MAX_BOARD_SLOTS = 7
 
@@ -727,7 +736,7 @@ def build_payload(
     max_alex: int = 10,
     depth: int = 30,
     max_paths: int = 1000000,
-    threads: int = 4,
+    threads: Optional[int] = None,
     time_budget_sec: float = 3.0,
     # 时间预算（秒）；0 / 负数 = 不限时：按束宽×最大深度跑完，不因时间停止
     heuristic: int = 6,
@@ -850,7 +859,7 @@ def build_payload(
         "max_alex": max_alex,
         "depth": depth,
         "max_paths": max_paths,
-        "threads": threads,
+        "threads": threads if threads else default_threads(),
         "time_budget_sec": time_budget_sec,
         "heuristic": heuristic,
         "only_best_damage": 1 if only_best_damage else 0,
@@ -994,7 +1003,7 @@ def compute(
     max_alex: int = 10,
     depth: int = 30,
     max_paths: int = 1000000,
-    threads: int = 4,
+    threads: Optional[int] = None,
     time_budget_sec: float = 3.0,
     heuristic: int = 6,
     wide_widths: Optional[List[int]] = None,

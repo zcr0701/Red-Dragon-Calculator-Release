@@ -2178,30 +2178,6 @@ class MainWindow(QWidget):
             "不勾选时按旧逻辑把抽牌卡当杂牌打出（不展开抽随从分支）。"
         )
         param_grid.addWidget(self.draw_whatif_check, 10, 0, 1, 2)
-        # W-B 机制参数：抽随从卡分支数 / 持枪要挟分支数 / 分支节点 TOP-K
-        branch_top_row = QHBoxLayout()
-        branch_top_row.addWidget(QLabel("抽随从卡分支数："))
-        self.whatif_branch_top_k = self._spin(3, 0, 10)
-        self.whatif_branch_top_k.setToolTip(
-            "抽随从卡分支计算数量（默认 3）：候选 = 自选组合剩余未到手随从的抽取组合数，"
-            "按 [场面变化] 增量评分只取前 K 个分支计算；0=不计算"
-        )
-        branch_top_row.addWidget(self.whatif_branch_top_k)
-        branch_top_row.addWidget(QLabel("持枪要挟分支数："))
-        self.branch_top_k = self._spin(5, 0, 5)
-        self.branch_top_k.setToolTip(
-            "持枪要挟分支计算数量（默认 5 = 已知全部：补水/脱水/误炸/袋底藏沙/不许乱动），"
-            "按 [场面变化] 增量评分取前 K 个；0=不计算"
-        )
-        branch_top_row.addWidget(self.branch_top_k)
-        branch_top_row.addWidget(QLabel("分支节点TOP-K："))
-        self.wb_node_top_k = self._spin(3, 0, 5)
-        self.wb_node_top_k.setToolTip(
-            "分支节点 TOP-K（默认 3）：按各分支卡最佳分支的增量评分排序，"
-            "最多探索前 K 个分支节点，其余不往下展开"
-        )
-        branch_top_row.addWidget(self.wb_node_top_k)
-        param_grid.addLayout(branch_top_row, 11, 0, 1, 2)
         # 精确截断：伤害 ≥ 敌方血量+护甲 即停（加速计算）
         trunc_row = QHBoxLayout()
         trunc_row.addWidget(QLabel("精确截断加速："))
@@ -2832,7 +2808,7 @@ class MainWindow(QWidget):
             "max_alex": self.max_alex.value(),
             "depth": self.beam_depth.value(),
             "max_paths": self.max_paths.value(),
-            "threads": 4,
+            "threads": engine.default_threads(),
             "time_budget_sec": 0 if self.no_time_limit.isChecked() else self.time_budget.value(),
             "etc_band": band,
             "beam_width": self.beam_width.value(),
@@ -2843,9 +2819,6 @@ class MainWindow(QWidget):
             "only_best_damage": self.best_only_check.isChecked(),
             "draw_whatif": self.draw_whatif_check.isChecked(),
             "whatif_combo": [name for name, box in self.combo_checks if box.isChecked()],
-            "branch_top_k": self.branch_top_k.value(),
-            "whatif_branch_top_k": self.whatif_branch_top_k.value(),
-            "wb_node_top_k": self.wb_node_top_k.value(),
             "truncate_normal": self.truncate_normal_check.isChecked(),
             "truncate_branch": self.truncate_branch_check.isChecked(),
             "truncate_exchange": self.truncate_exchange_check.isChecked(),
