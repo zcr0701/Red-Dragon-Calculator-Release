@@ -1719,8 +1719,21 @@ class WhatIFDistPanel(QWidget):
                     if screen is not None
                     else 1400
                 )
+                # 先封顶再 resize：Qt 顶层窗口会被布局最小高度自动撑高，
+                # 不设最大高度时可能把窗口顶出屏幕（返回上级/钻取时内容变高）。
+                parent.setMaximumHeight(max_h)
                 hint_h = parent.sizeHint().height()
                 parent.resize(parent.width(), min(max(180, hint_h), max_h))
+                # 窗口贴底时向上收，避免底部超出屏幕
+                if screen is not None:
+                    avail = screen.availableGeometry()
+                    bottom = parent.y() + parent.height()
+
+                    if bottom > avail.bottom() - 1:
+                        parent.move(
+                            parent.x(),
+                            max(avail.top(), avail.bottom() - parent.height() + 1),
+                        )
 
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt 命名
         sh = super().sizeHint()
@@ -2077,22 +2090,95 @@ class CalculationWorker(QThread):
                     root_steps.append("持枪要挟")
                     mq = re.search(r"持枪要挟[（(](.+?)[）)]", str(best_path[qi]))
                     main_qd = mq.group(1) if mq else ""
+                    # 从分叉点独立回溯每个发现牌（前缀钉死 持枪要挟（X）），
+                    # 保证子路径与主干 mid 场面一致，不再复用束宽内状态不一致的
+                    # quickdraw_branches。
+                    qd_prefix = [str(s) for s in best_path[:qi]]
+                    elapsed0 = time.perf_counter() - whatif_t0
+                    remaining0 = max(1.5, 10.0 - elapsed0)
+                    qd_budget0 = min(2.0, max(1.0, remaining0 / 3.0))
+                    qd0_kwargs = dict(common_kwargs)
+                    qd0_kwargs["time_budget_sec"] = qd_budget0
+                    qd0_kwargs["max_paths"] = max(
+                        3000000, int(self.options.get("max_paths") or 0)
+                    )
+                    qd0_kwargs["wide_widths"] = [2000]
+                    qd0_kwargs["heuristics"] = [6]
+                    qd0_kwargs["threads"] = max(
+                        2,
+                        min(
+                            4,
+                            int(qd0_kwargs.get("threads", 4) / 2),
+                        ),
+                    )
+                    qd_pool0 = [str(c) for c in engine.QUICKDRAW_CHOICES]
+                    qd_pool0 += [
+                        engine.QUICKDRAW_OTHER_MINION,
+                        engine.QUICKDRAW_OTHER_SPELL,
+                    ]
+
+                    def _qd_one0(card: str) -> Dict[str, object]:
+                        if self._stop:
+                            return {"card": card, "path": []}
+
+                        try:
+                            res_x = engine.compute(
+                                self.snapshot,
+                                branch_prefix=qd_prefix
+                                + ["持枪要挟（" + card + "）"],
+                                discover_quickdraw_choice=card,
+                                exchanges=best_exchange,
+                                lethal_threshold=-1,
+                                should_stop=lambda: self._stop,
+                                **qd0_kwargs,
+                            )
+                        except Exception:  # noqa: BLE001
+                            return {"card": card, "path": []}
+
+                        best_x = (res_x.get("results") or [{}])[0]
+
+                        return {
+                            "card": card,
+                            "damage": int(best_x.get("damage") or 0),
+                            "dragons": int(best_x.get("dragons") or 0),
+                            "mana_left": int(best_x.get("mana") or 0),
+                            "fork_damage": int(
+                                best_x.get("fork_damage") or 0
+                            ),
+                            "path": list(best_x.get("path") or []),
+                        }
+
                     qd_tree: List[Dict[str, object]] = []
 
-                    for b in (result.get("quickdraw_branches") or []):
-                        card = str(b.get("card") or "")
-                        pth = list(b.get("path") or [])
-                        tail = WhatIFTreeWidget._tail_steps(pth, card)
-                        qd_tree.append(
-                            {
-                                "outcome": card,
-                                "damage": int(b.get("damage") or 0),
-                                "dragons": int(b.get("dragons") or 0),
-                                "mana_left": int(b.get("mana_left") or 0),
-                                "mid": [str(s) for s in (tail or pth)],
-                                "path": pth,
-                            }
-                        )
+                    with ThreadPoolExecutor(
+                        max_workers=min(4, len(qd_pool0)),
+                        thread_name_prefix="whatif-qd0",
+                    ) as pool:
+                        futs0 = [pool.submit(_qd_one0, c) for c in qd_pool0]
+
+                        for fut0 in futs0:
+                            if self._stop:
+                                break
+
+                            b = fut0.result()
+                            card = str(b.get("card") or "")
+                            pth = list(b.get("path") or [])
+                            tail = WhatIFTreeWidget._tail_steps(pth, card)
+                            mid0 = (
+                                ["持枪要挟（" + card + "）"]
+                                if not (tail or pth)
+                                else [str(s) for s in (tail or pth)]
+                            )
+                            qd_tree.append(
+                                {
+                                    "outcome": card,
+                                    "damage": int(b.get("damage") or 0),
+                                    "dragons": int(b.get("dragons") or 0),
+                                    "mana_left": int(b.get("mana_left") or 0),
+                                    "mid": mid0,
+                                    "path": pth,
+                                }
+                            )
 
                     if qd_tree:
                         leaf_damages = [int(tb.get("damage") or 0) for tb in qd_tree]
@@ -2307,19 +2393,13 @@ class CalculationWorker(QThread):
                             if "持枪要挟" in next_card:
                                 node["next"] = "持枪要挟"
                                 node["mid"] = [str(s) for s in path_i[ddi : nd + 1]]
-                                node["children"] = [
-                                    {
-                                        "card": c.get("card") or "",
-                                        "damage": int(c.get("damage") or 0),
-                                        "dragons": int(c.get("dragons") or 0),
-                                        "mana_left": int(c.get("mana_left") or 0),
-                                        "fork_damage": int(
-                                            c.get("fork_damage") or 0
-                                        ),
-                                        "path": list(c.get("path") or []),
-                                    }
-                                    for c in (res_i.get("quickdraw_branches") or [])
-                                ]
+                                # 持枪要挟子分支：从分叉点（mid 场面）独立回溯搜索，
+                                # 前缀把“持枪要挟（X）”钉死在分叉点，保证子路径与
+                                # mid 完全一致（旧实现直接复用束宽搜索的
+                                # quickdraw_branches，其前缀状态可能与 mid 不同，
+                                # 导致少写 不许乱动(刀) 这类腾格子步骤）。
+                                qd_prefix = [str(s) for s in path_i[:nd]]
+                                node["children"] = _search_qd_children(qd_prefix)
                             else:
                                 # 抽牌结果后又抽牌（如 行骗 → 行骗[殒]）
                                 node["next"] = re.sub(
@@ -2377,6 +2457,112 @@ class CalculationWorker(QThread):
                             node["mid"] = [str(s) for s in path_i[ddi:]]
 
                         return node
+
+                    def _search_qd_children(
+                        qd_prefix: List[str],
+                    ) -> List[Dict[str, object]]:
+                        """持枪要挟子分支：从分叉点对每个发现牌独立回溯搜索。
+
+                        前缀把“持枪要挟（X）”钉在分支点（exact 重放），保证子路径
+                        与 mid 场面一致；并行执行，单个预算由剩余时间自适应。
+                        """
+                        qd_pool = [str(c) for c in engine.QUICKDRAW_CHOICES]
+                        qd_pool += [
+                            engine.QUICKDRAW_OTHER_MINION,
+                            engine.QUICKDRAW_OTHER_SPELL,
+                        ]
+
+                        if self._stop:
+                            return []
+
+                        elapsed = time.perf_counter() - whatif_t0
+                        remaining = max(1.5, 10.0 - elapsed)
+                        qd_budget = min(2.0, max(1.0, remaining / 3.0))
+                        qd_kwargs = dict(common_kwargs)
+                        qd_kwargs["time_budget_sec"] = qd_budget
+                        qd_kwargs["max_paths"] = max(
+                            3000000, int(self.options.get("max_paths") or 0)
+                        )
+                        # 分叉点已是深线局部小场面，窄束 + 少线程即可，避免
+                        # 与外部抽取分支搜索抢 CPU（最多并行 4 个 C++ 进程）
+                        qd_kwargs["wide_widths"] = [2000]
+                        qd_kwargs["heuristics"] = [6]
+                        qd_kwargs["threads"] = max(
+                            2,
+                            min(
+                                4,
+                                int(qd_kwargs.get("threads", 4) / 2),
+                            ),
+                        )
+
+                        def _one(card: str) -> Dict[str, object]:
+                            if self._stop:
+                                return {
+                                    "card": card,
+                                    "damage": 0,
+                                    "dragons": 0,
+                                    "mana_left": 0,
+                                    "fork_damage": 0,
+                                    "path": [],
+                                }
+
+                            try:
+                                res_x = engine.compute(
+                                    self.snapshot,
+                                    branch_prefix=qd_prefix
+                                    + ["持枪要挟（" + card + "）"],
+                                    discover_quickdraw_choice=card,
+                                    exchanges=best_exchange,
+                                    lethal_threshold=lethal,
+                                    should_stop=lambda: self._stop,
+                                    **qd_kwargs,
+                                )
+                            except Exception:  # noqa: BLE001 - 单个分支失败不拖垮整体
+                                return {
+                                    "card": card,
+                                    "damage": 0,
+                                    "dragons": 0,
+                                    "mana_left": 0,
+                                    "fork_damage": 0,
+                                    "path": [],
+                                }
+
+                            best_x = (res_x.get("results") or [{}])[0]
+                            pth_x = list(best_x.get("path") or [])
+
+                            return {
+                                "card": card,
+                                "damage": int(best_x.get("damage") or 0),
+                                "dragons": int(best_x.get("dragons") or 0),
+                                "mana_left": int(best_x.get("mana") or 0),
+                                "fork_damage": int(
+                                    best_x.get("fork_damage") or 0
+                                ),
+                                # 0 伤害死路：仍保留分叉标注，前端显示 持枪要挟（X）
+                                # 而不是空路径的 “?”
+                                "mid": (
+                                    ["持枪要挟（" + card + "）"]
+                                    if not pth_x
+                                    else []
+                                ),
+                                "path": pth_x,
+                            }
+
+                        children: List[Dict[str, object]] = []
+
+                        with ThreadPoolExecutor(
+                            max_workers=min(4, len(qd_pool)),
+                            thread_name_prefix="whatif-qd",
+                        ) as pool:
+                            futs = [pool.submit(_one, c) for c in qd_pool]
+
+                            for fut in futs:
+                                if self._stop:
+                                    break
+
+                                children.append(fut.result())
+
+                        return children
 
                     # 多个抽取分支并行搜索（独立 exe 进程），配合截断把复杂 WhatIF
                     # 的整体耗时压进 10s；结果按分支池顺序汇总。
