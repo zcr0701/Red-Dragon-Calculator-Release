@@ -1731,6 +1731,67 @@ class WhatIFDistPanel(QWidget):
         return QSize(sh.width(), min(max(60, sh.height()), cap))
 
 
+def _dist_text(dist: List[Tuple[int, float]]) -> str:
+    """分布条纯文本：[|64(33%)|32(33%)|16(33%)|]"""
+    segs = []
+
+    for d, p in dist:
+        segs.append(f"{d}({p:.0f}%)")
+
+    return "|" + "|".join(segs) + "|"
+
+
+def _whatif_text_block(data: Dict[str, object]) -> str:
+    """主窗口纯文本 WhatIF（严格格式，与正常计算放一起并进日志）：
+
+    WhatIF
+    [|8N(a%)|8(N-1)(b%)|……|16(y%)|8(z%)|]
+    A-B-C-D-E(8N)
+    [E1([|…|])]
+    [E2([|…|])]
+    ……
+    """
+    tree = data.get("whatif_tree") or {}
+    branches = tree.get("branches") or []
+
+    if not branches:
+        return ""
+
+    root = WhatIFDistPanel._mk_node(
+        [str(s) for s in (tree.get("root") or [])]
+    )
+
+    for tb in branches:
+        root["options"].append(WhatIFDistPanel._mk_option(tb))
+
+    dist = WhatIFDistPanel._dist_of(root)
+    lines = ["WhatIF", "[" + _dist_text(dist) + "]"]
+    path = (
+        "-".join(
+            abbreviate_step(str(s), compact=False)
+            for s in (root.get("path") or [])
+        )
+        if root.get("path")
+        else "（起点）"
+    )
+    best = max((d for d, _ in dist), default=0)
+
+    if root.get("options"):
+        path += f"({best})"
+
+    lines.append(path)
+
+    for opt in root.get("options") or []:
+        o_dist = WhatIFDistPanel._dist_of(opt["child"])
+        lines.append(
+            "["
+            + abbreviate_step(str(opt["label"]), compact=False)
+            + "([" + _dist_text(o_dist) + "])]"
+        )
+
+    return "\n".join(lines)
+
+
 def _whatif_tree_text(data: Dict[str, object]) -> str:
     """WhatIF 指引树日志文本：根 → 次级（抽取结果完整路径）→ 次次级（发现结果完整路径）。"""
     tree = data.get("whatif_tree") or {}
@@ -3085,11 +3146,6 @@ class MainWindow(QWidget):
         self.result_text.setReadOnly(True)
         self.result_text.setMaximumBlockCount(5000)
         result_layout.addWidget(self.result_text, 1)
-        # WhatIF 引导面板（指引出牌 + 分叉点选 + 最高/平均/保底/值得），高度封顶（≤父容器 45%）
-        self.whatif_guide = WhatIFDistPanel()
-        self.whatif_guide.setVisible(False)
-        self.whatif_guide.setFont(self.result_text.font())
-        result_layout.addWidget(self.whatif_guide)
         right_layout.addWidget(result_box, 1)
 
         top.addWidget(right)
@@ -3955,25 +4011,12 @@ class MainWindow(QWidget):
         else:
             lines.append("  （无路径）")
 
-        # WhatIF 树：行骗/持枪要挟同级分支（含 96 等分支最优）→ QTreeWidget 展示
-        has_whatif = bool(
-            data.get("whatif_tree")
-            or data.get("quickdraw_branches")
-            or data.get("draw_branches")
-        )
-        orig = data.get("original") or {}
-        normal_dmg = int(orig.get("damage") or 0)
+        # WhatIF 纯文本：与正常计算放一起（严格格式）
+        whatif_txt = _whatif_text_block(data)
 
-        if normal_dmg <= 0:
-            res0 = data.get("results") or []
-            normal_dmg = int((res0[0].get("damage") if res0 else 0) or 0)
-
-        self.whatif_guide.set_whatif(
-            data,
-            colors=self.mini_color_enabled(),
-            normal_damage=normal_dmg,
-        )
-        self.whatif_guide.setVisible(has_whatif)
+        if whatif_txt:
+            lines.append("")
+            lines.extend(whatif_txt.splitlines())
 
         wb = data.get("wb")
         if wb:
@@ -3987,10 +4030,8 @@ class MainWindow(QWidget):
             LOGS_DIR.mkdir(exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             out_path = LOGS_DIR / f"red_dragon_all_paths_{stamp}.txt"
-            # 日志额外记录 WhatIF 指引树（bug1：此前只存了正常线文本，树没进日志）
-            tree_text = _whatif_tree_text(data)
             out_path.write_text(
-                text + ("\n\n" + tree_text if tree_text else ""),
+                text,
                 encoding="utf-8",
             )
             self.engine_label.setText(f"结果已保存：{out_path.name}")
