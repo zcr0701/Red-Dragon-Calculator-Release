@@ -1176,6 +1176,9 @@ static vector<string> combo_missing_minions(const State& s) {
 static vector<vector<string>> combo_combinations(const vector<string>& pool, int k,
                                                   size_t max_count = 32) {
     vector<vector<string>> out;
+    // 防御：k 超出池大小（如潜伏帷幕抽 2 张但缺失池只剩 1 个随从）无合法组合，
+    // 直接返回空，由调用方按“抽剩余全部”兜底，避免越界访问 pool[idx]。
+    if (k <= 0 || k > (int)pool.size()) return out;
     vector<size_t> idx(k, 0);
     for (size_t i = 0; i < idx.size(); i++) idx[i] = i;
     while (true) {
@@ -1310,12 +1313,21 @@ static vector<State> generate_successors(const State& st) {
                             drawn_sets.push_back({st.forced_draw_choice});
                         }
                     } else if (forced) {
-                        // 潜伏帷幕抽 2 张：只保留包含指定随从的组合
-                        auto combs = combo_combinations(missing, draw_count);
-                        for (auto& comb : combs) {
-                            if (std::find(comb.begin(), comb.end(),
-                                          st.forced_draw_choice) != comb.end()) {
-                                drawn_sets.push_back(std::move(comb));
+                        // 潜伏帷幕抽 2 张：只保留包含指定随从的组合。
+                        // 缺失池不足抽取张数时（如只剩 1 个随从），直接抽剩余全部——
+                        // 与常规路径的 missing < draw_count 处理一致，且避免组合越界。
+                        if ((int)missing.size() <= draw_count) {
+                            if (std::find(missing.begin(), missing.end(),
+                                          st.forced_draw_choice) != missing.end()) {
+                                drawn_sets.push_back(missing);
+                            }
+                        } else {
+                            auto combs = combo_combinations(missing, draw_count);
+                            for (auto& comb : combs) {
+                                if (std::find(comb.begin(), comb.end(),
+                                              st.forced_draw_choice) != comb.end()) {
+                                    drawn_sets.push_back(std::move(comb));
+                                }
                             }
                         }
                     } else if ((int)missing.size() < draw_count) {

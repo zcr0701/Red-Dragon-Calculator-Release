@@ -379,7 +379,10 @@ class PowerLogParser:
 
         ent = game.find_entity_by_id(src_id)
 
-        if ent is None or (ent.card_id or "") != "TSC_916":
+        # find_entity_by_id 对 id=1 可能返回 Game 对象本身（无 card_id），防御性取属性
+        ent_card = getattr(ent, "card_id", None)
+
+        if ent is None or ent_card != "TSC_916":
             return
 
         # 只追踪本机玩家的垂钓时光（对手的探底不建模）
@@ -391,8 +394,10 @@ class PowerLogParser:
         for cid in packet.choices:
             c = game.find_entity_by_id(cid)
 
-            if c is not None and c.card_id:
-                name = card_name(c.card_id)
+            c_card = getattr(c, "card_id", None)
+
+            if c is not None and c_card:
+                name = card_name(c_card)
                 if name not in candidates:
                     candidates.append(name)
 
@@ -418,8 +423,10 @@ class PowerLogParser:
         for cid in packet.choices:
             c = game.find_entity_by_id(cid)
 
-            if c is not None and c.card_id:
-                name = card_name(c.card_id)
+            c_card = getattr(c, "card_id", None)
+
+            if c is not None and c_card:
+                name = card_name(c_card)
                 if name not in chosen:
                     chosen.append(name)
 
@@ -470,14 +477,16 @@ class PowerLogParser:
     def _on_play_entity(self, entity_id: int, game) -> None:
         ent = game.find_entity_by_id(entity_id)
 
-        if ent is None or not ent.card_id:
+        ent_card = getattr(ent, "card_id", None)
+
+        if ent is None or not ent_card:
             return
 
         controller = ent.tags.get(GameTag.CONTROLLER)
 
         if controller not in (None, self.local_controller):
             # 敌方随从：异教低阶牧师 / 音箱践踏者 → 我方下个回合法术 +1/+2 费
-            effect = SP_COST_CARD_IDS.get(ent.card_id)
+            effect = SP_COST_CARD_IDS.get(ent_card)
 
             if effect:
                 self.pending_effects[effect] = self.pending_effects.get(effect, 0) + 1
@@ -487,7 +496,7 @@ class PowerLogParser:
             return
 
         self._cards_played_this_turn += 1
-        name = card_name(ent.card_id)
+        name = card_name(ent_card)
         self._consume_effects(name, ent)
 
         if name in EFFECT_CARD_NAMES:
