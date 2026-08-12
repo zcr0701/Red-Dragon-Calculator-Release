@@ -2359,19 +2359,6 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
         // 分桶：按当前龙数，避免高龙数分支挤掉正在蓄力的低龙数高分分支
         map<int, vector<const Cand*>> buckets;
         for (const Cand& c : cands) buckets[c.count].push_back(&c);
-        // 严格全序比较器（总分 > 法力 > 去重 key）：nth_element 需要全序才能
-        // 保证“前 k 个”结果确定；key 在 cands 内唯一，实际仅作确定性兜底。
-        auto cmp_total = [](const Cand* a, const Cand* b) {
-            if (a->total != b->total) return a->total > b->total;
-            if (a->mana != b->mana) return a->mana > b->mana;
-            return a->key < b->key;
-        };
-        auto cmp_hval = [](const Cand* a, const Cand* b) {
-            if (a->hval != b->hval) return a->hval > b->hval;
-            if (a->total != b->total) return a->total > b->total;
-            if (a->mana != b->mana) return a->mana > b->mana;
-            return a->key < b->key;
-        };
         // 每桶配额放宽（1.8×），并多保留启发值冠军，避免深线（如 102558 的 112 伤
         // 法力农场线）被“总分高但同质”的分支挤掉。
         int per_bucket = std::max(1, (int)(beam_width * 1.8 / std::max(1, (int)buckets.size())));
@@ -2379,22 +2366,24 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
         all_selected.reserve(std::min((size_t)(beam_width * 2), cands.size()));
         for (auto it = buckets.rbegin(); it != buckets.rend(); ++it) {
             auto& bstates = it->second;
-            // 只取每桶前 per_bucket 名：nth_element 分区 O(N)，再只排前段
-            size_t sel_n = std::min((size_t)per_bucket, bstates.size());
-            std::nth_element(bstates.begin(), bstates.begin() + sel_n,
-                             bstates.end(), cmp_total);
-            std::sort(bstates.begin(), bstates.begin() + sel_n, cmp_total);
+            std::stable_sort(bstates.begin(), bstates.end(),
+                             [](const Cand* a, const Cand* b) {
+                                 if (a->total != b->total) return a->total > b->total;
+                                 return a->mana > b->mana;
+                             });
             vector<const Cand*> selected;
-            for (size_t i = 0; i < sel_n; i++) selected.push_back(bstates[i]);
+            for (int i = 0; i < per_bucket && i < (int)bstates.size(); i++) selected.push_back(bstates[i]);
             if (!bstates.empty()) {
                 // 冠军（最多 3 个去重）：启发值优先，其次总分，其次法力——
                 // 让“启发值高但当前伤害低”的深线分支有机会保留。
                 vector<const Cand*> champs(bstates);
-                size_t champ_n = std::min((size_t)3, champs.size());
-                std::nth_element(champs.begin(), champs.begin() + champ_n,
-                                 champs.end(), cmp_hval);
-                std::sort(champs.begin(), champs.begin() + champ_n, cmp_hval);
-                for (size_t i = 0; i < champ_n; i++) {
+                std::stable_sort(champs.begin(), champs.end(),
+                                 [](const Cand* a, const Cand* b) {
+                                     if (a->hval != b->hval) return a->hval > b->hval;
+                                     if (a->total != b->total) return a->total > b->total;
+                                     return a->mana > b->mana;
+                                 });
+                for (int i = 0; i < 3 && i < (int)champs.size(); i++) {
                     const Cand* champ = champs[i];
                     bool found = false;
                     for (const Cand* sel : selected) {
@@ -2408,15 +2397,17 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
         vector<State> next_level;
         // 全局按总分取前 beam_width（不整桶砍掉低龙数蓄力桶），
         // 再给每个龙数桶保底 beam_width/(2N) 个名额，避免"总分高但同质"分支挤掉必要延续。
-        size_t keep_n = std::min((size_t)beam_width, all_selected.size());
-        std::nth_element(all_selected.begin(), all_selected.begin() + keep_n,
-                         all_selected.end(), cmp_total);
-        std::sort(all_selected.begin(), all_selected.begin() + keep_n, cmp_total);
+        std::stable_sort(all_selected.begin(), all_selected.end(),
+                         [](const Cand* a, const Cand* b) {
+                             if (a->total != b->total) return a->total > b->total;
+                             return a->mana > b->mana;
+                         });
         int nb = (int)buckets.size();
         int floor_pb = std::max(1, beam_width / std::max(1, 2 * nb));
         vector<const Cand*> keep;
         keep.reserve(beam_width);
-        for (size_t i = 0; i < keep_n; i++) keep.push_back(all_selected[i]);
+        size_t top_n = std::min((size_t)beam_width, all_selected.size());
+        for (size_t i = 0; i < top_n; i++) keep.push_back(all_selected[i]);
         map<int, int> in_keep;
         for (const Cand* c : keep) in_keep[c->count]++;
         for (auto& kv : buckets) {
@@ -2428,7 +2419,11 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
                 keep.pop_back();
                 keep.push_back(c);
                 need--;
-                std::sort(keep.begin(), keep.end(), cmp_total);
+                std::stable_sort(keep.begin(), keep.end(),
+                                 [](const Cand* a, const Cand* b) {
+                                     if (a->total != b->total) return a->total > b->total;
+                                     return a->mana > b->mana;
+                                 });
             }
         }
         next_level.reserve(keep.size());
