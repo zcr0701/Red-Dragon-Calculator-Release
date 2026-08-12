@@ -1056,6 +1056,20 @@ class WhatIFTreeWidget(QTreeWidget):
         def join_steps(steps: List[str]) -> str:
             return "-".join(abbr_fn(str(s), compact=False) for s in steps)
 
+        # 顶部一行：WhatIF 标题 + 最高平均伤害 + 保底伤害（并列）
+        worst = int(tree.get("worst") or 0)
+        avg = data.get("whatif_average") or {}
+
+        if avg:
+            header = (
+                f"WhatIF:最高平均伤害:{_fmt_avg(avg.get('damage'))}，"
+                f"保底伤害{worst}"
+            )
+        else:
+            header = f"WhatIF:保底伤害{worst}"
+
+        self.addTopLevelItem(self._item(header))
+
         # 根：指引路径（到第一个分支卡，如 币-刀-行骗）
         root_steps = [str(s) for s in (tree.get("root") or [])]
         root_item: Optional[QTreeWidgetItem] = None
@@ -1063,19 +1077,6 @@ class WhatIFTreeWidget(QTreeWidget):
         if root_steps:
             root_item = self._item(join_steps(root_steps))
             self.addTopLevelItem(root_item)
-
-        # 保底 / 平均
-        worst = int(tree.get("worst") or 0)
-        self.addTopLevelItem(self._item(f"保底伤害：{worst}"))
-        avg = data.get("whatif_average") or {}
-
-        if avg:
-            self.addTopLevelItem(
-                self._item(
-                    f"平均伤害：{_fmt_avg(avg.get('damage'))}，"
-                    f"平均龙数：{_fmt_avg(avg.get('dragons'))}"
-                )
-            )
 
         # 次级：每个抽取结果（行骗(牛)/行骗(狐)…）
         for tb in branches:
@@ -3658,7 +3659,12 @@ class MiniWindow(QWidget):
         self.mini_result = QTextBrowser()
         self.mini_result.setReadOnly(True)
         self.mini_result.document().setMaximumBlockCount(3000)
-        root.addWidget(self.mini_result, 1)
+        # 正常线按内容高度完整显示（贴到自己的底边），WhatIF 树紧贴其下方，
+        # 而不是和 WhatIF 各占一半把正常线截断。
+        self.mini_result.setSizePolicy(
+            QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        )
+        root.addWidget(self.mini_result, 0)
         self.mini_whatif_tree = WhatIFTreeWidget()
         self.mini_whatif_tree.setVisible(False)
         root.addWidget(self.mini_whatif_tree, 1)
