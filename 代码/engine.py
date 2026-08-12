@@ -729,6 +729,43 @@ def find_engine(exe_path: Optional[str] = None) -> Optional[str]:
     return None
 
 
+def build_dredge_options(snapshot: Dict[str, object]) -> List[str]:
+    """垂钓时光探底分叉池：已知底牌 + 可能缺失的组合随从（最多 3 张）。
+
+    阅读器只追踪到部分底牌时，未知的底牌可能是组合随从（如手牌+场面已有
+    鱼狐刀暗牛时，牌库只剩晦）——把它补进分叉池，才能探索“探底拿晦回费”
+    这类更高伤可能；缺位仍由 C++ 以“未知杂牌”兜底。
+    """
+    dredge = []
+
+    for item in snapshot.get("dredge_bottom") or []:
+        name = str(item.get("name")) if isinstance(item, dict) else str(item)
+
+        if name and name != "未知杂牌":
+            dredge.append(name)
+
+    have_names = {
+        str(h.get("name", "")) for h in (snapshot.get("hand") or [])
+    } | {str(b.get("name", "")) for b in (snapshot.get("board") or [])}
+
+    # 与 C++ COMBO_MINION_POOL 保持一致（鱼/刀/牛/暗/晦/狐；腾武默认不勾）
+    for n in (
+        "鲨鱼之灵",
+        "斯卡布斯·刀油",
+        "乐队经理精英牛头人酋长",
+        "暗影施法者",
+        "晦鳞巢母",
+        "狐人老千",
+    ):
+        if len(dredge) >= 3:
+            break
+
+        if n not in have_names and n not in dredge:
+            dredge.append(n)
+
+    return dredge[:3]
+
+
 def build_payload(
     snapshot: Dict[str, object],
     *,
@@ -877,11 +914,10 @@ def build_payload(
         #   导致行骗等按“无随从/无法术”误判。）
         "deck_is_known": int(snapshot.get("deck_unknown_cards") or 0) == 0,
         "deck": [{"name": item["name"]} for item in snapshot.get("deck") or []],
-        # 垂钓时光探底已知牌（阅读器自动追踪；缺位视为未知杂牌）
-        "dredge_bottom": [
-            str(item["name"]) if isinstance(item, dict) else str(item)
-            for item in snapshot.get("dredge_bottom") or []
-        ],
+        # 垂钓时光探底已知牌（阅读器自动追踪；缺位视为未知杂牌）。
+        # 未知底牌可能是缺失的组合随从（如牌库只剩晦）：补进探底分叉，
+        # 让搜索/WhatIF 探索“垂钓时光拿到晦回费”等可能；仍以未知杂牌兜底。
+        "dredge_bottom": build_dredge_options(snapshot),
         "hand": hand,
         "board": board,
         "enemy_board": enemy_board,

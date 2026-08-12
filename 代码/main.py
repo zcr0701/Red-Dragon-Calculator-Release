@@ -1518,6 +1518,15 @@ class CalculationWorker(QThread):
                             for n in (self.snapshot.get("dredge_bottom") or [])
                             if str(n)
                         ]
+                        # 未知底牌可能是缺失的组合随从（如牌库只剩晦）：补进分叉池，
+                        # 探索“探底拿晦回费”等可能（与 engine.build_dredge_options 一致）
+                        for mn in missing_draw:
+                            if len(branch_pool) >= 3:
+                                break
+
+                            if mn not in branch_pool:
+                                branch_pool.append(mn)
+
                         if len(branch_pool) < 3:
                             branch_pool.append("未知杂牌")
                     else:
