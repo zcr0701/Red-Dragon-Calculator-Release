@@ -1058,8 +1058,11 @@ class WhatIFTreeWidget(QTreeWidget):
 
         # 根：指引路径（到第一个分支卡，如 币-刀-行骗）
         root_steps = [str(s) for s in (tree.get("root") or [])]
-        root_item = self._item(join_steps(root_steps) if root_steps else "")
-        self.addTopLevelItem(root_item)
+        root_item: Optional[QTreeWidgetItem] = None
+
+        if root_steps:
+            root_item = self._item(join_steps(root_steps))
+            self.addTopLevelItem(root_item)
 
         # 保底 / 平均
         worst = int(tree.get("worst") or 0)
@@ -1085,7 +1088,11 @@ class WhatIFTreeWidget(QTreeWidget):
             if children:
                 # 次级：完整中间路径（如 行骗(牛)-暗(刀2)-步(刀2)-…-持枪要挟）
                 node = self._item(join_steps(mid) if mid else "")
-                root_item.addChild(node)
+
+                if root_item is not None:
+                    root_item.addChild(node)
+                else:
+                    self.addTopLevelItem(node)
 
                 # 次次级：持枪要挟发现结果
                 for ch in children:
@@ -1107,7 +1114,11 @@ class WhatIFTreeWidget(QTreeWidget):
                     (join_steps(mid) if mid else "")
                     + f"({dmg}伤余{mana}费)"
                 )
-                root_item.addChild(node)
+
+                if root_item is not None:
+                    root_item.addChild(node)
+                else:
+                    self.addTopLevelItem(node)
 
         # 默认折叠（用户自行展开查看各分支/路径）
 
@@ -1131,12 +1142,12 @@ def _whatif_tree_text(data: Dict[str, object]) -> str:
         return ""
 
     root_steps = [str(s) for s in (tree.get("root") or [])]
-    lines = [
-        "WhatIF指引树：",
-        "-".join(abbreviate_step(s, compact=False) for s in root_steps)
-        if root_steps
-        else "",
-    ]
+    lines = ["WhatIF指引树："]
+
+    if root_steps:
+        lines.append(
+            "-".join(abbreviate_step(s, compact=False) for s in root_steps)
+        )
 
     for tb in branches:
         dmg = int(tb.get("damage") or 0)
@@ -1615,6 +1626,97 @@ class CalculationWorker(QThread):
                                         )
                                     )
                                     for ch in main_children
+                                )
+                                / total_w,
+                            }
+
+                # 主路径为空（0 伤/无路径）时：主搜索仍返回了分支卡的全部分支
+                # （draw_branches/quickdraw_branches，修复后含“行骗[殒]双抽”等
+                # 殒命暗影变形线），直接复用它们构建 WhatIF 树，让用户看到各随机
+                # 分支的真实结果（如 6 费下双抽线均因法力不足为 0 伤）。
+                if whatif_tree is None and not self._stop:
+                    main_draw = list(result.get("draw_branches") or [])
+                    main_qd = list(result.get("quickdraw_branches") or [])
+                    fb_branches: List[Dict[str, object]] = []
+
+                    for b in main_draw:
+                        pth = list(b.get("path") or [])
+                        fb_branches.append(
+                            {
+                                "outcome": str(b.get("card") or ""),
+                                "damage": int(b.get("damage") or 0),
+                                "dragons": int(b.get("dragons") or 0),
+                                "mana_left": int(b.get("mana_left") or 0),
+                                "mid": [str(s) for s in pth],
+                                "path": pth,
+                            }
+                        )
+
+                    for b in main_qd:
+                        pth = list(b.get("path") or [])
+                        fb_branches.append(
+                            {
+                                "outcome": str(b.get("card") or ""),
+                                "damage": int(b.get("damage") or 0),
+                                "dragons": int(b.get("dragons") or 0),
+                                "mana_left": int(b.get("mana_left") or 0),
+                                "mid": [str(s) for s in pth],
+                                "path": pth,
+                            }
+                        )
+
+                    if fb_branches:
+                        whatif_tree = {
+                            "root": [],
+                            "branches": fb_branches,
+                            "worst": min(
+                                int(b.get("damage") or 0) for b in fb_branches
+                            ),
+                            "main_outcome": "",
+                        }
+                        draw_branches = main_draw or None
+                        quickdraw_branches = main_qd or None
+
+                        if main_draw:
+                            n_draw = max(1, len(main_draw))
+                            whatif_average = {
+                                "damage": sum(
+                                    int(b.get("damage") or 0) for b in main_draw
+                                )
+                                / n_draw,
+                                "dragons": sum(
+                                    int(b.get("dragons") or 0) for b in main_draw
+                                )
+                                / n_draw,
+                            }
+                        elif main_qd:
+                            total_w = sum(
+                                int(
+                                    engine.QUICKDRAW_WEIGHTS.get(
+                                        str(b.get("card") or ""), 1
+                                    )
+                                )
+                                for b in main_qd
+                            )
+                            whatif_average = {
+                                "damage": sum(
+                                    int(b.get("damage") or 0)
+                                    * int(
+                                        engine.QUICKDRAW_WEIGHTS.get(
+                                            str(b.get("card") or ""), 1
+                                        )
+                                    )
+                                    for b in main_qd
+                                )
+                                / total_w,
+                                "dragons": sum(
+                                    int(b.get("dragons") or 0)
+                                    * int(
+                                        engine.QUICKDRAW_WEIGHTS.get(
+                                            str(b.get("card") or ""), 1
+                                        )
+                                    )
+                                    for b in main_qd
                                 )
                                 / total_w,
                             }
