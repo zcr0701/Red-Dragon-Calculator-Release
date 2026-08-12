@@ -35,6 +35,7 @@ import cloud_report
 from PyQt5.QtCore import (
     QEventLoop,
     QPoint,
+    QRect,
     QRectF,
     QSize,
     QSettings,
@@ -80,6 +81,7 @@ from PyQt5.QtWidgets import (
     QSplitter,
     QStyledItemDelegate,
     QStyle,
+    QStyleOptionViewItem,
     QTextBrowser,
     QTreeWidget,
     QTreeWidgetItem,
@@ -1001,10 +1003,20 @@ class _TreeHtmlDelegate(QStyledItemDelegate):
         if not html_txt:
             return super().sizeHint(option, index)
 
+        # 按视口宽度换行测量实际高度：路径很长时不再单行显示被截断，
+        # 而是换行并把行高撑起来（配合 WhatIFTreeWidget.sizeHint 自动伸缩）。
+        widget = option.widget
+        view_width = (
+            widget.viewport().width() - 8
+            if widget is not None and widget.viewport() is not None
+            else 320
+        )
+        width = max(80, view_width)
         doc = QTextDocument()
         doc.setDefaultFont(option.font)
         doc.setHtml(html_txt)
-        return QSize(int(doc.idealWidth()) + 12, int(doc.size().height()) + 8)
+        doc.setTextWidth(float(width))
+        return QSize(width + 8, int(doc.size().height()) + 10)
 
 
 class WhatIFTreeWidget(QTreeWidget):
@@ -1012,6 +1024,10 @@ class WhatIFTreeWidget(QTreeWidget):
 
     代替文本式“├─ 空格对齐”显示：树形结构由 QTreeWidget 原生提供，
     节点内容保留彩色缩写字框（HTML 代理渲染）。
+
+    QTreeView 是滚动区域，默认 sizeHint 固定（256×192），不会因节点折叠/展开
+    通知父布局，导致外层“框”不随内容伸缩、换行文本被截断。这里重写 sizeHint
+    计算所有展开项的可见总高度，并监听 expanded/collapsed 强制刷新布局。
     """
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -1022,6 +1038,80 @@ class WhatIFTreeWidget(QTreeWidget):
         self.setSelectionMode(QAbstractItemView.NoSelection)
         self.setItemDelegate(_TreeHtmlDelegate(self))
         self.setStyleSheet("QTreeWidget::item { padding: 1px 0; }")
+        # 换行 + 非统一行高：长路径换行撑高行距（必须 False 才能按内容算高度）
+        self.setWordWrap(True)
+        self.setUniformRowHeights(False)
+        if self.header() is not None:
+            self.header().setStretchLastSection(True)
+        # 纵向最多到内容高度（不无限撑开），横向填满父容器
+        self.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum))
+        self.expanded.connect(self._content_changed)
+        self.collapsed.connect(self._content_changed)
+
+    def _content_changed(self, *_args) -> None:
+        """内容（展开/折叠/字体/数据）变化：通知父布局重新排布。"""
+        self.updateGeometry()
+        parent = self.parentWidget()
+
+        if parent is not None:
+            parent.updateGeometry()
+
+            # 小窗：让窗口高度随树内容伸缩（框随内容自动伸缩）
+            if isinstance(parent, MiniWindow):
+                screen = QApplication.primaryScreen()
+                max_h = (
+                    screen.availableGeometry().height() - 40
+                    if screen is not None
+                    else 1400
+                )
+                hint_h = parent.sizeHint().height()
+                parent.resize(parent.width(), min(max(180, hint_h), max_h))
+
+    def _item_height(self, item: QTreeWidgetItem) -> int:
+        """单行高度：按视口宽度换行后的实际高度（经委托测量）。"""
+        idx = self.indexFromItem(item)
+        opt = QStyleOptionViewItem()
+        opt.initFrom(self)
+        opt.rect = QRect(0, 0, max(80, self.viewport().width()), 20)
+        opt.font = self.font()
+        return max(18, self.itemDelegate().sizeHint(opt, idx).height())
+
+    def _children_height(self, item: QTreeWidgetItem) -> int:
+        """item 展开时其所有可见子项（含递归展开孙项）的总高度。"""
+        total = 0
+
+        for i in range(item.childCount()):
+            child = item.child(i)
+            total += self._item_height(child)
+
+            if child.isExpanded():
+                total += self._children_height(child)
+
+        return total
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt 命名
+        """计算所有展开项的可见总高度；折叠后高度立即变小，父布局随之收缩。"""
+        if self.topLevelItemCount() == 0:
+            return super().sizeHint()
+
+        total = 0
+
+        for i in range(self.topLevelItemCount()):
+            item = self.topLevelItem(i)
+            total += self._item_height(item)
+
+            if item.isExpanded():
+                total += self._children_height(item)
+
+        frame = self.frameWidth() * 2
+        total += frame
+        screen = QApplication.primaryScreen()
+        cap = (
+            screen.availableGeometry().height() - 120
+            if screen is not None
+            else 1200
+        )
+        return QSize(super().sizeHint().width(), min(max(40, total), cap))
 
     @staticmethod
     def _item(text: str) -> QTreeWidgetItem:
@@ -1123,6 +1213,7 @@ class WhatIFTreeWidget(QTreeWidget):
                     self.addTopLevelItem(node)
 
         # 默认折叠（用户自行展开查看各分支/路径）
+        self._content_changed()
 
     @staticmethod
     def _tail_steps(path: List[str], start_marker: str) -> List[str]:
@@ -3778,6 +3869,7 @@ class MiniWindow(QWidget):
         self.mini_result.setFont(font)
         self.mini_result.document().setDefaultFont(font)
         self.mini_whatif_tree.setFont(font)
+        self.mini_whatif_tree._content_changed()
 
     # ---- 拖动 / 吸附 / 调整大小 ----
 
