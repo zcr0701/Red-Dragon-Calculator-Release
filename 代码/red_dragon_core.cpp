@@ -106,6 +106,29 @@ static std::shared_ptr<const std::string> intern_name(const string& name) {
     return sp;
 }
 
+// 热路径卡名驻留指针：卡名经 intern_name 驻留，指针相等 ≡ 字符串相等。
+// 启发函数/特征扫描对每个候选状态做数十次卡名比较（每局数百万次），
+// 用指针比较替代逐字节字符串比较是 SIMD 无法覆盖的标量大头。
+static const std::shared_ptr<const std::string> N_SHARK = intern_name("鲨鱼之灵");
+static const std::shared_ptr<const std::string> N_MOTHER = intern_name("晦鳞巢母");
+static const std::shared_ptr<const std::string> N_CASTER = intern_name("暗影施法者");
+static const std::shared_ptr<const std::string> N_STEP = intern_name("暗影步");
+static const std::shared_ptr<const std::string> N_DANCE = intern_name("舞动全场（ft.迦罗娜）");
+static const std::shared_ptr<const std::string> N_POTION = intern_name("幻觉药水");
+static const std::shared_ptr<const std::string> N_SCABBS = intern_name("斯卡布斯·刀油");
+static const std::shared_ptr<const std::string> N_ETC = intern_name("乐队经理精英牛头人酋长");
+static const std::shared_ptr<const std::string> N_DRAGON = intern_name("生命的缚誓者阿莱克丝塔萨");
+static const std::shared_ptr<const std::string> N_TENWU = intern_name("赤烟·腾武");
+static const std::shared_ptr<const std::string> N_TRANSFER = intern_name("战略转移");
+static const std::shared_ptr<const std::string> N_DEADLY = intern_name("殒命暗影");
+static const std::shared_ptr<const std::string> N_SWINDLE = intern_name("行骗");
+static const std::shared_ptr<const std::string> N_DIG = intern_name("挖掘宝藏");
+static const std::shared_ptr<const std::string> N_CURTAIN = intern_name("潜伏帷幕");
+static const std::shared_ptr<const std::string> N_QUICKDRAW = intern_name("持枪要挟");
+static const std::shared_ptr<const std::string> N_FISHIN = intern_name("垂钓时光");
+static const std::shared_ptr<const std::string> N_FOX = intern_name("狐人老千");
+static const std::shared_ptr<const std::string> N_BONE = intern_name("锯齿骨刺");
+
 struct CardDef {
     int cost;
     string card_type;
@@ -368,7 +391,7 @@ struct State {
 
     bool has_shark() const {
         for (const auto& c : board)
-            if (c.name() == "鲨鱼之灵") return true;
+            if (c.name_ == N_SHARK) return true;
         return false;
     }
 
@@ -410,7 +433,7 @@ static bool same_playable_card(const State& s, const Card& a, const Card& b) {
         return false;
     bool transfer_around = false;
     for (const auto& c : s.hand)
-        if (c.name() == "战略转移") { transfer_around = true; break; }
+        if (c.name_ == N_TRANSFER) { transfer_around = true; break; }
     if (!transfer_around) {
         for (const auto& n : s.etc_band)
             if (n == "战略转移") { transfer_around = true; break; }
@@ -452,7 +475,7 @@ static void add_card_to_hand_or_burn(State& s, const Card& card) {
 }
 
 static void transform_deadly_shadows(State& s, const Card& spell_card) {
-    if (spell_card.original_name() == "殒命暗影") return;
+    if (spell_card.original_name_ == N_DEADLY) return;
     auto it = DB.find(spell_card.original_name());
     if (it == DB.end()) return;
     for (auto& c : s.hand) {
@@ -522,7 +545,7 @@ static bool play_card_base(State& s, int hand_index, int target_friendly_index,
     }
     s.path_mut().push_back(item);
 
-    if (card.name() == "生命的缚誓者阿莱克丝塔萨") {
+    if (card.name_ == N_DRAGON) {
         s.alex_play_count++;
         if (enemy_target) {
             int mult = s.has_shark() ? 2 : 1;
@@ -1045,17 +1068,17 @@ static bool combo_active(const State& s) { return s.cards_played_this_turn > 0; 
 static bool combo_minion_set_complete(const State& s) {
     bool scabbs = false, shark = false, tenwu = false, etc = false, mother = false;
     bool foxy = false, caster = false;
-    auto mark = [&](const string& n) {
-        if (n == "斯卡布斯·刀油") scabbs = true;
-        else if (n == "鲨鱼之灵") shark = true;
-        else if (n == "赤烟·腾武") tenwu = true;
-        else if (n == "乐队经理精英牛头人酋长") etc = true;
-        else if (n == "晦鳞巢母") mother = true;
-        else if (n == "狐人老千") foxy = true;
-        else if (n == "暗影施法者") caster = true;
+    auto mark = [&](const std::shared_ptr<const std::string>& n) {
+        if (n == N_SCABBS) scabbs = true;
+        else if (n == N_SHARK) shark = true;
+        else if (n == N_TENWU) tenwu = true;
+        else if (n == N_ETC) etc = true;
+        else if (n == N_MOTHER) mother = true;
+        else if (n == N_FOX) foxy = true;
+        else if (n == N_CASTER) caster = true;
     };
-    for (const auto& c : s.hand) mark(c.name());
-    for (const auto& c : s.board) mark(c.name());
+    for (const auto& c : s.hand) mark(c.name_);
+    for (const auto& c : s.board) mark(c.name_);
     if (scabbs && shark && tenwu && etc && mother) return true;              // ①
     if (scabbs && shark && foxy && caster && etc && mother) return true;     // ②
     return false;
@@ -1426,7 +1449,7 @@ static vector<State> generate_successors(const State& st) {
             if (card.effect_id == "tenwu") {
                 // 腾武不能以腾武为目标（自回环非法）；目标顺序由路径标注
                 for (int i = 0; i < (int)st.board.size(); i++) {
-                    if (st.board[i].name() == "赤烟·腾武") continue;
+                    if (st.board[i].name_ == N_TENWU) continue;
                     friendly_targets.push_back(i);
                 }
             } else {
@@ -1742,9 +1765,19 @@ static int count_hand_cards(const State& s, const string& name) {
     for (const auto& c : s.hand) if (c.name() == name) n++;
     return n;
 }
+static int count_hand_cards(const State& s, const std::shared_ptr<const std::string>& name) {
+    int n = 0;
+    for (const auto& c : s.hand) if (c.name_ == name) n++;
+    return n;
+}
 static int count_board_cards(const State& s, const string& name) {
     int n = 0;
     for (const auto& c : s.board) if (c.name() == name) n++;
+    return n;
+}
+static int count_board_cards(const State& s, const std::shared_ptr<const std::string>& name) {
+    int n = 0;
+    for (const auto& c : s.board) if (c.name_ == name) n++;
     return n;
 }
 static int count_hand_dragons(const State& s) {
@@ -1769,29 +1802,27 @@ static BottleneckParts bottleneck_parts(const State& s) {
     int shark_in_hand = 0, single_returns = 0, whole_returns = 0, deadly = 0;
     int cheapest_dragon = -1;
     for (const auto& c : s.hand) {
-        const string& n = c.name();
         if (c.dragon) {
             hand_dragons++;
             int cost = effective_cost(s, c);
             if (cost >= 0 && (cheapest_dragon < 0 || cost < cheapest_dragon)) cheapest_dragon = cost;
-        } else if (n == "暗影施法者") {
+        } else if (c.name_ == N_CASTER) {
             shadowcaster++;
-        } else if (n == "斯卡布斯·刀油") {
+        } else if (c.name_ == N_SCABBS) {
             scabbs++;
-        } else if (n == "鲨鱼之灵") {
+        } else if (c.name_ == N_SHARK) {
             shark_in_hand++;
-        } else if (n == "暗影步" || n == "赤烟·腾武") {
+        } else if (c.name_ == N_STEP || c.name_ == N_TENWU) {
             single_returns++;
-        } else if (n == "舞动全场（ft.迦罗娜）" || n == "幻觉药水" || n == "战略转移") {
+        } else if (c.name_ == N_DANCE || c.name_ == N_POTION || c.name_ == N_TRANSFER) {
             whole_returns++;
         }
         if (c.is_deadly_shadow) deadly++;
     }
     for (const auto& c : s.board) {
-        const string& n = c.name();
-        if (n == "生命的缚誓者阿莱克丝塔萨") board_dragons++;
-        else if (n == "暗影施法者") shadowcaster++;
-        else if (n == "斯卡布斯·刀油") scabbs++;
+        if (c.name_ == N_DRAGON) board_dragons++;
+        else if (c.name_ == N_CASTER) shadowcaster++;
+        else if (c.name_ == N_SCABBS) scabbs++;
     }
     bool shark = s.has_shark() || shark_in_hand > 0;
 
@@ -1895,22 +1926,20 @@ static int subchain_score(const State& s) {
     for (const auto& c : s.hand) {
         if (c.dragon) hand_d++;
         if (c.is_deadly_shadow) deadly = true;
-        const string& n = c.name();
-        if (n == "鲨鱼之灵") shark_in_hand++;
-        else if (n == "晦鳞巢母") mother++;
-        else if (n == "暗影施法者") shadowcaster++;
-        else if (n == "暗影步") shadowstep++;
-        else if (n == "舞动全场（ft.迦罗娜）") dance++;
-        else if (n == "幻觉药水") potion++;
-        else if (n == "斯卡布斯·刀油") scabbs++;
-        else if (n == "乐队经理精英牛头人酋长") etc_count++;
+        if (c.name_ == N_SHARK) shark_in_hand++;
+        else if (c.name_ == N_MOTHER) mother++;
+        else if (c.name_ == N_CASTER) shadowcaster++;
+        else if (c.name_ == N_STEP) shadowstep++;
+        else if (c.name_ == N_DANCE) dance++;
+        else if (c.name_ == N_POTION) potion++;
+        else if (c.name_ == N_SCABBS) scabbs++;
+        else if (c.name_ == N_ETC) etc_count++;
     }
     for (const auto& c : s.board) {
-        const string& n = c.name();
-        if (n == "生命的缚誓者阿莱克丝塔萨") board_d++;
-        else if (n == "晦鳞巢母") mother++;
-        else if (n == "暗影施法者") shadowcaster++;
-        else if (n == "鲨鱼之灵") shark_on++;
+        if (c.name_ == N_DRAGON) board_d++;
+        else if (c.name_ == N_MOTHER) mother++;
+        else if (c.name_ == N_CASTER) shadowcaster++;
+        else if (c.name_ == N_SHARK) shark_on++;
     }
     int dragons = hand_d + board_d;
     bool shark = shark_on > 0 || shark_in_hand > 0;
@@ -1934,8 +1963,7 @@ static int subchain_score(const State& s) {
         }
         if (!playable_dragon) {
             for (const auto& c : s.hand) {
-                const string& n = c.name();
-                if (n == "暗影施法者" || n == "幻觉药水") {
+                if (c.name_ == N_CASTER || c.name_ == N_POTION) {
                     int cc = effective_cost(s, c);
                     if (cc >= 0 && cc <= s.mana) { score += 16; break; }
                 }
@@ -1951,7 +1979,7 @@ static int subchain_score(const State& s) {
             int cc = c.current_cost();
             if (cc != 1) continue;
             if (c.dragon) dragon1 = true;
-            else if (c.name() == "鲨鱼之灵") fish1 = true;
+            else if (c.name_ == N_SHARK) fish1 = true;
         }
         if (fish1 && dragon1) score += 18;
     }
@@ -1976,7 +2004,7 @@ static int subchain_score(const State& s) {
         if (!p.empty() && p.back().find("生命的缚誓者") != string::npos) {
             for (const auto& c : s.hand) {
                 int cc = effective_cost(s, c);
-                if (c.name() == "鲨鱼之灵" && cc >= 0 && cc <= s.mana) {
+                if (c.name_ == N_SHARK && cc >= 0 && cc <= s.mana) {
                     score -= 24;
                     break;
                 }
@@ -1994,8 +2022,7 @@ static int subchain_score(const State& s) {
     {
         bool has_draw_card = false;
         for (const auto& c : s.hand) {
-            const string& n = c.name();
-            if (n == "行骗" || n == "挖掘宝藏" || n == "潜伏帷幕") {
+            if (c.name_ == N_SWINDLE || c.name_ == N_DIG || c.name_ == N_CURTAIN) {
                 int cc = effective_cost(s, c);
                 if (cc >= 0 && cc <= s.mana) { has_draw_card = true; break; }
             }
@@ -2008,7 +2035,7 @@ static int subchain_score(const State& s) {
     {
         bool has_qd = false;
         for (const auto& c : s.hand) {
-            if (c.name() == "持枪要挟") {
+            if (c.name_ == N_QUICKDRAW) {
                 int cc = effective_cost(s, c);
                 if (cc >= 0 && cc <= s.mana) { has_qd = true; break; }
             }
@@ -2030,7 +2057,7 @@ static int subchain_score(const State& s) {
     {
         bool has_fishin = false;
         for (const auto& c : s.hand) {
-            if (c.name() == "垂钓时光") {
+            if (c.name_ == N_FISHIN) {
                 int cc = effective_cost(s, c);
                 if (cc >= 0 && cc <= s.mana) { has_fishin = true; break; }
             }
@@ -2137,22 +2164,20 @@ static double heuristic_value(const State& s, int h) {
             int whole_returns = 0, single_returns = 0, scabbs = 0, deadly = 0;
             int cheapest = -1;
             for (const auto& c : s.hand) {
-                const string& n = c.name();
                 if (c.dragon) {
                     hand_d++;
                     int cost = effective_cost(s, c);
                     if (cost >= 0 && (cheapest < 0 || cost < cheapest)) cheapest = cost;
-                } else if (n == "暗影施法者") shadowcaster++;
-                else if (n == "斯卡布斯·刀油") scabbs++;
-                else if (n == "鲨鱼之灵") shark_in_hand++;
-                else if (n == "暗影步" || n == "赤烟·腾武") single_returns++;
-                else if (n == "舞动全场（ft.迦罗娜）" || n == "幻觉药水" || n == "战略转移") whole_returns++;
+                } else if (c.name_ == N_CASTER) shadowcaster++;
+                else if (c.name_ == N_SCABBS) scabbs++;
+                else if (c.name_ == N_SHARK) shark_in_hand++;
+                else if (c.name_ == N_STEP || c.name_ == N_TENWU) single_returns++;
+                else if (c.name_ == N_DANCE || c.name_ == N_POTION || c.name_ == N_TRANSFER) whole_returns++;
                 if (c.is_deadly_shadow) deadly++;
             }
             for (const auto& c : s.board) {
-                const string& n = c.name();
-                if (n == "生命的缚誓者阿莱克丝塔萨") board_d++;
-                else if (n == "暗影施法者") shadowcaster++;
+                if (c.name_ == N_DRAGON) board_d++;
+                else if (c.name_ == N_CASTER) shadowcaster++;
             }
             bool shark = s.has_shark() || shark_in_hand > 0;
             double sources = (double)(hand_d + board_d + shadowcaster * (shark ? 2 : 1));
@@ -2163,14 +2188,14 @@ static double heuristic_value(const State& s, int h) {
             return std::min(sources, std::min(capacity, bp.mana_rounds)) * 16.0;
         }
         case 13: {  // 协同密度：已凑齐的搭档对
-            bool shark_avail = s.has_shark() || count_hand_cards(s, "鲨鱼之灵") > 0;
-            int dragons = count_hand_dragons(s) + count_board_cards(s, "生命的缚誓者阿莱克丝塔萨");
-            int mother = count_hand_cards(s, "晦鳞巢母") + count_board_cards(s, "晦鳞巢母");
-            int shadowcaster = count_hand_cards(s, "暗影施法者") + count_board_cards(s, "暗影施法者");
-            int shadowstep = count_hand_cards(s, "暗影步");
-            int dance_potion = count_hand_cards(s, "舞动全场（ft.迦罗娜）") + count_hand_cards(s, "幻觉药水");
-            int scabbs = count_hand_cards(s, "斯卡布斯·刀油") + count_board_cards(s, "斯卡布斯·刀油");
-            int foxy = count_hand_cards(s, "狐人老千");
+            bool shark_avail = s.has_shark() || count_hand_cards(s, N_SHARK) > 0;
+            int dragons = count_hand_dragons(s) + count_board_cards(s, N_DRAGON);
+            int mother = count_hand_cards(s, N_MOTHER) + count_board_cards(s, N_MOTHER);
+            int shadowcaster = count_hand_cards(s, N_CASTER) + count_board_cards(s, N_CASTER);
+            int shadowstep = count_hand_cards(s, N_STEP);
+            int dance_potion = count_hand_cards(s, N_DANCE) + count_hand_cards(s, N_POTION);
+            int scabbs = count_hand_cards(s, N_SCABBS) + count_board_cards(s, N_SCABBS);
+            int foxy = count_hand_cards(s, N_FOX);
             int pairs = 0;
             if (dragons > 0 && shark_avail) pairs++;
             if (dragons > 0 && mother > 0) pairs++;
@@ -2230,21 +2255,19 @@ static int max_extra_dragon_plays(const State& s, int remaining) {
     bool shark = false;
     int sc = 0, wr = 0, sr = 0, po = 0, etc = 0, dl = 0;
     for (const auto& c : s.hand) {
-        const string& n = c.name();
         if (c.dragon) plays++;
-        else if (n == "暗影施法者") sc++;
-        else if (n == "舞动全场（ft.迦罗娜）") wr++;
-        else if (n == "幻觉药水") po++;
-        else if (n == "乐队经理精英牛头人酋长") etc++;
-        else if (n == "暗影步" || n == "赤烟·腾武") sr++;
-        else if (n == "鲨鱼之灵") shark = true;
-        else if (n == "殒命暗影") dl++;
+        else if (c.name_ == N_CASTER) sc++;
+        else if (c.name_ == N_DANCE) wr++;
+        else if (c.name_ == N_POTION) po++;
+        else if (c.name_ == N_ETC) etc++;
+        else if (c.name_ == N_STEP || c.name_ == N_TENWU) sr++;
+        else if (c.name_ == N_SHARK) shark = true;
+        else if (c.name_ == N_DEADLY) dl++;
     }
     for (const auto& c : s.board) {
-        const string& n = c.name();
-        if (n == "生命的缚誓者阿莱克丝塔萨") plays++;
-        else if (n == "暗影施法者") sc++;
-        else if (n == "鲨鱼之灵") shark = true;
+        if (c.name_ == N_DRAGON) plays++;
+        else if (c.name_ == N_CASTER) sc++;
+        else if (c.name_ == N_SHARK) shark = true;
     }
     plays += sc * (shark ? 2 : 1);   // 暗施复制龙（鲨鱼双倍）
     plays += wr * 7;                 // 舞动全场每张最多弹回 7 个随从
