@@ -75,6 +75,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizeGrip,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QStyledItemDelegate,
