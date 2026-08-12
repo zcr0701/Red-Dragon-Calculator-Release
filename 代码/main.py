@@ -2050,6 +2050,13 @@ class MainWindow(QWidget):
         self.hero_label = QLabel("英雄：-")
         self.effects_label = QLabel("当前效果：无")
         self.etc_summary_label = QLabel("牛池：-")
+        self.dredge_label = QLabel("探底：-")
+        self.dredge_label.setStyleSheet("font-size:11px;color:#2d7d46;")
+        self.dredge_label.setToolTip(
+            "垂钓时光探底已知牌（Power.log 自动追踪）：打出垂钓时光后，"
+            "若玩家选了其中一张，剩余两张自动标记为已知（底部 = 2 已知 + 1 未知杂牌）；"
+            "没拿/无法分辨则三张都标记"
+        )
         state_grid.addWidget(self.game_label, 0, 0)
         state_grid.addWidget(self.mana_label, 0, 1)
         state_grid.addWidget(self.deck_label, 1, 0)
@@ -2058,6 +2065,7 @@ class MainWindow(QWidget):
         state_grid.addWidget(self.hero_label, 2, 1)
         state_grid.addWidget(self.effects_label, 3, 1)
         state_grid.addWidget(self.etc_summary_label, 3, 0)
+        state_grid.addWidget(self.dredge_label, 4, 0, 1, 2)
 
         # 殒命暗影位置（手牌序号，可手动标记；日志 ghostly 自动标记会自动合并）
         deadly_row = QHBoxLayout()
@@ -2531,6 +2539,16 @@ class MainWindow(QWidget):
             text = "无"
 
         self.effects_label.setText(f"当前效果：{text}")
+
+        dredge = snap.get("dredge_bottom") or []
+
+        if dredge:
+            names = "、".join(str(n) for n in dredge)
+            unknown = 3 - len(dredge)
+            extra = f"　（+{unknown} 张未知）" if unknown > 0 else ""
+            self.dredge_label.setText(f"探底已知：{names}{extra}")
+        else:
+            self.dredge_label.setText("探底：未追踪（打出垂钓时光后自动更新）")
 
         deadly_display = set(int(i) for i in (snap.get("deadly_shadow_hand_indexes") or []))
         deadly_display.update(self._manual_deadly_indexes())
