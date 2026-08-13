@@ -381,6 +381,8 @@ struct State {
     bool etc_band_provided = false;   // JSON 显式传了 etc_band（空数组=牛池已空）
     string forced_discover_choice;    // 可能分支机制：强制持枪要挟发现某张牌（空=全部展开）
     string forced_draw_choice;        // WhatIF 同级分支：强制抽随从卡抽到某张随从（空=全部展开）
+    int fork_damage = 0;              // 最近一次分支卡（行骗/挖掘/潜伏/垂钓/持枪）打出时的伤害
+                                      // = 该分叉点之前的伤害；用于“后续造成伤害为0则不显示分支”
     int quickdraw_choice = -1;        // 路径中第一张持枪要挟的发现牌（QUICKDRAW_MODELED_POOL 下标；-1=无）
     bool used_quickdraw = false;      // 路径中是否打出过持枪要挟（原版=不含持枪的最优线）
     bool used_draw_branch = false;    // 路径中是否打出过抽随从分支卡（行骗/挖掘宝藏/潜伏帷幕/垂钓时光）
@@ -443,6 +445,7 @@ struct State {
         c.etc_band_provided = etc_band_provided;
         c.forced_discover_choice = forced_discover_choice;
         c.forced_draw_choice = forced_draw_choice;
+        c.fork_damage = fork_damage;
         c.quickdraw_choice = quickdraw_choice;
         c.used_quickdraw = used_quickdraw;
         c.used_draw_branch = used_draw_branch;
@@ -920,6 +923,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
             State s = base.clone_reserved();
             if (s.quickdraw_choice < 0) s.quickdraw_choice = (int)ci;
             s.used_quickdraw = true;
+            s.fork_damage = base.alex_damage;
             add_card_to_hand_or_burn(s, make_card(choice));
             // 路径标注“（X）”：持枪要挟只是把快枪牌置入手牌，X 由玩家后续打出
             if (!s.path().empty()) {
@@ -934,6 +938,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
             if (s.quickdraw_choice < 0)
                 s.quickdraw_choice = (int)QUICKDRAW_MODELED_POOL.size();  // 下标 5 = 其他快枪牌·随从
             s.used_quickdraw = true;
+            s.fork_damage = base.alex_damage;
             Card junk = make_card("未知快枪牌随从");
             junk.type_idx = N_T_MINION;
             add_card_to_hand_or_burn(s, junk);
@@ -949,6 +954,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
             if (s.quickdraw_choice < 0)
                 s.quickdraw_choice = (int)QUICKDRAW_MODELED_POOL.size() + 1;  // 下标 6 = 其他快枪牌·法术
             s.used_quickdraw = true;
+            s.fork_damage = base.alex_damage;
             Card junk = make_card("未知快枪牌法术");
             junk.type_idx = N_T_SPELL;
             add_card_to_hand_or_burn(s, junk);
@@ -1322,6 +1328,7 @@ static vector<State> generate_successors(const State& st) {
                         // 剩余随从不足抽取张数：只抽剩余的全部（单个分支）
                         State base = st.clone_reserved();
                         if (play_card_base(base, hand_index, -1, false, false)) {
+                            base.fork_damage = base.alex_damage;
                             for (const string& mn : missing) {
                                 add_card_to_hand_or_burn(base, make_card(mn));
                             }
@@ -1354,6 +1361,7 @@ static vector<State> generate_successors(const State& st) {
                         if ((int)missing.size() < draw_count) {
                             State base = st.clone_reserved();
                             if (play_card_base(base, hand_index, -1, false, false)) {
+                                base.fork_damage = base.alex_damage;
                                 for (const string& mn : missing) {
                                     add_card_to_hand_or_burn(base, make_card(mn));
                                 }
@@ -1384,6 +1392,7 @@ static vector<State> generate_successors(const State& st) {
                     for (const auto& drawn : drawn_sets) {
                         State base = st.clone_reserved();
                         if (!play_card_base(base, hand_index, -1, false, false)) continue;
+                        base.fork_damage = base.alex_damage;
 
                         if (!base.path().empty()) {
                             string note = "（";
@@ -1470,6 +1479,7 @@ static vector<State> generate_successors(const State& st) {
             for (const string& pick : opts) {
                 State base = st.clone_reserved();
                 if (!play_card_base(base, hand_index, -1, false, false)) continue;
+                base.fork_damage = base.alex_damage;
                 if (!apply_effect_inplace(base, N_E_FISHIN, card, -1, false)) continue;
                 if (!base.path().empty()) base.path_mut().back() += "（" + pick + "）";
                 if (pick == "未知杂牌") {
@@ -2890,9 +2900,9 @@ static void print_json_result(const BeamResult& res, const SearchParams& p) {
     printf("  \"draw_branches\": [\n");
     for (size_t i = 0; i < draw_choices.size(); i++) {
         const State& pst = *draw_choices[i];
-        printf("    {\"card\": \"%s\", \"damage\": %d, \"dragons\": %d, \"mana_left\": %d, \"path\": [",
+        printf("    {\"card\": \"%s\", \"damage\": %d, \"dragons\": %d, \"mana_left\": %d, \"fork_damage\": %d, \"path\": [",
                json_escape(pst.last_draw_key).c_str(),
-               pst.alex_damage, pst.alex_play_count, pst.mana);
+               pst.alex_damage, pst.alex_play_count, pst.mana, pst.fork_damage);
         for (size_t j = 0; j < pst.path().size(); j++) {
             if (j) printf(", ");
             printf("\"%s\"", json_escape(pst.path()[j]).c_str());
@@ -2918,9 +2928,9 @@ static void print_json_result(const BeamResult& res, const SearchParams& p) {
         } else {
             card_name = QUICKDRAW_OTHER_SPELL_NAME;
         }
-        printf("    {\"card\": \"%s\", \"damage\": %d, \"dragons\": %d, \"mana_left\": %d, \"path\": [",
+        printf("    {\"card\": \"%s\", \"damage\": %d, \"dragons\": %d, \"mana_left\": %d, \"fork_damage\": %d, \"path\": [",
                json_escape(card_name).c_str(),
-               pst.alex_damage, pst.alex_play_count, pst.mana);
+               pst.alex_damage, pst.alex_play_count, pst.mana, pst.fork_damage);
         for (size_t j = 0; j < pst.path().size(); j++) {
             if (j) printf(", ");
             printf("\"%s\"", json_escape(pst.path()[j]).c_str());

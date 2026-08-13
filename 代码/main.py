@@ -1955,6 +1955,12 @@ class CalculationWorker(QThread):
         if len(branches) <= 1:
             return
 
+        # 顶层分支全是叶子（如 持枪要挟 的 5+2 个发现结果）：它们同属一棵树
+        # 的随机分叉，不是互相竞争的 N 颗树，直接全部展示，不做筛树——
+        # 否则会把分叉收成单条路径，WhatIF 什么都不显示。
+        if not any(tb.get("children") for tb in branches):
+            return
+
         scored: List[Tuple[float, Dict[str, object]]] = []
 
         for tb in branches:
@@ -2106,7 +2112,11 @@ class CalculationWorker(QThread):
                     -1,
                 )
 
-                if di <= 0 and qi > 0 and self._stop is False:
+                # 持枪要挟在第一个抽牌卡之前（或路径无抽牌卡）时，以持枪要挟为
+                # 第一个分叉点；否则抽牌卡优先（其子树内递归展开持枪要挟）。
+                qd_first = qi > 0 and (di < 0 or qi < di)
+
+                if qd_first and self._stop is False:
                     root_steps = [str(s) for s in best_path[:qi]]
                     root_steps.append("持枪要挟")
                     mq = re.search(r"持枪要挟[（(](.+?)[）)]", str(best_path[qi]))
@@ -2200,6 +2210,16 @@ class CalculationWorker(QThread):
                                     "path": pth,
                                 }
                             )
+
+                    if qd_tree:
+                        # 无后续伤害的分支（总伤 − 分叉点伤 ≤ 0）直接不显示
+                        qd_tree = [
+                            tb
+                            for tb in qd_tree
+                            if int(tb.get("damage") or 0)
+                            - int(tb.get("fork_damage") or 0)
+                            > 0
+                        ]
 
                     if qd_tree:
                         leaf_damages = [int(tb.get("damage") or 0) for tb in qd_tree]
@@ -2464,6 +2484,7 @@ class CalculationWorker(QThread):
                                     # 只保留“叉点后又确实抽了牌”的子分支：子路径里
                                     # 至少出现两个抽牌标记（如 垂钓时光(行骗)+行骗(晦)）；
                                     # 否则“探底行骗但没打”会作为无延续的死胡同重复出现。
+                                    # 无后续伤害的分支（总伤 − 分叉点伤 ≤ 0）不显示。
                                     if sum(
                                         1
                                         for s in (c.get("path") or [])
@@ -2472,6 +2493,9 @@ class CalculationWorker(QThread):
                                         )
                                     )
                                     >= 2
+                                    and int(c.get("damage") or 0)
+                                    - int(c.get("fork_damage") or 0)
+                                    > 0
                                 ]
 
                         # 单分叉不展开：只有一种可能性的分叉（如 行骗(晦)）直接并入
@@ -2648,11 +2672,15 @@ class CalculationWorker(QThread):
                                             pruned = True
                                             break
 
-                        # 按标准牌池顺序返回，保证前端显示顺序稳定
+                        # 按标准牌池顺序返回，保证前端显示顺序稳定；
+                        # 无后续伤害的分支（总伤 − 分叉点伤 ≤ 0）直接不显示
                         children = [
                             children_by_card[c]
                             for c in qd_pool
                             if c in children_by_card
+                            and int(children_by_card[c].get("damage") or 0)
+                            - int(children_by_card[c].get("fork_damage") or 0)
+                            > 0
                         ]
 
                         return children, pruned
@@ -2699,6 +2727,15 @@ class CalculationWorker(QThread):
 
                         if node is not None and not self._stop:
                             tree_branches.append(node)
+
+                    # 无后续伤害的分支（总伤 − 分叉点伤 ≤ 0）直接不显示
+                    tree_branches = [
+                        tb
+                        for tb in tree_branches
+                        if int(tb.get("damage") or 0)
+                        - int(tb.get("fork_damage") or 0)
+                        > 0
+                    ]
 
                     if not tree_branches:
                         return None
@@ -2784,7 +2821,7 @@ class CalculationWorker(QThread):
 
                     return whatif_tree, draw_branches, quickdraw_branches, whatif_average
 
-                if di > 0 and self._stop is False:
+                if not qd_first and di >= 0 and self._stop is False:
                     built = _build_draw_tree(best_path, di)
 
                     if built is not None:

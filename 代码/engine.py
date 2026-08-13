@@ -1290,6 +1290,9 @@ def compute_wb_tree(
     # 抽随从卡：每个打法（直接/伺机/币/伺机+币）= 一个分支节点；
     # 节点内分支 = 抽到的随从组合（无序 C，如 潜伏帷幕 抽2 从3 剩余 → C(3,2)=3）
     for dcard in DRAW_MINION_SPELLS:
+        if dcard == "垂钓时光":
+            continue  # 垂钓时光是探底（随机三张选一）不是抽随从，见下方单独处理
+
         if dcard not in hand_names:
             continue
 
@@ -1331,6 +1334,51 @@ def compute_wb_tree(
                     "branches": branches,
                 }
             )
+
+    # 垂钓时光：探底（底 3 张随机选一），不是“抽随从”——
+    # 阅读器已追踪底牌时按探底池展开（已知牌 + 缺位“未知杂牌”）；
+    # 底牌未知时不生成分支节点（确定性抽杂牌，不当分支计算）。
+    if "垂钓时光" in hand_names:
+        dredge_pool = [
+            str(n) for n in (snapshot.get("dredge_bottom") or []) if str(n)
+        ]
+
+        if dredge_pool:
+            if len(dredge_pool) < 3:
+                dredge_pool.append("未知杂牌")
+
+            for play, remove, eff_cost, coin in _draw_play_variants(
+                snapshot, "垂钓时光"
+            ):
+                base = _build_play_variant(
+                    snapshot, "垂钓时光", remove, eff_cost, coin
+                )
+                play_score = wb_play_delta(int(base.get("mana") or 0))
+                branches = []
+
+                for pick in dredge_pool:
+                    br_variant = dict(base)
+                    br_variant["hand"] = list(base["hand"]) + [
+                        {"name": pick}
+                    ]
+                    delta = play_score + wb_draw_delta([pick])
+                    branches.append(
+                        {
+                            "drawn": [pick],
+                            "delta": round(delta, 2),
+                            "variant": br_variant,
+                        }
+                    )
+
+                nodes.append(
+                    {
+                        "card": "垂钓时光",
+                        "kind": "draw",
+                        "play": play,
+                        "path": list(remove) + ["垂钓时光"],
+                        "branches": branches,
+                    }
+                )
 
     # 持枪要挟：不同打法 = 分支节点；分支 = 发现牌（按增量分取 top-K）
     if "持枪要挟" in hand_names:
