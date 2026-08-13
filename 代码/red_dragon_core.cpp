@@ -2107,13 +2107,11 @@ static int subchain_score(const State& s) {
             }
         }
     }
-    //    a2) 龙鱼权威判定（用户确认：先出龙 = 场上龙在 board 中的次序 < 鱼）：
-    //        新随从一律进 board 末尾，所以龙若站在鲨鱼左边，必是先龙后鱼打出、
-    //        没吃到双倍战吼（只打 8 伤）。用伤害缺口佐证（alex_damage <
-    //        alex_play_count×16）避免 暗影步(鲨鱼) 后重铺导致的站位误判——
-    //        两者同时成立才 -1000。
-    if (shark_on > 0 && s.alex_play_count > 0
-        && s.alex_damage < s.alex_play_count * 16) {
+    //    b) 龙鱼硬否决（用户规则：先出龙 = 场上龙在 board 中的次序 < 鱼）：
+    //        新随从一律进 board 末尾，龙若站在鲨鱼左边，必是先龙后鱼打出、
+    //        没吃到双倍战吼（只打 8 伤）→ 直接 -1000。不依赖伤害计数，
+    //        不误伤“用龙清场（战吼打随从不加伤）”等合法状态。
+    if (shark_on > 0) {
         int shark_pos = -1;
         for (size_t bi = 0; bi < s.board.size(); bi++) {
             if (s.board[bi].name_idx == N_SHARK) { shark_pos = (int)bi; break; }
@@ -2123,11 +2121,6 @@ static int subchain_score(const State& s) {
                 if (s.board[bi].dragon) { score -= 1000; break; }
             }
         }
-    }
-    //    a3) 伤害缺口兜底：只要累计龙伤不是 16 的整倍数（有龙没吃到鱼），无论之后
-    //        是否舞动重铺成鱼龙次序，都 -1000——先打出的 8 伤龙造成的缺口无法弥补。
-    if (s.alex_play_count > 0 && s.alex_damage < s.alex_play_count * 16) {
-        score -= 1000;
     }
     if (shark_on > 0 && board_d > 0) {
         score += 24;
@@ -2196,9 +2189,19 @@ static int subchain_score(const State& s) {
     if (dragons > 0 && shadowcaster > 0) score += 12;
     if (dragons > 0 && (dance > 0 || potion > 0)) score += 12;
     if (board_d > 0 && shadowstep > 0) score += 12;
-    if (deadly && (dance > 0 || potion > 0)) score += 15;
+    if (deadly && (dance > 0 || potion > 0)) score += 25;
     if (shark && scabbs >= 2) score += 8;
     score += etc_count * 8;
+    // 法力引擎：补水在手 = 持枪要挟(补水) 已发现（未来 +2 法力），是 6 水晶持枪深线
+    // （000329/002425 96 伤线第 5 步）的签名。+16 ≈ 多一轮龙的启发价值，防止被
+    // 步(牛) 等短线（牛 +8）在束宽内挤掉；脱水同理但只给 +8（回手减费辅助）。
+    for (const auto& c : s.hand) {
+        if (c.effect_idx == N_E_REHYDRATE) {
+            score += 16;
+        } else if (c.effect_idx == N_E_DEHYDRATE) {
+            score += 8;
+        }
+    }
     return score;
 }
 
@@ -2796,11 +2799,10 @@ static BeamResult run_beam_search(const State& start, const SearchParams& p, Pro
     auto t0 = std::chrono::steady_clock::now();
     // 只计算最高伤害：跨通道共享最高伤，用于剪枝与提前停止
     std::atomic<int> shared_best{0};
-    // 默认四通道：H6/2400、H1/3000、H2/2400、H2/6000。
-    // 原 {1100,1500,1100,3000} 在 6 水晶+持枪要挟/殒命局面会漏掉 96 伤线
-    // （把持枪要挟当杂牌打、殒命复制舞动全场的深线），加宽后 3 秒内可挖出
-    // 96/6龙；8 水晶十龙 160 线由 H1/3000 通道兜底，配合龙鱼硬否决不劣化。
-    static const int DEFAULT_WIDE_WIDTHS[] = {2400, 3000, 2400, 6000};
+    // 默认四通道：H6/1100（8水晶十龙深线）、H1/1500（4水晶十龙/紧线）、
+    // H2/1100（96 伤线）、H2/3000（6水晶紧 48 伤线）。
+    // 96 伤深线改由启发函数保证（龙鱼硬否决 + 持枪/殒命/牛池加分），不改束宽。
+    static const int DEFAULT_WIDE_WIDTHS[] = {1100, 1500, 1100, 3000};
     static const int DEFAULT_HEURISTICS[] = {6, 1, 2, 2};
     int wide_count = p.wide_width > 0 ? 1 : (int)std::max(p.wide_widths.size(), p.heuristics.size());
     if (p.wide_width <= 0 && p.wide_widths.empty() && p.heuristics.empty()) wide_count = 2;
