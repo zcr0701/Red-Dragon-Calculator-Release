@@ -616,6 +616,8 @@ static bool play_card_base(State& s, int hand_index, int target_friendly_index,
         s.alex_play_count++;
         if (enemy_target) {
             int mult = s.has_shark() ? 2 : 1;
+            // 龙靠战吼打 8 伤害（鲨鱼之灵双倍=16），与身材无关：
+            // 幻觉药水/暗影施法者的 1/1 复制战吼同样是 8。
             s.alex_damage += 8 * mult;
         }
     }
@@ -2890,8 +2892,8 @@ static void print_json_result(const BeamResult& res, const SearchParams& p) {
     printf("  \"results\": [\n");
     for (size_t i = 0; i < results.size(); i++) {
         const State& pst = results[i];
-        printf("    {\"dragons\": %d, \"damage\": %d, \"mana\": %d, \"path\": [",
-               pst.alex_play_count, pst.alex_damage, pst.mana);
+        printf("    {\"dragons\": %d, \"damage\": %d, \"mana\": %d, \"fork_damage\": %d, \"path\": [",
+               pst.alex_play_count, pst.alex_damage, pst.mana, pst.fork_damage);
         for (size_t j = 0; j < pst.path().size(); j++) {
             if (j) printf(", ");
             printf("\"%s\"", json_escape(pst.path()[j]).c_str());
@@ -3103,6 +3105,22 @@ static State state_from_json(const JVal& root) {
 // exact=true（branch_prefix 分支点重放）：必须精确匹配目标后缀
 // （如 暗影施法者（斯卡布斯·刀油2nd）），保证分支搜索从主路径的同一状态继续；
 // exact=false（--verify 通用重放）：去掉目标后缀自动尝试所有合法目标。
+// 抽牌结果标注：树形路径可能把“潜伏帷幕（鲨鱼之灵）”拆成 潜伏帷幕 + 潜伏帷幕（鲨鱼之灵）
+// 两个步骤；重放时把该标注与无标注视为同一动作，并跳过重复的独立标注步骤。
+static string strip_draw_annotation(string item) {
+    size_t lp = item.rfind("（");
+    size_t rp = item.find("）", lp);
+    if (lp == string::npos || rp == string::npos) return item;
+    string name = item.substr(0, lp);
+    static const string DRAW_CARDS[] = {
+        "潜伏帷幕", "挖掘宝藏", "行骗", "垂钓时光", "暗影之门", "异教地图",
+    };
+    for (const string& d : DRAW_CARDS) {
+        if (name.find(d) != string::npos) return name;
+    }
+    return item;
+}
+
 static bool verify_rec(const State& st, const vector<string>& replay, size_t i,
                        State& final_state, int* attempts, bool exact = false) {
     if (i >= replay.size()) {
@@ -3110,12 +3128,24 @@ static bool verify_rec(const State& st, const vector<string>& replay, size_t i,
         return true;
     }
     string want = exact ? canonical_action_exact(replay[i]) : canonical_action(replay[i]);
+    // 树形路径的独立“抽牌卡（结果）”步骤：与上一步是同一张抽牌卡时跳过
+    // （抽牌动作已在上一步执行，结果由 forced_draw_choice 钉死）。
+    if (exact && i > 0) {
+        string prev = canonical_action_exact(replay[i - 1]);
+        if (want != prev &&
+            strip_draw_annotation(want) == strip_draw_annotation(prev)) {
+            return verify_rec(st, replay, i + 1, final_state, attempts, exact);
+        }
+    }
     vector<State> succs = generate_successors(st);
     for (State& succ : succs) {
         if (succ.path().empty()) continue;
         string got = exact ? canonical_action_exact(succ.path().back())
                            : canonical_action(succ.path().back());
-        if (got != want) continue;
+        if (got != want && !(exact && strip_draw_annotation(got) ==
+                                             strip_draw_annotation(want))) {
+            continue;
+        }
         fprintf(stderr, "TRACE step %d: %s | mana=%d hand=%d board=%d burned=%d dragons=%d dmg=%d\n",
                 (int)i, succ.path().back().c_str(), succ.mana, succ.hand_size(),
                 succ.board_size(), succ.burned_cards, succ.alex_play_count, succ.alex_damage);
