@@ -40,7 +40,7 @@ def base_snap():
 
 
 def main():
-    # 1) 暗影之门：分支数 = 剩余法术数（含 双面生意）
+    # 1) 暗影之门：随机抽 1 张牌（任意类型）——分支池 = 剩余卡牌（含武器/随从）
     snap = base_snap()
     snap["deck"] = [
         {"name": "双面生意"},
@@ -48,9 +48,10 @@ def main():
         {"name": "闪避"},
         {"name": "暗影步"},
         {"name": "行骗"},
+        {"name": "黑水弯刀"},
     ]
     spells = engine.deck_card_names_by_type(snap["deck"], "SPELL", "SECRET")
-    print("deck spells:", spells)
+    print("deck cards:", [d["name"] for d in snap["deck"]])
 
     res = engine.compute(
         snap,
@@ -73,8 +74,12 @@ def main():
         print("FAIL: 双面生意 未出现在暗影之门法术分支")
         return 1
 
-    if len(cards) != len(spells):
-        print(f"FAIL: 分支数应为剩余法术数 {len(spells)}，实际 {len(cards)}")
+    if "黑水弯刀" not in cards:
+        print("FAIL: 暗影之门应能抽到武器（黑水弯刀）")
+        return 1
+
+    if len(cards) != len(snap["deck"]):
+        print(f"FAIL: 暗影之门分支数应为剩余卡牌数 {len(snap['deck'])}，实际 {len(cards)}")
         return 1
 
     # 2) 行骗：同样按剩余法术展开

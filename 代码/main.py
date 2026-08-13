@@ -2480,7 +2480,22 @@ class CalculationWorker(QThread):
 
                         if len(branch_pool) < 3:
                             branch_pool.append("未知杂牌")
-                    elif branch_card in ("暗影之门", "行骗"):
+                    elif branch_card == "暗影之门":
+                        # 随机抽 1 张牌（任意类型）：分支数 = 牌库剩余卡牌数
+                        branch_pool = [
+                            str(d.get("name"))
+                            for d in deck_items
+                            if d.get("name")
+                        ]
+
+                        if branch_pool:
+                            seen = set()
+                            branch_pool = [
+                                n
+                                for n in branch_pool
+                                if not (n in seen or seen.add(n))
+                            ]
+                    elif branch_card == "行骗":
                         # 随机抽牌库中的一张法术牌：分支数量 = 牌库剩余法术数量
                         branch_pool = deck_spells or missing_draw
                     elif branch_card in ("挖掘宝藏", "潜伏帷幕"):

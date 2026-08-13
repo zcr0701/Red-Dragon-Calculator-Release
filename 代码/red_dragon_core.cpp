@@ -310,7 +310,7 @@ static const unordered_map<string, vector<DrawSpec>> DRAW_ATTR_BASE = {
     {"dig_for_treasure", {{"minion", 1}}},           // 挖掘宝藏：抽 1 张随从牌
     {"cultist_map", {{"random", 1}}},                // 异教地图：从牌库发现（选 3 张随机抽 1）→ 随机
     {"swindle", {{"spell", 1}}},                     // 行骗：抽 1 张法术牌
-    {"shadow_gate", {{"spell", 1}}},                 // 暗影之门：随机抽 1 张法术牌
+    {"shadow_gate", {{"random", 1}}},                // 暗影之门：随机抽 1 张牌（任意类型）
     {"shroud_of_concealment", {{"minion", 2}}},      // 潜伏帷幕：抽 2 张随从牌
     {"dubious_purchase", {{"random", 3}}},           // 可疑交易：抽 3 张随机牌
 };
@@ -827,20 +827,17 @@ static bool apply_effect_inplace(State& s, uint16_t e, const Card& card,
             add_card_to_hand_or_burn(s, unknown_spell);
         }
     } else if (e == N_E_SHADOW_GATE) {
-        // 暗影之门：随机抽 1 张法术牌（牌库已知按实际牌库抽第一张；
-        // 未知时置入“未知法术”杂牌，与常规路径一致）。
+        // 暗影之门：随机抽 1 张牌（任意类型，牌库已知按实际牌库抽第一张；
+        // 未知时置入“未知抽牌”杂牌，与常规路径一致）。
         if (s.deck_is_known) {
-            for (auto it = s.deck.begin(); it != s.deck.end(); ++it) {
-                if (!it->is_spell_like()) continue;
-                Card drawn = *it;
-                s.deck.erase(it);
+            if (!s.deck.empty()) {
+                Card drawn = s.deck.front();
+                s.deck.erase(s.deck.begin());
                 add_card_to_hand_or_burn(s, drawn);
-                break;
             }
         } else {
-            Card unknown_spell = make_card("未知法术");
-            unknown_spell.type_idx = N_T_SPELL;
-            add_card_to_hand_or_burn(s, unknown_spell);
+            Card unknown = make_card("未知抽牌");
+            add_card_to_hand_or_burn(s, unknown);
         }
     } else if (e == N_E_FISHIN) {
         // 垂钓时光：连击才抽 1 张牌（不连击只有探底，不抽牌）。
@@ -1481,6 +1478,53 @@ static vector<State> generate_successors(const State& st) {
                 }
             }
             continue;  // 异教地图分支覆盖普通打出
+        }
+
+        // 暗影之门：随机抽 1 张牌（任意类型，选择最优）——
+        // 分支池 = 牌库剩余卡牌（唯一名），分支数 = 剩余卡牌数。
+        if (card.effect_idx == N_E_SHADOW_GATE && st.branch_expand) {
+            vector<Card> pool;
+            if (deck_has_tracking(st)) {
+                vector<string> seen;
+                for (const auto& d : st.deck) {
+                    if (std::find(seen.begin(), seen.end(), d.name()) != seen.end()) continue;
+                    seen.push_back(d.name());
+                    pool.push_back(d);
+                }
+            } else {
+                pool.push_back(make_card("未知抽牌"));
+            }
+
+            for (const Card& d : pool) {
+                State base = st.clone_reserved();
+                if (!play_card_base(base, hand_index, -1, false, false)) continue;
+                for (auto it = base.deck.begin(); it != base.deck.end(); ++it) {
+                    if (it->name() == d.name()) {
+                        Card drawn = *it;
+                        base.deck.erase(it);
+                        add_card_to_hand_or_burn(base, drawn);
+                        break;
+                    }
+                }
+                if (!base.path().empty()) {
+                    base.path_mut().back() += "（" + d.name() + "）";
+                }
+                base.used_draw_branch = true;
+                base.fork_damage = base.alex_damage;
+                base.last_draw_key = d.name();
+                out.push_back(std::move(base));
+            }
+
+            // 正常线（确定性）：暗影之门抽“未知抽牌”杂牌
+            {
+                State junk = st.clone_reserved();
+                if (play_card_base(junk, hand_index, -1, false, false)) {
+                    Card unknown = make_card("未知抽牌");
+                    add_card_to_hand_or_burn(junk, unknown);
+                    out.push_back(std::move(junk));
+                }
+            }
+            continue;  // 暗影之门分支覆盖普通打出
         }
 
         // 异教地图发现牌的使用：本回合使用抽上来的牌 → 再抽 1 张（选择最优；
