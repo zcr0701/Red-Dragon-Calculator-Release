@@ -2070,6 +2070,46 @@ class CalculationWorker(QThread):
 
         return out
 
+    @staticmethod
+    def _whatif_trunk(
+        branches: List[Dict[str, object]],
+        main_path: List[str],
+        qi: int,
+    ) -> List[str]:
+        """WhatIF 主干：到分支卡（持枪要挟）为止的路径。
+
+        qi > 0（主线本身打了持枪要挟）：主干 = 主线前缀 + 持枪要挟；
+        否则（主线没用持枪，分支是独立完整线路）：取最高伤、持枪位置
+        最靠前的分支前缀作主干，最后一个步骤去掉发现结果标注
+        （持枪要挟（补水）→ 持枪要挟）。
+        """
+        if qi > 0:
+            return [str(s) for s in main_path[:qi]] + ["持枪要挟"]
+
+        best: Optional[Tuple[tuple, List[str]]] = None
+
+        for b in branches or []:
+            pth = [str(s) for s in (b.get("path") or [])]
+            idx = next(
+                (i for i, s in enumerate(pth) if "持枪要挟" in str(s)),
+                -1,
+            )
+
+            if idx < 0:
+                continue
+
+            key = (int(b.get("damage") or 0), -idx)
+
+            if best is None or key > best[0]:
+                best = (key, pth[: idx + 1])
+
+        if not best:
+            return []
+
+        trunk = [str(s) for s in best[1]]
+        trunk[-1] = re.sub(r"[（(].*[）)]$", "", trunk[-1])
+        return trunk
+
     def run(self) -> None:
         try:
             beam = int(self.options.get("beam_width") or 0)
@@ -2240,10 +2280,10 @@ class CalculationWorker(QThread):
 
                     if qd_tree:
                         leaf_damages = [int(tb.get("damage") or 0) for tb in qd_tree]
-                        # 分支是各自完整线路（起点在回合开头），root 置空避免
-                        # 与主干前缀不一致造成误导；主干由上方正常线展示。
+                        # 主干 = 主线前缀 + 持枪要挟（到分支卡为止）；
+                        # 分支为各发现结果的完整最优线路（起点在回合开头）。
                         whatif_tree = {
-                            "root": [],
+                            "root": self._whatif_trunk(qd_tree, best_path, qi),
                             "branches": qd_tree,
                             "worst": min(leaf_damages) if leaf_damages else 0,
                             "main_outcome": main_qd,
@@ -2913,8 +2953,10 @@ class CalculationWorker(QThread):
                         )
 
                     if fb_branches:
+                        # 主干 = 最高伤分支走到 持枪要挟 为止的前缀
+                        # （主线没用持枪时也给出“……-持枪要挟”指引）。
                         whatif_tree = {
-                            "root": [],
+                            "root": self._whatif_trunk(fb_branches, [], -1),
                             "branches": fb_branches,
                             "worst": min(
                                 int(b.get("damage") or 0) for b in fb_branches

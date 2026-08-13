@@ -166,6 +166,14 @@ def main():
         print("FAIL: 同比例未按溢出伤害决胜（应选 48|32 的牛树而非 32|32 的狐树）")
         return 1
 
+    # 主干必须到 持枪要挟，不能是空（（起点））
+    trunk = M.CalculationWorker._whatif_trunk(fb_branches, [], -1)
+    print("fb trunk tail:", trunk[-1] if trunk else None)
+
+    if not trunk or not str(trunk[-1]).startswith("持枪要挟"):
+        print("FAIL: WhatIF 主干未走到持枪要挟")
+        return 1
+
     print("PASS")
     return 0
 
