@@ -2221,8 +2221,17 @@ class CalculationWorker(QThread):
             whatif_t0 = time.perf_counter()
 
             if bool(self.options.get("draw_whatif", True)):
-                best_path = (result.get("results") or [{}])
-                best_path = list((best_path[0].get("path") or []) if best_path else [])
+                # 指引主干优先用正常线（original，确定性主路径），保证
+                # 分支树从主线前缀开始（如 闪避-…-暗影之门）；
+                # 只有正常线为空（0 伤）时才退回主搜索最优结果。
+                best_path = list(
+                    str(s)
+                    for s in ((result.get("original") or {}).get("path") or [])
+                )
+
+                if not best_path:
+                    _r0 = (result.get("results") or [{}])[0]
+                    best_path = [str(s) for s in (_r0.get("path") or [])]
                 # 指引树（WhatIF）：一条指引路径 + 中间随机岔路。
                 # 行骗/挖掘宝藏/潜伏帷幕/垂钓时光 的每个抽取结果作为次级节点，
                 # 其后的持枪要挟发现结果作为次次级节点；叶子伤害的最小值 = 保底伤害
@@ -2535,7 +2544,7 @@ class CalculationWorker(QThread):
                                 )
 
                             draw_budget = min(
-                                11.0 if is_main else 6.0, max(1.5, cap)
+                                11.0 if is_main else 8.0, max(2.5, cap)
                             )
                         else:
                             # 未勾选框2：保留原深挖预算（质量优先，不保证 10s）
@@ -2678,30 +2687,56 @@ class CalculationWorker(QThread):
                                     r"[（(].*[）)]$", "", next_card
                                 )
                                 node["mid"] = [str(s) for s in path_i[ddi : nd + 1]]
-                                node["children"] = [
-                                    {
-                                        "card": c.get("card") or "",
-                                        "damage": int(c.get("damage") or 0),
-                                        "dragons": int(c.get("dragons") or 0),
-                                        "mana_left": int(c.get("mana_left") or 0),
-                                        "fork_damage": int(
-                                            c.get("fork_damage") or 0
+                                # 下一层抽取的直接结果：按“分支卡之后第一个抽牌
+                                # 标注”分组（如 行骗(币)/行骗(步)…），同一结果的
+                                # 深层次后续分叉保留在该分支 path 里，不再把
+                                # 持枪/交易等二级分叉扁平铺成几十个并列项。
+                                _next_pool: Dict[str, Dict[str, object]] = {}
+                                _node_base = re.sub(
+                                    r"[（(].*[）)]$", "", str(path_i[ddi])
+                                )
+
+                                for c in (res_i.get("draw_branches") or []):
+                                    pth = list(c.get("path") or [])
+                                    first_draw = next(
+                                        (
+                                            str(s)
+                                            for s in pth
+                                            if any(
+                                                m in str(s)
+                                                for m in draw_markers
+                                            )
+                                            and not str(s).startswith(
+                                                _node_base
+                                            )
                                         ),
-                                        "path": list(c.get("path") or []),
-                                    }
-                                    for c in (res_i.get("draw_branches") or [])
-                                    # 只保留“叉点后又确实抽了牌”的子分支：子路径里
-                                    # 至少出现两个抽牌标记（如 垂钓时光(行骗)+行骗(晦)）；
-                                    # 否则“探底行骗但没打”会作为无延续的死胡同重复出现。
-                                    if sum(
-                                        1
-                                        for s in (c.get("path") or [])
-                                        if any(
-                                            m in str(s) for m in draw_markers
-                                        )
+                                        "",
                                     )
-                                    >= 2
-                                ]
+
+                                    if not first_draw:
+                                        continue
+
+                                    cur = _next_pool.get(first_draw)
+
+                                    if (
+                                        cur is None
+                                        or int(c.get("damage") or 0)
+                                        > int(cur.get("damage") or 0)
+                                    ):
+                                        _next_pool[first_draw] = {
+                                            "card": first_draw,
+                                            "damage": int(c.get("damage") or 0),
+                                            "dragons": int(c.get("dragons") or 0),
+                                            "mana_left": int(
+                                                c.get("mana_left") or 0
+                                            ),
+                                            "fork_damage": int(
+                                                c.get("fork_damage") or 0
+                                            ),
+                                            "path": pth,
+                                        }
+
+                                node["children"] = list(_next_pool.values())
 
                         # 单分叉不展开：只有一种可能性的分叉（如 行骗(晦)）直接并入
                         # 路径，默认不当作分叉计算（不生成可展开子节点）。
@@ -2929,7 +2964,30 @@ class CalculationWorker(QThread):
                             tree_branches.append(node)
 
                     if not tree_branches:
-                        return None
+                        # 分支搜索全部失败（并行抢 CPU 预算不足）时，退回主搜索
+                        # 的 draw_branches 兜底，保证每个抽取结果都有分支展示，
+                        # 主干（root_steps）不丢。
+                        for b in result.get("draw_branches") or []:
+                            card = str(b.get("card") or "")
+
+                            if not card or card not in branch_pool:
+                                continue
+
+                            pth = list(b.get("path") or [])
+                            tree_branches.append(
+                                {
+                                    "outcome": card,
+                                    "damage": int(b.get("damage") or 0),
+                                    "dragons": int(b.get("dragons") or 0),
+                                    "mana_left": int(b.get("mana_left") or 0),
+                                    "fork_damage": int(b.get("fork_damage") or 0),
+                                    "path": pth,
+                                    "mid": [str(s) for s in pth],
+                                }
+                            )
+
+                        if not tree_branches:
+                            return None
 
                     draw_branches: Optional[List[Dict[str, object]]] = None
                     quickdraw_branches: Optional[List[Dict[str, object]]] = []
