@@ -98,7 +98,7 @@ from powerlog_reader import LogWatcher
 
 BASE_DIR = Path(__file__).resolve().parent
 
-DRAW_FORK_MARKERS = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光")
+DRAW_FORK_MARKERS = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光", "暗影之门")
 
 if getattr(sys, "frozen", False):
     # PyInstaller 打包：程序文件（引擎 exe / 卡名映射 / 日志目录）都放在主程序同目录
@@ -901,7 +901,7 @@ def format_whatif_tree(data: Dict[str, object], colors: bool = False) -> str:
         lines[-1] += f"({main_dmg}伤余{main_mana}费)"
 
     # 抽随从卡同级分支（行骗/挖掘宝藏/潜伏帷幕/垂钓时光）
-    draw_markers = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光")
+    draw_markers = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光", "暗影之门")
     di = next(
         (i for i, s in enumerate(main_path) if any(m in str(s or "") for m in draw_markers)),
         -1,
@@ -2236,7 +2236,7 @@ class CalculationWorker(QThread):
                 # 行骗/挖掘宝藏/潜伏帷幕/垂钓时光 的每个抽取结果作为次级节点，
                 # 其后的持枪要挟发现结果作为次次级节点；叶子伤害的最小值 = 保底伤害
                 # （无论随机结果如何都不低于它）。
-                draw_markers = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光")
+                draw_markers = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光", "暗影之门")
                 di = next(
                     (
                         i
@@ -2367,8 +2367,17 @@ class CalculationWorker(QThread):
                     }
 
                     prefix_draw = list(best_path[:di])
-                    # 分支点缺失池 = 界面勾选的卡组随从 - 手牌/战场已有随从
-                    # （第一个抽牌分支点之前没有抽牌，快照手牌/战场即分支点手牌/战场）
+                    # 分支池 = 牌库剩余对应类型卡池（追踪器提供的 remaining_deck）：
+                    # 抽法术卡（暗影之门/行骗）→ 剩余法术，分支数 = 剩余法术数；
+                    # 抽随从卡（挖掘宝藏/潜伏帷幕）→ 剩余随从；
+                    # 追踪缺失时退回旧的“界面勾选随从 - 手牌/战场”池。
+                    deck_items = self.snapshot.get("deck") or []
+                    deck_minions = engine.deck_card_names_by_type(
+                        deck_items, "MINION"
+                    )
+                    deck_spells = engine.deck_card_names_by_type(
+                        deck_items, "SPELL", "SECRET"
+                    )
                     checked = list(self.options.get("whatif_combo") or [])
                     have = {
                         str(h.get("name", ""))
@@ -2400,6 +2409,12 @@ class CalculationWorker(QThread):
 
                         if len(branch_pool) < 3:
                             branch_pool.append("未知杂牌")
+                    elif branch_card in ("暗影之门", "行骗"):
+                        # 随机抽牌库中的一张法术牌：分支数量 = 牌库剩余法术数量
+                        branch_pool = deck_spells or missing_draw
+                    elif branch_card in ("挖掘宝藏", "潜伏帷幕"):
+                        # 随机抽牌库中的随从：分支数量 = 牌库剩余随从数量
+                        branch_pool = deck_minions or missing_draw
                     else:
                         branch_pool = missing_draw
                     tree_branches: List[Dict[str, object]] = []

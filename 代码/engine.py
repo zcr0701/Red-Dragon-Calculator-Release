@@ -21,6 +21,58 @@ from typing import Callable, Dict, List, Optional
 BASE_DIR = Path(__file__).resolve().parent
 
 
+_CARD_MAP: Optional[Dict[str, dict]] = None
+_CARD_MAP_LOCK = threading.Lock()
+
+
+def _load_card_map() -> Dict[str, dict]:
+    """卡名映射（card_id → {name, type, ...}），惰性加载。"""
+    global _CARD_MAP
+    if _CARD_MAP is not None:
+        return _CARD_MAP
+    with _CARD_MAP_LOCK:
+        if _CARD_MAP is not None:
+            return _CARD_MAP
+        try:
+            with open(BASE_DIR / "card_id_map.json", encoding="utf-8") as f:
+                _CARD_MAP = json.load(f)
+        except Exception:
+            _CARD_MAP = {}
+    return _CARD_MAP
+
+
+def deck_card_names_by_type(
+    deck_items: List[dict],
+    *types: str,
+) -> List[str]:
+    """剩余牌库中属于指定类型（SPELL/SECRET/MINION…）的卡名（唯一名，保序）。
+
+    用于 暗影之门/行骗（抽法术）与 挖掘宝藏/潜伏帷幕/行骗连击（抽随从）
+    的分支池——分支数 = 牌库剩余该类型卡数，替代旧的固定勾选池。
+    """
+    card_map = _load_card_map()
+    out: List[str] = []
+
+    for item in deck_items or []:
+        name = str(item.get("name") or "")
+
+        if not name or name in out:
+            continue
+
+        cid = str(item.get("card_id") or "")
+        info = card_map.get(cid) or {}
+        card_type = str(info.get("type") or "")
+
+        if card_type in types:
+            out.append(name)
+        elif not cid and name in KNOWN_SPELL_NAMES and "SPELL" in types:
+            out.append(name)
+        elif not cid and name in KNOWN_NON_MINION_NAMES and "SPELL" in types:
+            out.append(name)
+
+    return out
+
+
 def default_threads() -> int:
     """按 CPU 逻辑核数自适应线程数（桌面机 8~16 核用满，4 通道并行展开）。"""
     try:
@@ -57,6 +109,8 @@ KNOWN_BASE_COSTS = {
     "邪恶短刀": 1,
     "疯狂之灾祸": 1,
     "异教地图": 2,
+    "暗影之门": 1,
+    "双面生意": 2,
     "狐人老千": 2,
     "疾速矿锄": 2,
     "行骗": 2,
@@ -141,6 +195,8 @@ KNOWN_SPELL_NAMES = {
     "疯狂之灾祸",
     "异教地图",
     "行骗",
+    "暗影之门",
+    "双面生意",
     "闪避",
     "潜伏帷幕",
     "舞动全场（ft.迦罗娜）",
@@ -168,6 +224,8 @@ KNOWN_NON_MINION_NAMES = {
     "疯狂之灾祸",
     "异教地图",
     "行骗",
+    "暗影之门",
+    "双面生意",
     "闪避",
     "潜伏帷幕",
     "舞动全场（ft.迦罗娜）",
@@ -187,6 +245,7 @@ CARD_DRAW_ATTRIBUTES = {
     "异教地图": {"base": {"随机": 1}, "combo": {}},                       # 从牌库发现 → 随机
     "持枪要挟": {"base": {"随机": 1}, "combo": {}},                       # 发现另一职业快枪牌 → 随机
     "行骗": {"base": {"法术": 1}, "combo": {"随从": 1}},                  # 抽 1 法术；连击再抽 1 随从
+    "暗影之门": {"base": {"法术": 1}, "combo": {}},                       # 随机抽 1 张法术牌
     "潜伏帷幕": {"base": {"随从": 2}, "combo": {}},                       # 抽 2 张随从牌
     "可疑交易": {"base": {"随机": 3}, "combo": {}},                       # 抽 3 张随机牌
 }

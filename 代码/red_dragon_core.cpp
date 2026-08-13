@@ -138,6 +138,7 @@ static const uint16_t N_E_POTION = intern_idx("potion_of_illusion");
 static const uint16_t N_E_MOTHER = intern_idx("candlebreath_mother");
 static const uint16_t N_E_REHYDRATE = intern_idx("rehydrate");
 static const uint16_t N_E_SWINDLE = intern_idx("swindle");
+static const uint16_t N_E_SHADOW_GATE = intern_idx("shadow_gate");
 static const uint16_t N_E_FISHIN = intern_idx("gone_fishin");
 static const uint16_t N_E_BONE = intern_idx("serrated_bone_spike");
 static const uint16_t N_E_GAMBLER = intern_idx("gambler_hunter");
@@ -201,6 +202,8 @@ static const unordered_map<string, CardDef> DB = {
     {"疾速矿锄", {2, "weapon", "quick_pick", false, false, false, -1}},
     {"异教地图", {2, "spell", "cultist_map", false, false, false, -1}},
     {"行骗", {2, "spell", "swindle", false, true, false, -1}},
+    {"暗影之门", {1, "spell", "shadow_gate", false, false, false, -1}},
+    {"双面生意", {2, "spell", "", false, false, false, -1}},
     {"闪避", {2, "secret", "evasion", false, false, false, -1}},
     {"潜伏帷幕", {3, "spell", "shroud_of_concealment", false, false, false, -1}},
     {"晦鳞巢母", {3, "minion", "candlebreath_mother", true, false, false, 3}},
@@ -305,6 +308,7 @@ static const unordered_map<string, vector<DrawSpec>> DRAW_ATTR_BASE = {
     {"dig_for_treasure", {{"minion", 1}}},           // 挖掘宝藏：抽 1 张随从牌
     {"cultist_map", {{"random", 1}}},                // 异教地图：从牌库发现（选 3 张随机抽 1）→ 随机
     {"swindle", {{"spell", 1}}},                     // 行骗：抽 1 张法术牌
+    {"shadow_gate", {{"spell", 1}}},                 // 暗影之门：随机抽 1 张法术牌
     {"shroud_of_concealment", {{"minion", 2}}},      // 潜伏帷幕：抽 2 张随从牌
     {"dubious_purchase", {{"random", 3}}},           // 可疑交易：抽 3 张随机牌
 };
@@ -819,6 +823,22 @@ static bool apply_effect_inplace(State& s, uint16_t e, const Card& card,
             unknown_spell.type_idx = N_T_SPELL;
             add_card_to_hand_or_burn(s, unknown_spell);
         }
+    } else if (e == N_E_SHADOW_GATE) {
+        // 暗影之门：随机抽 1 张法术牌（牌库已知按实际牌库抽第一张；
+        // 未知时置入“未知法术”杂牌，与常规路径一致）。
+        if (s.deck_is_known) {
+            for (auto it = s.deck.begin(); it != s.deck.end(); ++it) {
+                if (!it->is_spell_like()) continue;
+                Card drawn = *it;
+                s.deck.erase(it);
+                add_card_to_hand_or_burn(s, drawn);
+                break;
+            }
+        } else {
+            Card unknown_spell = make_card("未知法术");
+            unknown_spell.type_idx = N_T_SPELL;
+            add_card_to_hand_or_burn(s, unknown_spell);
+        }
     } else if (e == N_E_FISHIN) {
         // 垂钓时光：连击才抽 1 张牌（不连击只有探底，不抽牌）。
         // 牌库已知：按实际牌库抽第一张（移出牌库进手牌/满手烧毁）；
@@ -1136,12 +1156,23 @@ static vector<State> apply_search_effect(State base, const Card& card,
 
 static bool combo_active(const State& s) { return s.cards_played_this_turn > 0; }
 
+// 牌库是否有完整追踪数据（remaining_deck 全部是真实卡名）；只要还有
+// 空名占位（旧日志/未追踪）就退回旧固定勾选池。
+static bool deck_has_tracking(const State& s);
+
 // 随从表：红龙 OTK 的核心随从组（手牌+战场视为已抽到）。
 // ① {刀油, 鲨鱼之灵, 腾武, 牛头人酋长, 晦鳞巢母}
 // ② {刀油, 鲨鱼之灵, 狐人老千, 暗影施法者, 牛头人酋长, 晦鳞巢母}
 // 任一组集齐后，牌库视作已无随从：抽随从的法术按“不抽牌”处理，
 // 可打出腾格子（避免虚构抽牌后继）。
 static bool combo_minion_set_complete(const State& s) {
+    // 牌库有追踪数据（remaining_deck）：直接看牌库还剩没有随从。
+    if (deck_has_tracking(s)) {
+        for (const auto& c : s.deck)
+            if (c.type_idx == N_T_MINION) return false;
+        return true;
+    }
+    // 无追踪数据兜底：按手牌/战场组合随从是否集齐判断。
     bool scabbs = false, shark = false, tenwu = false, etc = false, mother = false;
     bool foxy = false, caster = false;
     auto mark = [&](uint16_t n) {
@@ -1160,21 +1191,39 @@ static bool combo_minion_set_complete(const State& s) {
     return false;
 }
 
-// 抽随从卡分支池：牌库剩余可能抽到的组合随从（按优先级排序，供束宽搜索直接展开分支）。
-// 默认勾选 鱼/狐/刀/暗/牛/晦，腾武默认不勾（玩家手动勾选，程序不会自动改），故分支池不含腾武。
+// 旧固定勾选池（无牌库追踪数据时的兜底；追踪器提供 remaining_deck 时
+// 分支池改用真实牌库剩余随从）。
 static const vector<string> COMBO_MINION_POOL = {
-    "鲨鱼之灵",        // 鱼 6
-    "斯卡布斯·刀油",   // 刀 5
-    "乐队经理精英牛头人酋长",  // 牛 4
-    "暗影施法者",       // 暗 3
-    "晦鳞巢母",        // 晦 2
-    "狐人老千",        // 狐 1
+    "鲨鱼之灵",        // 鱼
+    "斯卡布斯·刀油",   // 刀
+    "乐队经理精英牛头人酋长",  // 牛
+    "暗影施法者",       // 暗
+    "晦鳞巢母",        // 晦
+    "狐人老千",        // 狐
 };
 
-// 牌库剩余组合随从：初始 = 卡组勾选随从 - 起手手牌/场面（固定），
-// 之后只有“从牌库抽到”才减少；被舞动全场回手溢出烧掉、被杀死等
-// 都不会让随从重新回到牌库（避免 行骗 抽回已经烧掉/阵亡的随从）。
+// 牌库是否有完整追踪数据（remaining_deck 全部是真实卡名）；只要还有
+// 空名占位（旧日志/未追踪）就退回旧固定勾选池。
+static bool deck_has_tracking(const State& s) {
+    if (s.deck.empty()) return false;
+    for (const auto& c : s.deck)
+        if (c.name().empty()) return false;
+    return true;
+}
+
+// 抽随从卡分支池 = 牌库剩余随从池（追踪器提供的 remaining_deck 里
+// 仍是 MINION 的卡，按唯一卡名展开）；无追踪数据时退回旧固定勾选池。
 static vector<string> combo_missing_minions(const State& s) {
+    if (deck_has_tracking(s)) {
+        vector<string> missing;
+        for (const auto& c : s.deck) {
+            if (c.type_idx != N_T_MINION) continue;
+            if (std::find(missing.begin(), missing.end(), c.name()) == missing.end()) {
+                missing.push_back(c.name());
+            }
+        }
+        return missing;
+    }
     vector<string> missing;
     for (size_t i = 0; i < COMBO_MINION_POOL.size(); i++) {
         if (s.combo_deck_mask & (uint8_t)(1u << i)) {
@@ -1184,8 +1233,15 @@ static vector<string> combo_missing_minions(const State& s) {
     return missing;
 }
 
-// 从牌库抽走一张组合随从：清除位图中对应位（抽走后才不可再抽）。
+// 从牌库抽走一张组合随从：从 remaining_deck 移除一个同名实例
+// （抽走后才不可再抽），同时清除旧位图对应位（兼容残留状态）。
 static void deck_draw_minion(State& s, const string& name) {
+    for (auto it = s.deck.begin(); it != s.deck.end(); ++it) {
+        if (it->type_idx == N_T_MINION && it->name() == name) {
+            s.deck.erase(it);
+            break;
+        }
+    }
     for (size_t i = 0; i < COMBO_MINION_POOL.size(); i++) {
         if (COMBO_MINION_POOL[i] == name) {
             s.combo_deck_mask &= (uint8_t)~(1u << i);
@@ -1320,13 +1376,23 @@ static vector<State> generate_successors(const State& st) {
                     if (d.type == "spell") base_junk_spells += d.count;
             }
 
-            if (draw_count > 0) {
+            const bool forced = !st.forced_draw_choice.empty();
+            // 强制抽取目标是法术时，跳过随从分支（交给下方法术分支处理）。
+            bool forced_is_spell = false;
+            if (forced) {
+                for (const auto& c : st.deck) {
+                    if (c.is_spell_like() && c.name() == st.forced_draw_choice) {
+                        forced_is_spell = true;
+                        break;
+                    }
+                }
+            }
+
+            if (draw_count > 0 && !forced_is_spell) {
                 vector<string> missing = combo_missing_minions(st);
 
                 if (!missing.empty()) {
                     vector<vector<string>> drawn_sets;
-
-                    const bool forced = !st.forced_draw_choice.empty();
 
                     if (forced && draw_count == 1) {
                         // WhatIF 同级分支：强制行骗/挖掘宝藏抽到指定随从
@@ -1476,6 +1542,141 @@ static vector<State> generate_successors(const State& st) {
                             } else if (card.effect_idx == N_E_FISHIN && combo_active(st)) {
                                 Card unknown = make_card("未知抽牌");
                                 add_card_to_hand_or_burn(junk, unknown);
+                            }
+                            if (card.is_spell_like()) transform_deadly_shadows(junk, card);
+                            junk.cards_played_this_turn++;
+                            out.push_back(std::move(junk));
+                        }
+                    }
+
+                    continue;  // 跳过下方常规展开
+                }
+            }
+
+            // 法术抽牌分支：暗影之门/行骗 随机抽牌库剩余的一张法术牌，
+            // 分支数 = 牌库剩余法术数（按唯一法术名展开，追踪器提供 remaining_deck）。
+            int base_spell_count = 0, combo_spell_count = 0;
+            if (base_draw_it != DRAW_ATTR_BASE.end()) {
+                for (const auto& d : base_draw_it->second)
+                    if (d.type == "spell") base_spell_count += d.count;
+            }
+            if (combo_draw_it != DRAW_ATTR_COMBO.end() && combo_active(st)) {
+                for (const auto& d : combo_draw_it->second)
+                    if (d.type == "spell") combo_spell_count += d.count;
+            }
+            int total_spell_count = base_spell_count + combo_spell_count;
+
+            if (total_spell_count > 0) {
+                vector<string> spell_pool;
+                for (const auto& c : st.deck) {
+                    if (!c.is_spell_like()) continue;
+                    if (std::find(spell_pool.begin(), spell_pool.end(), c.name())
+                        == spell_pool.end()) {
+                        spell_pool.push_back(c.name());
+                    }
+                }
+
+                if (!spell_pool.empty()) {
+                    vector<vector<string>> spell_sets;
+                    if (forced) {
+                        if (std::find(spell_pool.begin(), spell_pool.end(),
+                                      st.forced_draw_choice) != spell_pool.end()) {
+                            spell_sets.push_back({st.forced_draw_choice});
+                        }
+                    } else if ((int)spell_pool.size() <= total_spell_count) {
+                        // 剩余法术不足抽取张数：全部抽走（单分支）
+                        spell_sets.push_back(spell_pool);
+                    } else {
+                        for (const string& sp : spell_pool) spell_sets.push_back({sp});
+                    }
+
+                    // 连击追加随从（行骗连击再抽 1 张随从）：spell × minion 叉乘
+                    vector<vector<string>> minion_sets = {{}};
+                    int combo_minion_count = 0;
+                    if (combo_draw_it != DRAW_ATTR_COMBO.end() && combo_active(st)) {
+                        for (const auto& d : combo_draw_it->second)
+                            if (d.type == "minion") combo_minion_count += d.count;
+                    }
+                    if (combo_minion_count > 0) {
+                        vector<string> missing = combo_missing_minions(st);
+                        if ((int)missing.size() <= combo_minion_count) {
+                            if (!missing.empty()) minion_sets = {missing};
+                        } else if (combo_minion_count == 1) {
+                            minion_sets.clear();
+                            for (const string& mn : missing) minion_sets.push_back({mn});
+                        } else {
+                            minion_sets = combo_combinations(missing, combo_minion_count);
+                        }
+                    }
+
+                    for (const auto& ss : spell_sets) {
+                        for (const auto& ms : minion_sets) {
+                            State base = st.clone_reserved();
+                            if (!play_card_base(base, hand_index, -1, false, false)) continue;
+                            base.fork_damage = base.alex_damage;
+                            base.forced_draw_choice.clear();
+
+                            if (!base.path().empty()) {
+                                string note = "（";
+                                bool first = true;
+                                for (const string& x : ss) {
+                                    if (!first) note += "、";
+                                    note += x;
+                                    first = false;
+                                }
+                                for (const string& x : ms) {
+                                    if (!first) note += "、";
+                                    note += x;
+                                    first = false;
+                                }
+                                note += "）";
+                                base.path_mut().back() += note;
+                            }
+
+                            // 抽法术：从牌库移除一个同名法术并置入手牌
+                            for (const string& sp : ss) {
+                                for (auto it = base.deck.begin(); it != base.deck.end(); ++it) {
+                                    if (it->is_spell_like() && it->name() == sp) {
+                                        Card drawn = *it;
+                                        base.deck.erase(it);
+                                        add_card_to_hand_or_burn(base, drawn);
+                                        break;
+                                    }
+                                }
+                            }
+                            // 抽连击随从
+                            for (const string& mn : ms) {
+                                add_card_to_hand_or_burn(base, make_card(mn));
+                                deck_draw_minion(base, mn);
+                            }
+
+                            base.last_draw_key = "";
+                            bool first = true;
+                            for (const string& x : ss) {
+                                if (!first) base.last_draw_key += "、";
+                                base.last_draw_key += x;
+                                first = false;
+                            }
+                            for (const string& x : ms) {
+                                if (!first) base.last_draw_key += "、";
+                                base.last_draw_key += x;
+                                first = false;
+                            }
+                            base.used_draw_branch = true;
+                            if (card.is_spell_like()) transform_deadly_shadows(base, card);
+                            base.cards_played_this_turn++;
+                            out.push_back(std::move(base));
+                        }
+                    }
+
+                    // 正常线：保底抽 1 张法术杂牌（结果唯一确定，不进分支）
+                    if (!forced) {
+                        State junk = st.clone_reserved();
+                        if (play_card_base(junk, hand_index, -1, false, false)) {
+                            for (int k = 0; k < total_spell_count; k++) {
+                                Card unknown_spell = make_card("未知法术");
+                                unknown_spell.type_idx = N_T_SPELL;
+                                add_card_to_hand_or_burn(junk, unknown_spell);
                             }
                             if (card.is_spell_like()) transform_deadly_shadows(junk, card);
                             junk.cards_played_this_turn++;
@@ -3119,8 +3320,8 @@ static State state_from_json(const JVal& root) {
             }
         }
     }
-    // 牌库剩余组合随从：固定为“卡组勾选随从 - 起手手牌/场面”；
-    // 之后只随“抽走”减少（deck_draw_minion），随从被烧/阵亡/回手不改变牌库。
+    // 旧固定勾选位图（无追踪数据时的兜底分支池）：
+    // COMBO_MINION_POOL − 手牌/战场；之后只随“抽走”减少。
     for (size_t i = 0; i < COMBO_MINION_POOL.size(); i++) {
         bool have = false;
         for (const auto& c : st.hand) {
