@@ -2275,7 +2275,13 @@ class CalculationWorker(QThread):
                         "best": None,
                     }
 
-                    prefix_draw = list(best_path[:di])
+                    # 把分叉卡本身钉进前缀：分支必须从“打出潜伏帷幕（抽到X）”续算，
+                    # 否则强制抽取会被其他抽牌卡（如挖掘宝藏）抢先满足，
+                    # 分支线会跑偏成“挖掘宝藏(晦)-…-舞”（舞根本没拿）。
+                    fork_card = re.sub(
+                        r"[（(].*[）)]$", "", str(best_path[di])
+                    )
+                    prefix_draw = list(best_path[:di]) + [fork_card]
                     # 分支点缺失池 = 界面勾选的卡组随从 - 手牌/战场已有随从
                     # （第一个抽牌分支点之前没有抽牌，快照手牌/战场即分支点手牌/战场）
                     checked = list(self.options.get("whatif_combo") or [])
@@ -2295,12 +2301,11 @@ class CalculationWorker(QThread):
 
                     # 根：分支卡前的步骤 + 分支卡名（去掉抽取标注，如 行骗（牛）→ 行骗）
                     root_steps = [str(s) for s in best_path[:di]]
-                    branch_card = re.sub(r"[（(].*[）)]$", "", str(best_path[di]))
-                    root_steps.append(branch_card)
+                    root_steps.append(fork_card)
                     # 垂钓时光分叉池 = 阅读器追踪的探底已知牌（底 3 张，缺位补“未知杂牌”）；
                     # 不假设底部有缺失的组合随从（垂钓时光是随机三张里选一张）；
                     # 其余抽随从卡仍是“卡组随从 - 已有随从”的缺失池。
-                    if branch_card == "垂钓时光":
+                    if fork_card == "垂钓时光":
                         branch_pool = [
                             str(n)
                             for n in (self.snapshot.get("dredge_bottom") or [])
@@ -2310,7 +2315,26 @@ class CalculationWorker(QThread):
                         if len(branch_pool) < 3:
                             branch_pool.append("未知杂牌")
                     else:
-                        branch_pool = missing_draw
+                        draw_count = int(
+                            engine.DRAW_MINION_SPELLS.get(fork_card, (0, 1))[1]
+                        )
+
+                        if draw_count >= 2:
+                            # 潜伏帷幕抽 2：分支 = 缺失随从的两两组合
+                            # （如 潜伏帷幕(牛晦)），不是单张随从。
+                            branch_pool = [
+                                "、".join(comb)
+                                for comb in engine._draw_combinations(
+                                    missing_draw, draw_count
+                                )
+                            ]
+
+                            # 缺失随从不足抽取张数：该分叉退化（只可能抽剩余全部），
+                            # 不生成分支节点，主线按确定性处理。
+                            if not branch_pool:
+                                return None
+                        else:
+                            branch_pool = missing_draw
                     tree_branches: List[Dict[str, object]] = []
                     # 性能优化：主线抽取（如 行骗(牛)）用 11s + 束宽 3000 挖深线
                     # （96 伤），其 C++ quickdraw_branches 已含各发现牌的深线结果
@@ -2367,7 +2391,9 @@ class CalculationWorker(QThread):
                         res_i = engine.compute(
                             self.snapshot,
                             branch_prefix=prefix_draw,
-                            forced_draw_choice=mn,
+                            # 组合分支（潜伏帷幕抽2，如“牛、晦”）强制抽取用第一张，
+                            # 组合匹配由下方 draw_matched 按完整“牛、晦”串过滤。
+                            forced_draw_choice=str(mn).split("、")[0],
                             exchanges=best_exchange,
                             lethal_threshold=lethal,
                             should_stop=lambda: self._stop,
@@ -2852,7 +2878,15 @@ class CalculationWorker(QThread):
                 # （draw_branches/quickdraw_branches，修复后含“行骗[殒]双抽”等
                 # 殒命暗影变形线），直接复用它们构建 WhatIF 树，让用户看到各随机
                 # 分支的真实结果（如 6 费下双抽线均因法力不足为 0 伤）。
-                if whatif_tree is None and not self._stop:
+                # 仅当主路径没有分支卡（di/qi < 0）时才走此兜底：主路径有分支卡
+                # 但分叉退化（如 潜伏帷幕 抽2但缺失随从不足2张）时，直接显示正常线，
+                # 不再用主搜索 draw_branches 拼出 牛/暗/刀 等“抽到已在手随从”的乱树。
+                if (
+                    whatif_tree is None
+                    and not self._stop
+                    and di < 0
+                    and qi < 0
+                ):
                     main_draw = list(result.get("draw_branches") or [])
                     main_qd = list(result.get("quickdraw_branches") or [])
                     fb_branches: List[Dict[str, object]] = []
