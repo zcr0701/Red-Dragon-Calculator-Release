@@ -3534,12 +3534,12 @@ class MainWindow(QWidget):
             "框1=正常计算：勾选后正常计算搜到 伤害 ≥ 敌方英雄血量+护甲 即停（只求斩杀线，不再追最高伤）"
         )
         self.truncate_branch_check = QCheckBox("框2=W-B机制")
-        self.truncate_branch_check.setChecked(True)
+        self.truncate_branch_check.setChecked(False)
         self.truncate_branch_check.setToolTip(
             "框2=W-B机制：抽随从卡/持枪要挟各分支回溯计算搜到 伤害 ≥ 敌方英雄血量+护甲 即停（加速分支计算）"
         )
         self.truncate_exchange_check = QCheckBox("框3")
-        self.truncate_exchange_check.setChecked(True)
+        self.truncate_exchange_check.setChecked(False)
         self.truncate_exchange_check.setToolTip(
             "框3=场面交换：需要场面交换调用多个场面分别计算时，"
             "每个场面搜到 伤害 ≥ 敌方英雄血量+护甲 即停（加速多场面计算）"
@@ -3883,7 +3883,16 @@ class MainWindow(QWidget):
         self.deck_label.setText(f"牌库：{len(deck)} 张")
 
         weapon = snap.get("weapon")
-        self.weapon_label.setText(f"武器：{weapon['name'] if weapon else '无'}")
+
+        if weapon:
+            w_name = weapon.get("name") or "?"
+            w_atk = weapon.get("attack")
+            w_du = weapon.get("durability")
+            w_atk_t = str(w_atk) if w_atk is not None else "?"
+            w_du_t = str(w_du) if w_du is not None else "?"
+            self.weapon_label.setText(f"武器：{w_name} {w_atk_t}/{w_du_t}")
+        else:
+            self.weapon_label.setText("武器：无")
 
         self.hero_label.setText(
             f"英雄：我方 {_hero_text(snap.get('player_hero'))}"
@@ -4256,7 +4265,15 @@ class MainWindow(QWidget):
         hero = self.snapshot.get("opponent_hero") or {}
         fingerprint = (
             json.dumps(
-                [(b.get("name"), b.get("health"), b.get("attack")) for b in board],
+                [
+                    (
+                        b.get("name"),
+                        b.get("health"),
+                        b.get("attack"),
+                        bool(b.get("summoned_this_turn")),
+                    )
+                    for b in board
+                ],
                 ensure_ascii=False,
             )
             + "|"

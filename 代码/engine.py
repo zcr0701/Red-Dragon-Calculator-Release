@@ -471,6 +471,11 @@ HERO_DRAGON_WEIGHT = 100.0
 EXCHANGE_SAC_1_1_BONUS = 18.0
 
 
+# 脸优先加分：每个“攻击敌方英雄”的随从 +3 分——同分/近分时打脸方案排前
+# （不选择打随从）；腾格子等必要的随从交换仍由随从栏评分主导。
+EXCHANGE_FACE_BONUS = 3.0
+
+
 def plan_exchanges_top(
     board: List[dict],
     enemy_board: List[dict],
@@ -494,11 +499,12 @@ def plan_exchanges_top(
     “不同的随从栏空位 / 不同英雄血量档 / 不同存活随从”，让可能产生最优解的
     异质场面也有机会入选（0=纯按分数取前 top_n）。
     """
-    # 只有攻击力 >= 1 的我方随从能主动发起交换（0 攻随从不能攻击）
+    # 只有攻击力 >= 1 且不是本回合刚下的（召唤失调）我方随从能主动交换。
     friend_indices = [
         index
         for index, item in enumerate(board, start=1)
         if int(item.get("attack") or 0) >= 1
+        and not item.get("summoned_this_turn")
     ]
     enemy_indices = [0] + list(range(1, len(enemy_board) + 1))  # 0 = 敌方英雄
     if not friend_indices:
@@ -533,6 +539,15 @@ def plan_exchanges_top(
                 for ei1 in enemy_indices:
                     for ei2 in enemy_indices:
                         plans.append((fi1, ei1, fi2, ei2))
+
+    # 全部打脸：所有能攻击的我方随从都攻击敌方英雄（优先级最高的默认场面）
+    if friend_indices:
+        flat: List[int] = []
+
+        for fi in friend_indices:
+            flat.extend((fi, 0))
+
+        plans.append(tuple(flat))
 
     if len(plans) > max_plans:
         plans = plans[:max_plans]
@@ -607,6 +622,13 @@ def plan_exchanges_top(
 
         if sac_1_1:
             score_val += sac_1_1 * EXCHANGE_SAC_1_1_BONUS
+
+        # 脸优先：攻击敌方英雄（ei==0）的次数越多越优先（同分/近分时打脸方案排前，
+        # 不选择打随从；腾格子等交换仍由随从栏评分主导，不会被这个小额加分盖过）
+        face_hits = sum(1 for _fi, ei in pairs if ei == 0)
+
+        if face_hits:
+            score_val += face_hits * EXCHANGE_FACE_BONUS
 
         # 去重键仍以我方随从栏为主，但把英雄剩余血量也纳入：
         # 攻击英雄不改变随从栏，但会把英雄血量打到不同档位，不能被“不交换”去重掉
@@ -934,7 +956,16 @@ def build_payload(
         "board": board,
         "enemy_board": enemy_board,
         "secrets": [{"name": item["name"]} for item in snapshot.get("secrets") or []],
-        "weapon": {"name": snapshot["weapon"]["name"]} if snapshot.get("weapon") else None,
+        "weapon": (
+            {
+                "name": snapshot["weapon"]["name"],
+                # 当前武器攻击/耐久（Power.log 实时值，含磨损/增益）
+                "attack": snapshot["weapon"].get("attack"),
+                "durability": snapshot["weapon"].get("durability"),
+            }
+            if snapshot.get("weapon")
+            else None
+        ),
         "current_effects": effect_payload,
     }
 

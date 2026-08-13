@@ -336,6 +336,8 @@ class PowerLogParser:
         self._cards_played_this_turn = 0
         self.local_controller: Optional[int] = None
         self.spectator_mode = False
+        # 本回合打出的随从实体 id（召唤失调：当回合不能攻击/不能参与场面交换）
+        self._played_minions_this_turn: Set[int] = set()
         # 垂钓时光探底追踪：最近一次垂钓时光的选择（id/候选底牌），解析后写入 dredge_bottom
         self._dredge_choice: Optional[dict] = None
         self._dredge_bottom: List[str] = []
@@ -501,6 +503,10 @@ class PowerLogParser:
         name = card_name(ent_card)
         self._consume_effects(name, ent)
 
+        # 本回合打出的随从：标记召唤失调（当回合不能参与场面交换/攻击）
+        if getattr(ent, "type", None) == CardType.MINION:
+            self._played_minions_this_turn.add(entity_id)
+
         if name in EFFECT_CARD_NAMES:
             self.pending_effects[name] = self.pending_effects.get(name, 0) + 1
 
@@ -510,6 +516,7 @@ class PowerLogParser:
 
         self._last_turn_seen = value
         self._cards_played_this_turn = 0
+        self._played_minions_this_turn.clear()
 
         # 本回合类效果（伺机/刀油/骨刺/狐人）到期移除；幸运彗星跨回合保留
         for name in ("伺机待发", "斯卡布斯·刀油", "锯齿骨刺", "狐人老千"):
@@ -848,9 +855,23 @@ class PowerLogParser:
             "card_id": card_id,
             "name": card_name(card_id),
             "cost": cost,
-            "health": health if card_type == CardType.MINION else None,
-            "health_max": health_max if card_type == CardType.MINION else None,
+            "health": (
+                health
+                if card_type in (CardType.MINION, CardType.WEAPON)
+                else None
+            ),
+            "health_max": (
+                health_max
+                if card_type in (CardType.MINION, CardType.WEAPON)
+                else None
+            ),
             "attack": ent.tags.get(GameTag.ATK),
+            # 武器耐久：DURABILITY tag 优先，缺省用 HEALTH（武器血量即耐久）
+            "durability": (
+                ent.tags.get(GameTag.DURABILITY)
+                or (health if card_type == CardType.WEAPON else None)
+            ),
+            "summoned_this_turn": ent.id in self._played_minions_this_turn,
             "zone_position": ent.tags.get(GameTag.ZONE_POSITION),
             "ghostly": bool(ent.tags.get(GameTag.GHOSTLY)),
         }
