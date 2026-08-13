@@ -4900,7 +4900,10 @@ class WBTreeWindow(QDialog):
 
 
 class WhatIFPopWindow(QWidget):
-    """WhatIF 独立小窗：贴在红龙小窗正下方、等宽，内容超高时内部滚动。"""
+    """WhatIF 独立小窗：贴在红龙小窗正下方、等宽，内容超高时内部滚动。
+
+    可像红龙小窗一样拖动移动、用右下角 grip 拖高；默认高度比内容更高一点。
+    """
 
     def __init__(self, mini: "MiniWindow"):
         super().__init__(
@@ -4910,6 +4913,9 @@ class WhatIFPopWindow(QWidget):
         self.mini = mini
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self._drag_offset: Optional[QPoint] = None
+        self._detached = False
+        self._user_height: Optional[int] = None
         self._build_ui()
         self.hide()
 
@@ -4924,6 +4930,9 @@ class WhatIFPopWindow(QWidget):
         self.scroll.setWidget(self.guide)
         root.addWidget(self.scroll)
 
+        grip = QSizeGrip(self)
+        root.addWidget(grip, 0, Qt.AlignRight)
+
     def set_whatif(
         self,
         data: Dict[str, object],
@@ -4931,20 +4940,53 @@ class WhatIFPopWindow(QWidget):
         normal_damage: Optional[int] = None,
     ) -> None:
         self.guide.set_whatif(data, colors=colors, normal_damage=normal_damage)
+        self._detached = False  # 新结果重新贴回小窗下方
+        self._user_height = None  # 恢复默认高度（280+，内容更高则更长）
+        self.reposition()
         self.show()
         self.raise_()
-        self.reposition()
 
     def reposition(self) -> None:
-        """贴在小窗正下方，等宽；高度按内容自适应、封顶到屏幕底。"""
+        """贴在小窗正下方、等宽；高度默认高一点、内容更高则增长、封顶到屏幕底。"""
         g = self.mini.frameGeometry()
         screen = QApplication.primaryScreen().availableGeometry()
         w = g.width()
         x = max(screen.left(), min(g.x(), screen.right() - w))
         top = g.bottom() + 2
         ideal = int(self.guide.sizeHint().height()) + 8
-        h = max(120, min(ideal, max(120, screen.bottom() - top - 2)))
+        max_h = max(120, screen.bottom() - top - 2)
+
+        if self._user_height is not None:
+            h = max(120, min(self._user_height, max_h))
+        else:
+            # 默认高一点（280），内容更高时随内容增长
+            h = max(280, min(ideal, max_h))
+
+        if self._detached:
+            # 用户手动拖动过：只保持尺寸，位置留在用户放置处
+            self.resize(self.width(), min(h, max_h))
+            return
+
         self.setGeometry(x, top, w, h)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        super().resizeEvent(event)
+        self._user_height = self.height()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if event.button() == Qt.LeftButton:
+            self._drag_offset = event.globalPos() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
+            self._detached = True
+            self.move(event.globalPos() - self._drag_offset)
+            event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        self._drag_offset = None
+        event.accept()
 
     def hideEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         super().hideEvent(event)
