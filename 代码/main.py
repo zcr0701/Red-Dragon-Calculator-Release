@@ -2143,8 +2143,10 @@ class CalculationWorker(QThread):
                     qd0_kwargs["max_paths"] = max(
                         3000000, int(self.options.get("max_paths") or 0)
                     )
-                    qd0_kwargs["wide_widths"] = [3000]
-                    qd0_kwargs["heuristics"] = [6]
+                    # 分支续算用默认四通道（多启发互补）：单通道 [3000]/H6 在
+                    # 6水晶持枪局面只续出 64/80，四通道能续出 96。
+                    qd0_kwargs["wide_widths"] = None
+                    qd0_kwargs["heuristics"] = None
                     qd0_kwargs["threads"] = max(
                         2,
                         min(
@@ -2591,8 +2593,10 @@ class CalculationWorker(QThread):
                         qd_kwargs["max_paths"] = max(
                             3000000, int(self.options.get("max_paths") or 0)
                         )
-                        qd_kwargs["wide_widths"] = [3000]
-                        qd_kwargs["heuristics"] = [6]
+                        # 分支续算用默认四通道（多启发互补）：单通道 [3000]/H6 在
+                        # 6水晶持枪局面只续出 64/80，四通道能续出 96。
+                        qd_kwargs["wide_widths"] = None
+                        qd_kwargs["heuristics"] = None
                         qd_kwargs["threads"] = max(
                             2,
                             min(
@@ -3681,12 +3685,41 @@ class MainWindow(QWidget):
 
         result_box = QGroupBox("计算结果")
         result_layout = QVBoxLayout(result_box)
-        # 正常计算（多轮）优先：占主空间可滚动，不被下方 WhatIF 挤没
+        # 结果视图切换：默认 original（正常线），WhatIF 有内容时按钮变色炫彩，点击切换
+        self._current_view = "original"
+        self._orig_view_text = ""
+        self._whatif_view_text = ""
+        self._whatif_hue = 0
+        view_row = QHBoxLayout()
+        self.view_original_btn = QPushButton("original")
+        self.view_original_btn.setCheckable(True)
+        self.view_original_btn.setChecked(True)
+        self.view_original_btn.clicked.connect(
+            lambda: self._set_result_view("original")
+        )
+        self.view_whatif_btn = QPushButton("whatif")
+        self.view_whatif_btn.setCheckable(True)
+        self.view_whatif_btn.clicked.connect(
+            lambda: self._set_result_view("whatif")
+        )
+        self._view_group = QButtonGroup(self)
+        self._view_group.addButton(self.view_original_btn)
+        self._view_group.addButton(self.view_whatif_btn)
+        self._view_group.setExclusive(True)
+        view_row.addWidget(self.view_original_btn)
+        view_row.addWidget(self.view_whatif_btn)
+        view_row.addStretch(1)
+        result_layout.addLayout(view_row)
+        # 正常计算（多轮）优先：占主空间可滚动
         self.result_text = QPlainTextEdit()
         self.result_text.setReadOnly(True)
         self.result_text.setMaximumBlockCount(5000)
         result_layout.addWidget(self.result_text, 1)
         right_layout.addWidget(result_box, 1)
+
+        self._whatif_btn_timer = QTimer(self)
+        self._whatif_btn_timer.setInterval(180)
+        self._whatif_btn_timer.timeout.connect(self._cycle_whatif_btn)
 
         top.addWidget(right)
         top.setSizes([520, 600])
@@ -4587,16 +4620,15 @@ class MainWindow(QWidget):
         results = data.get("results") or []
         res0 = results[0] if results else {}
         orig = data.get("original") or {}
-        # 头部/正常线显示真实最大（含持枪要挟等分支卡的最优解），而不是禁抽线：
-        # 之前这里取 original（不让打持枪要挟，6水晶持枪局面只有 48），
-        # 导致搜索明明找到 96 却显示 48（000329/002425/003646/004955）。
+        # 头部显示真实最大（含持枪要挟等分支卡的最优解）；正常线 = original（禁抽线，
+        # V1.2.1 逻辑，不打持枪要挟/抽随从卡）。两者语义不同，分开显示。
         normal_dmg = int(data.get("max_damage") or 0)
         normal_dragons = int(data.get("max_dragons") or 0)
-        normal_path = list(res0.get("path") or [])
+        normal_path = list(orig.get("path") or [])
         if normal_dmg <= 0 or not normal_path:
             normal_dmg = int(orig.get("damage") or 0)
             normal_dragons = int(orig.get("dragons") or 0)
-            normal_path = list(orig.get("path") or [])
+            normal_path = list(res0.get("path") or [])
         lines = [
             "搜索方式：纯束宽搜索",
             f"最大伤害：{normal_dmg}，最大龙数：{normal_dragons}",
@@ -4625,21 +4657,54 @@ class MainWindow(QWidget):
         else:
             lines.append("  （无路径）")
 
-        # WhatIF 纯文本：与正常计算放一起（严格格式）
-        if include_whatif:
-            whatif_txt = _whatif_text_block(data)
-
-            if whatif_txt:
-                lines.append("")
-                lines.extend(whatif_txt.splitlines())
-
         wb = data.get("wb")
         if wb:
             lines.append("")
             lines.extend(_wb_tree_lines(wb))
 
-        text = "\n".join(lines)
-        self.result_text.setPlainText(text)
+        self._orig_view_text = "\n".join(lines)
+        # WhatIF 视图（独立切换，不与 original 混排）
+        self._whatif_view_text = ""
+        if include_whatif:
+            whatif_txt = _whatif_text_block(data)
+            if whatif_txt:
+                self._whatif_view_text = whatif_txt
+
+        has_whatif = bool(self._whatif_view_text.strip())
+        self.view_whatif_btn.setEnabled(has_whatif)
+        if not has_whatif:
+            self._whatif_btn_timer.stop()
+            self.view_whatif_btn.setStyleSheet("")
+            if self._current_view == "whatif":
+                self._current_view = "original"
+                self.view_original_btn.setChecked(True)
+        else:
+            if not self._whatif_btn_timer.isActive():
+                self._whatif_btn_timer.start()
+            if self._current_view == "whatif":
+                self.view_whatif_btn.setChecked(True)
+        self._refresh_result_view()
+
+    def _set_result_view(self, view: str) -> None:
+        """original/whatif 视图切换。"""
+        self._current_view = view
+        self._refresh_result_view()
+
+    def _refresh_result_view(self) -> None:
+        """按当前视图把对应文本刷到结果区。"""
+        if self._current_view == "whatif" and self._whatif_view_text:
+            self.result_text.setPlainText(self._whatif_view_text)
+        else:
+            self.result_text.setPlainText(self._orig_view_text)
+
+    def _cycle_whatif_btn(self) -> None:
+        """WhatIF 有内容时按钮文字循环变色炫彩。"""
+        if not self._whatif_view_text:
+            return
+        self._whatif_hue = (self._whatif_hue + 15) % 360
+        self.view_whatif_btn.setStyleSheet(
+            "font-weight:bold; color:hsl(%d,100%%,55%%);" % self._whatif_hue
+        )
 
     def _show_wb_tree(self, wb: Optional[Dict[str, object]]) -> None:
         """W-B 分支树在独立大窗口展示（有数据则填充并显示）。"""

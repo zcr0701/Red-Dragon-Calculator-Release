@@ -361,6 +361,7 @@ struct State {
     bool has_weapon = false;
     bool deck_is_known = false;
     bool branch_expand = true;  // W-B：抽随从卡分支是否直接展开进束宽搜索（主窗口“W-B机制”勾选框）
+    bool no_branch = false;     // 禁抽通道：不打持枪要挟/抽随从分支卡（用于补出 original 禁抽线）
     int mana_crystals = 10;
     int mana = 10;
     int initial_mana_crystals = 10;
@@ -427,6 +428,7 @@ struct State {
         c.has_weapon = has_weapon;
         c.deck_is_known = deck_is_known;
         c.branch_expand = branch_expand;
+        c.no_branch = no_branch;
         c.mana_crystals = mana_crystals;
         c.mana = mana;
         c.initial_mana_crystals = initial_mana_crystals;
@@ -921,6 +923,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
         const bool forced = !base.forced_discover_choice.empty();
         for (size_t ci = 0; ci < QUICKDRAW_MODELED_POOL.size(); ci++) {
             const string& choice = QUICKDRAW_MODELED_POOL[ci];
+            if (base.no_branch) continue;  // 正常线通道：只保留杂牌结果，已建模发现归 WhatIF
             if (forced && choice != base.forced_discover_choice) continue;
             State s = base.clone_reserved();
             if (s.quickdraw_choice < 0) s.quickdraw_choice = (int)ci;
@@ -1284,7 +1287,10 @@ static vector<State> generate_successors(const State& st) {
         // 抽随从卡（挖掘宝藏/潜伏帷幕）以及连击追加抽随从（行骗连击）
         // 直接按“组合剩余随从池”展开分支，让所有可能抽到的随从都参与束宽搜索
         // （显示可能的最高伤路径）；无此类卡在手中时这里是常数级判断，不影响搜索性能。
-        if (!st.deck_is_known && st.branch_expand) {
+        // no_branch（正常线通道）：分支卡当杂牌打（V1.2.1 逻辑）——抽随从卡
+        // 不展开具体随从分支（那些归 WhatIF），抽到的是杂牌；没随从可抽时
+        // 同样按杂牌清手段处理。持枪要挟的已建模发现结果也在其 effect 里跳过。
+        if (!st.deck_is_known && st.branch_expand && !st.no_branch) {
             int draw_count = 0;
     auto base_draw_it = DRAW_ATTR_BASE.find(card.effect_id_str());
             if (base_draw_it != DRAW_ATTR_BASE.end()) {
@@ -1849,6 +1855,7 @@ struct SearchParams {
     int inner_threads = 1;      // 宽束通道内部的并行展开线程数（大局面通道给 3）
     int only_best_damage = 0;   // 只计算最高伤害：找到最高伤后剪掉无法超越它的分支
     int lethal_threshold = -1;  // 精确截断：>0 时搜到 伤害≥阈值（敌方血量+护甲）即停
+    bool no_branch = false;     // 禁抽通道：不打持枪要挟/抽随从分支卡
 };
 
 // ---------- 子链覆盖度（旧 beam 冠军判据：状态侧已凑齐的子链骨架数） ----------
@@ -1996,11 +2003,12 @@ static void add_best_draw(const State& s, unordered_map<string, State>& best) {
     if (it == best.end() || path_sort_better(s, it->second)) best[s.last_draw_key] = s;
 }
 
-// 原版：不含持枪要挟的最优路径（不考虑分支节点，即之前的计算逻辑）
+// 原版（正常线）：分支卡当杂牌打的确定性最优线（V1.2.1 逻辑，不考虑分支节点）。
 static void add_best_no_qd(const State& s, State& best) {
-    // 正常线 = 既不打持枪要挟、也不打抽随从分支卡（行骗/挖掘宝藏/潜伏帷幕/垂钓时光）：
-    // 直接不考虑这类可能带有分支的抽卡（禁抽），WhatIF 分支计算才展开它们。
-    if (s.used_quickdraw || s.used_draw_branch) return;
+    // 持枪要挟只算“其他快枪牌·随从/法术”两个杂牌结果（choice 5/6，清杂牌手段），
+    // 已建模发现结果（choice 0-4）属 WhatIF 分支；抽随从分支卡不进正常线。
+    if (s.used_draw_branch) return;
+    if (s.used_quickdraw && s.quickdraw_choice >= 0 && s.quickdraw_choice < 5) return;
     if (best.path().empty() || path_sort_better(s, best)) best = s;
 }
 
@@ -2190,6 +2198,8 @@ static int subchain_score(const State& s) {
     if (dragons > 0 && (dance > 0 || potion > 0)) score += 12;
     if (board_d > 0 && shadowstep > 0) score += 12;
     if (deadly && (dance > 0 || potion > 0)) score += 25;
+    if (deadly && shadowstep > 0) score += 20;  // 殒命可复制暗影步（额外单体回手），
+                                                // 禁抽线(original)靠它把 48 提到 64
     if (shark && scabbs >= 2) score += 8;
     score += etc_count * 8;
     // 法力引擎：补水在手 = 持枪要挟(补水) 已发现（未来 +2 法力），是 6 水晶持枪深线
@@ -2545,6 +2555,7 @@ static void wide_beam_pass(const State& start_in, const SearchParams& p,
         ? p.wide_width
         : 2400;
     State start = start_in.clone_reserved();
+    start.no_branch = p.no_branch;  // 通道级 no_branch：写进状态，供 generate_successors 读取
     auto dedup_key = [](const State& s) {
         return mix_hash(state_hash(s), (uint64_t)s.alex_play_count);
     };
@@ -2867,6 +2878,25 @@ static BeamResult run_beam_search(const State& start, const SearchParams& p, Pro
             add_best_draw(kv.second, res.best_by_draw);
         add_best_no_qd(outs[t].best_no_qd, res.best_no_qd);
     }
+    // 禁抽补搜：主通道的 no_qd 常被持枪要挟分支挤掉（48、没用殒命），
+    // 单独跑一个不打分支卡的通道，把 original 补成真正禁抽最优（64、殒→步）。
+    {
+        SearchParams np = p;
+        np.no_branch = true;
+        np.wide_width = 3000;
+        np.heuristic = 6;
+        np.only_best_damage = 0;  // 不拿主搜索的 96 去剪禁抽线（禁抽上限本就更低）
+        np.inner_threads = std::max(1, std::min(4, p.threads));
+        Budget nb_budget;
+        nb_budget.t0 = std::chrono::steady_clock::now();
+        nb_budget.budget_sec = p.time_budget_sec <= 0
+            ? 4.0
+            : std::min(2.5, std::max(1.0, p.time_budget_sec * 0.8));
+        ThreadOut nout;
+        wide_beam_pass(start, np, nb_budget, nout, nullptr);
+        add_best_no_qd(nout.best_no_qd, res.best_no_qd);
+        res.expansions += nout.expansions;
+    }
     res.wall_sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     // FOUND 实时上报（龙数创新高）
     for (const auto& kv : res.best_by_dragons) {
@@ -3013,6 +3043,8 @@ static State state_from_json(const JVal& root) {
     if (dj && dj->type == JVal::BOOL) st.deck_is_known = dj->b;
     const JVal* be = root.find("branch_expand");
     if (be && be->type == JVal::BOOL) st.branch_expand = be->b;
+    const JVal* nb = root.find("no_branch");
+    if (nb && nb->type == JVal::NUM) st.no_branch = (int)nb->num != 0;
 
     const JVal* hand = root.find("hand");
     if (hand && hand->type == JVal::ARR) {
@@ -3280,6 +3312,7 @@ int main(int argc, char** argv) {
     p.time_budget_sec = root.get_double("time_budget_sec", p.time_budget_sec);
     p.heuristic = (int)root.get_int("heuristic", p.heuristic);
     p.only_best_damage = (int)root.get_int("only_best_damage", 0);
+    p.no_branch = (int)root.get_int("no_branch", 0) != 0;
     p.lethal_threshold = (int)root.get_int("lethal_threshold", -1);
     p.wide_width = (int)root.get_int("wide_width", p.wide_width);
     const JVal* wws = root.find("wide_widths");
