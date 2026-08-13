@@ -95,7 +95,7 @@ from PyQt5.QtWidgets import (
 )
 
 import engine
-from powerlog_reader import LogWatcher
+from powerlog_reader import LogWatcher, _load_card_map as _card_map_load
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -1793,6 +1793,51 @@ def _dist_text(dist: List[Tuple[int, float]]) -> str:
     return "|" + "|".join(segs) + "|"
 
 
+_REV_CARD_NAME: Optional[Dict[str, str]] = None
+
+
+def _canon_deck_name(name: str) -> str:
+    """卡名规范化：以 card_id 为桥消除文本别名变体。
+
+    card_id_map 的卡名是规范名（阿莱克丝塔萨/赤烟·腾武等），牌库/路径注解
+    里可能出现别名变体（阿莱克斯塔萨、引号腾武、斯/丝混用）。这里反查
+    card_id 再取规范名，保证 WhatIF 分支池与 C++ 路径标注严格一致，
+    不依赖卡名文本清理。
+    """
+    global _REV_CARD_NAME
+
+    if _REV_CARD_NAME is None:
+        _REV_CARD_NAME = {}
+
+        try:
+            for _cid, _info in _card_map_load().items():
+                _nm = str(_info.get("name") or "")
+
+                if not _nm:
+                    continue
+
+                _REV_CARD_NAME[_nm] = _cid
+                _alt = _nm.replace("丝", "斯")
+
+                if _alt != _nm:
+                    _REV_CARD_NAME.setdefault(_alt, _cid)
+        except Exception:  # noqa: BLE001 - 卡表缺失时退回原样
+            pass
+
+    s = str(name)
+    cid = _REV_CARD_NAME.get(s)
+
+    if cid is None:
+        return s
+
+    try:
+        canonical = str((_card_map_load().get(cid) or {}).get("name") or s)
+    except Exception:  # noqa: BLE001
+        return s
+
+    return canonical
+
+
 def _whatif_text_block(data: Dict[str, object]) -> str:
     """主窗口纯文本 WhatIF —— 记录完整树（与正常计算放一起并进日志）：
 
@@ -2028,6 +2073,622 @@ class CalculationWorker(QThread):
         )
         # 只排序，不筛树：同一棵树的全部随机分叉都展示
         whatif_tree["branches"] = [tb for _score, tb in scored]
+
+    def _build_whatif_tree(
+        self,
+        result: Dict[str, object],
+        best_exchange: List[Tuple[int, int]],
+        whatif_t0: float,
+    ) -> Optional[Dict[str, object]]:
+        """彻底重写的 WhatIF 树搜索：一棵树 + 递归随机分叉。
+
+        分叉卡（异教地图两段发现、持枪要挟、抽牌卡）的每个结果都用
+        C++ branch_prefix 把“分叉卡+该结果”钉死在主干同一局面续算：
+          - 主干取自主搜索真实生成的路径，前缀必然可精确重放；
+          - 重放失败（结果不在牌库/标注不符）的分支直接丢弃，
+            绝不并列、绝不伪造（旧实现会退回整棵搜索导致并列/假分支）；
+          - 分叉递归展开：续接里出现的下一个分叉（异教地图再抽/持枪要挟/
+            再抽牌）继续分支，异教地图“发现→使用→再抽”两段都是真分支；
+          - 预算受限：每层并行搜索、按剩余时间分配；时间不足/深度过大的
+            深层不再展开（叶子保留本层已找到的最高伤续接）。
+        """
+        main_results = list(result.get("results") or [])
+
+        if not main_results:
+            return None
+
+        main_path = [str(s) for s in (main_results[0].get("path") or [])]
+
+        if not main_path:
+            return None
+
+        fork_info = None
+        fork_idx = -1
+        used: Dict[str, int] = {}
+
+        for i, step in enumerate(main_path):
+            fi = self._step_fork(step)
+
+            if fi is not None:
+                pool = self._whatif_pool(fi["type"], fi["card"], used)
+
+                if len(pool) >= 2:
+                    fork_info = fi
+                    fork_idx = i
+                    break
+
+                # 单结果分叉（如 潜伏帷幕 只剩一张随从、必抽全部）：并入主干继续
+
+            for n in self._drawn_from_step(step):
+                used[str(n)] = used.get(str(n), 0) + 1
+
+        if fork_info is None:
+            return None
+
+        trunk = [str(s) for s in main_path[:fork_idx]] + [fork_info["base"]]
+        prefix = [str(s) for s in main_path[:fork_idx]]
+
+        main_cont = [str(s) for s in main_path[fork_idx + 1 :]]
+        main = main_results[0]
+        # 前缀钉死搜索结果缓存：同一 (前缀+分叉结果) 只搜一次
+        self._whatif_cache: Dict[tuple, Dict[str, object]] = {}
+        # 第一层直接复用主搜索的 draw/quickdraw 分支（已探索过全部结果，
+        # 前缀与主干一致），保证树完整不丢分支；随后只对伤害最高的前 K 个
+        # 分支再独立深搜精修（避免束宽竞争低估，如 16 vs 80）。
+        level1_pre = self._precompute_children(result, fork_info)
+        branches = self._expand_fork(
+            prefix,
+            fork_info,
+            used,
+            main_cont,
+            int(main.get("damage") or 0),
+            int(main.get("dragons") or 0),
+            int(main.get("mana") or 0),
+            best_exchange,
+            whatif_t0,
+            precomputed=level1_pre,
+        )
+
+        if not branches:
+            return None
+
+        root_node = WhatIFDistPanel._mk_node([str(s) for s in trunk])
+
+        for tb in branches:
+            root_node["options"].append(WhatIFDistPanel._mk_option(tb))
+
+        leaves = WhatIFDistPanel._leaves(root_node)
+
+        return {
+            "root": trunk,
+            "branches": branches,
+            "worst": min(leaves) if leaves else 0,
+            "main_outcome": fork_info["outcome"],
+        }
+
+    @staticmethod
+    def _step_fork(step: str) -> Optional[Dict[str, str]]:
+        """从带标注的路径步骤识别分叉：返回 {type, card, outcome, base} 或 None。
+
+        type：
+          cultist_first  异教地图“发现：X”抽第一张
+          cultist_second 使用发现牌后“异教地图再抽：Y”（从剩余两张选一张）
+          quickdraw      持枪要挟发现快枪牌
+          draw           抽牌卡（行骗/挖掘宝藏/潜伏帷幕/垂钓时光/暗影之门）
+        """
+        s = str(step)
+        m2 = re.search(r"（异教地图再抽：(.+?)）", s)
+
+        if m2:
+            base = re.sub(r"（异教地图再抽：.*?）$", "", s)
+            return {
+                "type": "cultist_second",
+                "card": "异教地图",
+                "outcome": m2.group(1),
+                "base": base,
+            }
+
+        m1 = re.search(r"异教地图（发现：(.+?)）", s)
+
+        if m1:
+            return {
+                "type": "cultist_first",
+                "card": "异教地图",
+                "outcome": m1.group(1),
+                "base": "异教地图",
+            }
+
+        mq = re.search(r"持枪要挟[（(](.+?)[）)]", s)
+
+        if mq:
+            return {
+                "type": "quickdraw",
+                "card": "持枪要挟",
+                "outcome": mq.group(1),
+                "base": "持枪要挟",
+            }
+
+        for mk in ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光", "暗影之门"):
+            if mk in s:
+                md = re.search(r"[（(](.+?)[）)]$", s)
+                return {
+                    "type": "draw",
+                    "card": mk,
+                    "outcome": md.group(1) if md else "",
+                    "base": mk,
+                }
+
+        return None
+
+    @staticmethod
+    def _drawn_from_step(step: str) -> set:
+        """从路径步骤标注里提取该步抽到的牌名（用于分支池扣减）。"""
+        s = str(step)
+        out: set = set()
+
+        for pat in (r"（异教地图再抽：(.+?)）", r"（发现：(.+?)）"):
+            m = re.search(pat, s)
+
+            if m:
+                for part in m.group(1).split("、"):
+                    out.add(part)
+
+        m = re.search(r"（抽到(.+?)减费）", s)
+
+        if m:
+            out.add(m.group(1).split("、")[0])
+
+        for mk in ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光", "暗影之门"):
+            if mk in s and "发现" not in s and "再抽" not in s:
+                md = re.search(r"[（(](.+?)[）)]$", s)
+
+                if md:
+                    for part in md.group(1).split("、"):
+                        out.add(part)
+
+        return out
+
+    def _whatif_pool(
+        self,
+        fork_type: str,
+        fork_card: str,
+        used: Dict[str, int],
+    ) -> List[str]:
+        """分叉结果池：按牌库剩余卡池计算（used = 前缀里已抽走的牌名→张数）。"""
+        deck_items = self.snapshot.get("deck") or []
+        deck_count: Dict[str, int] = {}
+
+        for d in deck_items:
+            n = str(d.get("name") or "")
+
+            if n:
+                cn = _canon_deck_name(n)
+                deck_count[cn] = deck_count.get(cn, 0) + 1
+
+        deck_minions = engine.deck_card_names_by_type(deck_items, "MINION")
+        deck_spells = engine.deck_card_names_by_type(deck_items, "SPELL", "SECRET")
+
+        def _remaining(names: List[str]) -> List[str]:
+            out: List[str] = []
+
+            for n in names:
+                cn = _canon_deck_name(n)
+
+                if deck_count.get(cn, 0) > used.get(cn, 0):
+                    out.append(cn)
+
+            return out
+
+        if fork_type == "quickdraw":
+            return list(engine.QUICKDRAW_CHOICES) + [
+                engine.QUICKDRAW_OTHER_MINION,
+                engine.QUICKDRAW_OTHER_SPELL,
+            ]
+
+        if fork_type in ("cultist_first", "cultist_second") or fork_card in (
+            "暗影之门",
+            "异教地图",
+        ):
+            return _remaining(list(deck_count.keys()))
+
+        if fork_card == "行骗":
+            return _remaining(deck_spells)
+
+        if fork_card == "挖掘宝藏":
+            return _remaining(deck_minions)
+
+        if fork_card == "潜伏帷幕":
+            mins = _remaining(deck_minions)
+
+            if len(mins) <= 2:
+                return []
+
+            return ["、".join(p) for p in itertools.combinations(mins, 2)]
+
+        if fork_card == "垂钓时光":
+            dredge = [
+                _canon_deck_name(str(n))
+                for n in (self.snapshot.get("dredge_bottom") or [])
+            ]
+
+            if len(dredge) < 3:
+                dredge.append("未知杂牌")
+
+            return [n for n in dredge if deck_count.get(n, 0) > used.get(n, 0)]
+
+        return []
+
+    def _expand_fork(
+        self,
+        prefix: List[str],
+        fork_info: Dict[str, str],
+        used: Dict[str, int],
+        main_cont: List[str],
+        main_damage: int,
+        main_dragons: int,
+        main_mana: int,
+        best_exchange: List[Tuple[int, int]],
+        t0: float,
+        depth: int = 0,
+        precomputed: Optional[Dict[str, Dict[str, object]]] = None,
+    ) -> List[Dict[str, object]]:
+        """展开一个分叉：各结果前缀钉死搜索，成功后递归展开续接里的下一分叉。"""
+        if self._stop or depth > 4:
+            return []
+
+        fork_type = fork_info["type"]
+        fork_card = fork_info["card"]
+        main_outcome = fork_info["outcome"]
+        pool = self._whatif_pool(fork_type, fork_card, used)
+
+        if not pool:
+            return []
+
+        def _fork_step(outcome: str) -> str:
+            outcome = _canon_deck_name(outcome)
+
+            if fork_type == "cultist_first":
+                return "异教地图（发现：" + outcome + "）"
+
+            if fork_type == "cultist_second":
+                return fork_info["base"] + "（异教地图再抽：" + outcome + "）"
+
+            if fork_type == "quickdraw":
+                return "持枪要挟（" + outcome + "）"
+
+            return fork_card + "（" + outcome + "）"
+
+        elapsed = time.perf_counter() - t0
+        remaining = max(2.0, 10.0 - elapsed)
+        per_branch = min(1.5, max(0.8, remaining / max(6, len(pool))))
+        results: Dict[str, Dict[str, object]] = {}
+
+        if precomputed:
+            for o, pb in precomputed.items():
+                if o in pool:
+                    results[o] = pb
+
+        if main_outcome in pool and main_outcome not in results:
+            results[main_outcome] = {
+                "card": main_outcome,
+                "outcome": main_outcome,
+                "damage": main_damage,
+                "dragons": main_dragons,
+                "mana_left": main_mana,
+                "mid": [_fork_step(main_outcome)] + [str(s) for s in main_cont],
+                "path": prefix
+                + [_fork_step(main_outcome)]
+                + [str(s) for s in main_cont],
+                "fork_damage": 0,
+            }
+
+        need = [o for o in pool if o not in results]
+
+        def _search_one(outcome: str) -> Optional[Dict[str, object]]:
+            if self._stop:
+                return None
+
+            kwargs = dict(
+                min_alex=int(self.options["min_alex"]),
+                max_alex=int(self.options["max_alex"]),
+                depth=int(self.options["depth"]),
+                max_paths=max(
+                    3000000, int(self.options.get("max_paths") or 0)
+                ),
+                threads=2,
+                time_budget_sec=per_branch,
+                wide_widths=[3000],
+                heuristics=[6],
+                etc_band=list(self.options.get("etc_band") or []),
+                only_best_damage=True,
+                branch_expand=True,
+                exchanges=best_exchange,
+                lethal_threshold=-1,
+                should_stop=lambda: self._stop,
+            )
+            pinned = prefix + [_fork_step(outcome)]
+
+            def _run(budget: float, beam: int = 3000) -> Optional[Dict[str, object]]:
+                k2 = dict(kwargs)
+                k2["time_budget_sec"] = budget
+                k2["wide_widths"] = [beam]
+
+                try:
+                    res_x = engine.compute(
+                        self.snapshot, branch_prefix=pinned, **k2
+                    )
+                    bx = (res_x.get("results") or [{}])[0]
+                    pth = [str(s) for s in (bx.get("path") or [])]
+                except Exception:  # noqa: BLE001
+                    return None
+
+                if not pth or len(pth) < len(pinned):
+                    return None
+
+                if pth[: len(prefix)] != prefix:
+                    return None
+
+                actual = str(pth[len(prefix)])
+
+                if fork_card not in actual or outcome not in actual:
+                    return None
+
+                cont = [str(s) for s in pth[len(prefix) + 1 :]]
+                return {
+                    "card": outcome,
+                    "outcome": outcome,
+                    "damage": int(bx.get("damage") or 0),
+                    "dragons": int(bx.get("dragons") or 0),
+                    "mana_left": int(bx.get("mana") or 0),
+                    "mid": [_fork_step(outcome)] + cont,
+                    "path": pth,
+                    "fork_damage": int(bx.get("fork_damage") or 0),
+                    "_res": res_x,
+                }
+
+            cache_key = tuple(pinned)
+            cached = self._whatif_cache.get(cache_key)
+
+            if cached is not None:
+                return cached
+
+            r = _run(per_branch)
+
+            if r is None:
+                # 空结果（重放失败/没挖到线）：预算翻倍 + 窄束深挖重试一次
+                r2 = _run(
+                    min(3.0, max(1.5, per_branch * 2.0)),
+                    beam=1000,
+                )
+
+                if r2 is not None:
+                    r = r2
+
+            if r is not None:
+                self._whatif_cache[cache_key] = r
+
+            return r
+
+        if need:
+            with ThreadPoolExecutor(
+                max_workers=min(4, max(1, len(need))),
+                thread_name_prefix="whatif-tree",
+            ) as pool_ex:
+                futs = {pool_ex.submit(_search_one, o): o for o in need}
+
+                for fut in as_completed(futs):
+                    if self._stop:
+                        break
+
+                    r = fut.result()
+
+                    if r is not None:
+                        results[str(r.get("outcome") or "")] = r
+
+        branches = [results[o] for o in pool if o in results]
+
+        if not branches:
+            return []
+
+        # 深度精修：只对伤害最高的前 K 个分支用独立搜索再挖一遍。
+        # 预计算结果（来自主搜索/父搜索的束宽）会被分支竞争低估
+        # （如 16 vs 80），独立深搜能逼近该分支的真实上限，并带回
+        # 它自己的 draw/quickdraw 分支供下一层缓存复用。
+        if depth == 0 and elapsed < 8.5:
+            top_k = max(1, int(self.options.get("branch_top_k", 3) or 3))
+            ranked = sorted(
+                branches, key=lambda b: -int(b.get("damage") or 0)
+            )[:top_k]
+
+            for b in ranked:
+                out = str(b.get("outcome") or "")
+
+                if not out or out not in pool:
+                    continue
+
+                r = _search_one(out)
+
+                if r is not None:
+                    results[out] = r
+
+            branches = [results[o] for o in pool if o in results]
+
+        # 递归：每个分支已验证的续接里找下一分叉并展开。
+        # 只对伤害最高的前 K 个分支继续挖（K=分支节点TOP-K，默认 3），
+        # 其余分支保持叶子（展示本层已找到的最高伤续接）。
+        if elapsed < 8.0 and depth < 3:
+            top_k = max(1, int(self.options.get("branch_top_k", 3) or 3))
+            # 深层只精修 1 条最优分支：再抽/持枪的候选很多，逐条重搜会超预算
+            if depth >= 1:
+                top_k = 1
+            ranked = sorted(
+                branches, key=lambda b: -int(b.get("damage") or 0)
+            )[:top_k]
+
+            for b in ranked:
+                # 只有独立搜索过的分支带 _res，能直接缓存出下一层分叉；
+                # 预计算（叶子）分支保持完整续接，不再递归重搜。
+                if b.get("_res") is None:
+                    continue
+
+                mid = list(b.get("mid") or [])
+
+                if not mid:
+                    continue
+
+                tail = [str(s) for s in mid[1:]]
+                nxt = None
+                nxt_idx = -1
+
+                for j, s in enumerate(tail):
+                    fi = self._step_fork(s)
+
+                    if fi is not None:
+                        nxt = fi
+                        nxt_idx = j
+                        break
+
+                if nxt is None:
+                    continue
+
+                child_prefix = (
+                    prefix
+                    + [str(mid[0])]
+                    + [str(s) for s in tail[:nxt_idx]]
+                )
+                child_used = dict(used)
+
+                for s in child_prefix:
+                    for n in self._drawn_from_step(s):
+                        child_used[str(n)] = child_used.get(str(n), 0) + 1
+
+                child_main_cont = [str(s) for s in tail[nxt_idx + 1 :]]
+                child_pre = self._precompute_children(
+                    b.get("_res"), nxt
+                )
+                children = self._expand_fork(
+                    child_prefix,
+                    nxt,
+                    child_used,
+                    child_main_cont,
+                    int(b.get("damage") or 0),
+                    int(b.get("dragons") or 0),
+                    int(b.get("mana_left") or 0),
+                    best_exchange,
+                    t0,
+                    depth + 1,
+                    precomputed=child_pre,
+                )
+
+                if children:
+                    b["children"] = children
+                    b["damage"] = max(
+                        int(b.get("damage") or 0),
+                        max(int(c.get("damage") or 0) for c in children),
+                    )
+
+        return branches
+
+    def _precompute_children(
+        self,
+        parent_res: Optional[Dict[str, object]],
+        child_fork: Dict[str, str],
+    ) -> Dict[str, Dict[str, object]]:
+        """从父搜索结果的 draw/quickdraw 分支里直接提取子分叉续接（缓存续算）。
+
+        父搜索（branch_expand）已经把子分叉的所有结果都探索过，其
+        draw_branches/quickdraw_branches 里带有每个结果的完整路径；这里按
+        子分叉标注从路径里切出续接，避免再逐结果重搜一遍。
+        """
+        if not parent_res:
+            return {}
+
+        fork_type = child_fork["type"]
+        src = (
+            parent_res.get("quickdraw_branches") or []
+            if fork_type == "quickdraw"
+            else parent_res.get("draw_branches") or []
+        )
+        out: Dict[str, Dict[str, object]] = {}
+
+        for b in src:
+            pth = [str(s) for s in (b.get("path") or [])]
+
+            for i, s in enumerate(pth):
+                fi = self._step_fork(s)
+
+                if (
+                    fi is not None
+                    and fi["type"] == fork_type
+                    and fi["card"] == child_fork["card"]
+                ):
+                    outcome = fi["outcome"]
+
+                    if outcome and outcome not in out:
+                        out[outcome] = {
+                            "card": outcome,
+                            "outcome": outcome,
+                            "damage": int(b.get("damage") or 0),
+                            "dragons": int(b.get("dragons") or 0),
+                            "mana_left": int(b.get("mana_left") or 0),
+                            "mid": [str(x) for x in pth[i:]],
+                            "path": pth,
+                            "fork_damage": int(b.get("fork_damage") or 0),
+                        }
+
+                    break
+
+        return out
+
+    def _whatif_average_of(
+        self, whatif_tree: Dict[str, object]
+    ) -> Optional[Dict[str, float]]:
+        """按树叶子重算平均伤害/龙数（持枪要挟按牌池数量加权，其余等权）。"""
+        gb = list(whatif_tree.get("branches") or [])
+
+        if not gb:
+            return None
+
+        root_steps = [str(s) for s in (whatif_tree.get("root") or [])]
+        g_fork = str(root_steps[-1]) if root_steps else ""
+
+        if "持枪要挟" in g_fork:
+            total_w = sum(
+                int(
+                    engine.QUICKDRAW_WEIGHTS.get(
+                        str(b.get("outcome") or ""), 1
+                    )
+                )
+                for b in gb
+            )
+            return {
+                "damage": sum(
+                    int(b.get("damage") or 0)
+                    * int(
+                        engine.QUICKDRAW_WEIGHTS.get(
+                            str(b.get("outcome") or ""), 1
+                        )
+                    )
+                    for b in gb
+                )
+                / max(1, total_w),
+                "dragons": sum(
+                    int(b.get("dragons") or 0)
+                    * int(
+                        engine.QUICKDRAW_WEIGHTS.get(
+                            str(b.get("outcome") or ""), 1
+                        )
+                    )
+                    for b in gb
+                )
+                / max(1, total_w),
+            }
+
+        n = max(1, len(gb))
+        return {
+            "damage": sum(int(b.get("damage") or 0) for b in gb) / n,
+            "dragons": sum(int(b.get("dragons") or 0) for b in gb) / n,
+        }
 
     def _build_whatif_guide(
         self,
@@ -2567,7 +3228,30 @@ class CalculationWorker(QThread):
 
             whatif_t0 = time.perf_counter()
 
+            _new_tree: Optional[Dict[str, object]] = None
+
             if bool(self.options.get("draw_whatif", True)):
+                # —— 彻底重构的 WhatIF 树搜索（新路径）——
+                # 一棵树：主干取自主搜索路径，分叉（异教地图发现/再抽、持枪要挟、
+                # 抽牌卡）递归地用 C++ branch_prefix 钉死从同一分叉局面续算；
+                # 重放失败的分支直接丢弃，绝不并列、绝不伪造。
+                _new_tree = self._build_whatif_tree(
+                    result, best_exchange, whatif_t0
+                )
+
+                if _new_tree is not None:
+                    whatif_tree = _new_tree
+                    gb = list(whatif_tree.get("branches") or [])
+                    draw_branches = gb or None
+                    quickdraw_branches = [
+                        ch
+                        for b in gb
+                        for ch in (b.get("children") or [])
+                    ] or None
+                    whatif_average = self._whatif_average_of(whatif_tree)
+
+            # 旧路径兜底：新树构建失败（无分叉/全失败）时才走旧逻辑
+            if bool(self.options.get("draw_whatif", True)) and _new_tree is None:
                 # 指引主干优先用正常线（original，确定性主路径），保证
                 # 分支树从主线前缀开始（如 闪避-…-暗影之门）；
                 # 只有正常线为空（0 伤）时才退回主搜索最优结果。
@@ -3617,68 +4301,71 @@ class CalculationWorker(QThread):
             if whatif_tree is not None:
                 self._apply_branch_strategy(whatif_tree)
 
-                # 一棵树：主干 + 第一分叉点，分支全部前缀钉死从主干续算
-                # （覆盖旧的并列线路展示）。
-                guide_path = [str(s) for s in (whatif_tree.get("root") or [])]
-                guide = self._build_whatif_guide(
-                    guide_path, best_exchange, whatif_t0,
-                    source_tree=whatif_tree,
-                )
+                # 新树（彻底重构）已构建：分叉已递归展开且前缀钉死验证过，
+                # 不再走旧 guide 重建。
+                if _new_tree is None:
+                    # 一棵树：主干 + 第一分叉点，分支全部前缀钉死从主干续算
+                    # （覆盖旧的并列线路展示）。
+                    guide_path = [str(s) for s in (whatif_tree.get("root") or [])]
+                    guide = self._build_whatif_guide(
+                        guide_path, best_exchange, whatif_t0,
+                        source_tree=whatif_tree,
+                    )
 
-                if guide is not None:
-                    whatif_tree = guide
-                    # 策略只排序（最优分支在前），不筛树：一棵树的全部随机分叉都展示
-                    self._apply_branch_strategy(whatif_tree)
-                    # 平均伤害/龙数按新树的叶子重算（持枪要挟按牌池数量加权，
-                    # 抽牌分支等权），避免旧树的平均值与新树不一致
-                    gb = list(whatif_tree.get("branches") or [])
-                    root_steps = [str(s) for s in (whatif_tree.get("root") or [])]
-                    g_fork = str(root_steps[-1]) if root_steps else ""
+                    if guide is not None:
+                        whatif_tree = guide
+                        # 策略只排序（最优分支在前），不筛树：一棵树的全部随机分叉都展示
+                        self._apply_branch_strategy(whatif_tree)
+                        # 平均伤害/龙数按新树的叶子重算（持枪要挟按牌池数量加权，
+                        # 抽牌分支等权），避免旧树的平均值与新树不一致
+                        gb = list(whatif_tree.get("branches") or [])
+                        root_steps = [str(s) for s in (whatif_tree.get("root") or [])]
+                        g_fork = str(root_steps[-1]) if root_steps else ""
 
-                    if gb:
-                        if "持枪要挟" in g_fork:
-                            g_w = sum(
-                                int(
-                                    engine.QUICKDRAW_WEIGHTS.get(
-                                        str(b.get("outcome") or ""), 1
-                                    )
-                                )
-                                for b in gb
-                            )
-                            whatif_average = {
-                                "damage": sum(
-                                    int(b.get("damage") or 0)
-                                    * int(
+                        if gb:
+                            if "持枪要挟" in g_fork:
+                                g_w = sum(
+                                    int(
                                         engine.QUICKDRAW_WEIGHTS.get(
                                             str(b.get("outcome") or ""), 1
                                         )
                                     )
                                     for b in gb
                                 )
-                                / max(1, g_w),
-                                "dragons": sum(
-                                    int(b.get("dragons") or 0)
-                                    * int(
-                                        engine.QUICKDRAW_WEIGHTS.get(
-                                            str(b.get("outcome") or ""), 1
+                                whatif_average = {
+                                    "damage": sum(
+                                        int(b.get("damage") or 0)
+                                        * int(
+                                            engine.QUICKDRAW_WEIGHTS.get(
+                                                str(b.get("outcome") or ""), 1
+                                            )
                                         )
+                                        for b in gb
                                     )
-                                    for b in gb
-                                )
-                                / max(1, g_w),
-                            }
-                        else:
-                            g_n = max(1, len(gb))
-                            whatif_average = {
-                                "damage": sum(
-                                    int(b.get("damage") or 0) for b in gb
-                                )
-                                / g_n,
-                                "dragons": sum(
-                                    int(b.get("dragons") or 0) for b in gb
-                                )
-                                / g_n,
-                            }
+                                    / max(1, g_w),
+                                    "dragons": sum(
+                                        int(b.get("dragons") or 0)
+                                        * int(
+                                            engine.QUICKDRAW_WEIGHTS.get(
+                                                str(b.get("outcome") or ""), 1
+                                            )
+                                        )
+                                        for b in gb
+                                    )
+                                    / max(1, g_w),
+                                }
+                            else:
+                                g_n = max(1, len(gb))
+                                whatif_average = {
+                                    "damage": sum(
+                                        int(b.get("damage") or 0) for b in gb
+                                    )
+                                    / g_n,
+                                    "dragons": sum(
+                                        int(b.get("dragons") or 0) for b in gb
+                                    )
+                                    / g_n,
+                                }
 
                 # WhatIF 全 0 伤害（分布 [0(100%)]）：不显示
                 root_node = WhatIFDistPanel._mk_node(

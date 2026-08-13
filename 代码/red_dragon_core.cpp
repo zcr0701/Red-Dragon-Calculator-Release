@@ -3681,7 +3681,10 @@ static bool verify_rec(const State& st, const vector<string>& replay, size_t i,
             fprintf(stderr, " [%s cost=%d hp=%d]", bc.name().c_str(), bc.current_cost(), bc.health);
         fprintf(stderr, "\n");
         if (verify_rec(succ, replay, i + 1, final_state, attempts, exact)) return true;
-        if (attempts && ++(*attempts) > 500000) return false;  // 回溯预算保护
+        // 回溯预算保护：长前缀（鲨鱼-狐-刀-牛-晦-异教地图…）+ 多分支卡
+        // （牛 3 分支 × 异教地图 16 分支…）的组合回溯很容易超过旧上限，
+        // 导致 WhatIF 前缀重放静默失败退回整棵搜索（并列/漏分支）。
+        if (attempts && ++(*attempts) > 20000000) return false;
     }
     if (attempts) {
         fprintf(stderr,
