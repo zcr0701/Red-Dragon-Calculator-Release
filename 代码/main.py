@@ -2132,10 +2132,6 @@ class CalculationWorker(QThread):
         main = main_results[0]
         # 前缀钉死搜索结果缓存：同一 (前缀+分叉结果) 只搜一次
         self._whatif_cache: Dict[tuple, Dict[str, object]] = {}
-        # 第一层直接复用主搜索的 draw/quickdraw 分支（已探索过全部结果，
-        # 前缀与主干一致），保证树完整不丢分支；随后只对伤害最高的前 K 个
-        # 分支再独立深搜精修（避免束宽竞争低估，如 16 vs 80）。
-        level1_pre = self._precompute_children(result, fork_info)
         branches = self._expand_fork(
             prefix,
             fork_info,
@@ -2146,7 +2142,6 @@ class CalculationWorker(QThread):
             int(main.get("mana") or 0),
             best_exchange,
             whatif_t0,
-            precomputed=level1_pre,
         )
 
         if not branches:
@@ -2360,7 +2355,9 @@ class CalculationWorker(QThread):
 
         elapsed = time.perf_counter() - t0
         remaining = max(2.0, 10.0 - elapsed)
-        per_branch = min(1.5, max(0.8, remaining / max(6, len(pool))))
+        # 每个分叉结果独立 DFS 到叶子（真实伤害），预算按候选数动态分配；
+        # 候选中（异教地图 19 张）用窄束 + 翻倍重试保证大多数分支能挖到底。
+        per_branch = min(2.0, max(0.9, remaining / max(8, len(pool))))
         results: Dict[str, Dict[str, object]] = {}
 
         if precomputed:
@@ -2455,9 +2452,9 @@ class CalculationWorker(QThread):
             r = _run(per_branch)
 
             if r is None:
-                # 空结果（重放失败/没挖到线）：预算翻倍 + 窄束深挖重试一次
+                # 空结果（重放失败/没挖到线）：预算 1.5 倍 + 窄束深挖重试一次
                 r2 = _run(
-                    min(3.0, max(1.5, per_branch * 2.0)),
+                    min(2.0, max(1.2, per_branch * 1.5)),
                     beam=1000,
                 )
 
@@ -2585,6 +2582,17 @@ class CalculationWorker(QThread):
                     b["damage"] = max(
                         int(b.get("damage") or 0),
                         max(int(c.get("damage") or 0) for c in children),
+                    )
+                    # 父分支的续接只保留到子分叉卡（去掉结果标注），
+                    # 分叉结果全部交给子分支展示——绝不能把某个发现结果
+                    # 直接写进父行（否则看起来像“直接选了伺机待发”）。
+                    child_base = re.sub(
+                        r"[（(].*[）)]$", "", str(tail[nxt_idx])
+                    )
+                    b["mid"] = (
+                        [str(mid[0])]
+                        + [str(s) for s in tail[:nxt_idx]]
+                        + [child_base]
                     )
 
         return branches
