@@ -1940,6 +1940,12 @@ class CalculationWorker(QThread):
         if len(branches) <= 1:
             return
 
+        # 顶层分支全是叶子（如 持枪要挟 的 5+2 个发现结果）：它们同属一棵树
+        # 的随机分叉，不是互相竞争的 N 颗树，直接全部展示，不做筛树——
+        # 否则会把分叉收成单条路径，WhatIF 什么都不显示。
+        if not any(tb.get("children") for tb in branches):
+            return
+
         scored: List[Tuple[float, Dict[str, object]]] = []
 
         for tb in branches:
@@ -2822,6 +2828,7 @@ class CalculationWorker(QThread):
                         pth = list(b.get("path") or [])
                         fb_branches.append(
                             {
+                                "card": str(b.get("card") or ""),
                                 "outcome": str(b.get("card") or ""),
                                 "damage": int(b.get("damage") or 0),
                                 "dragons": int(b.get("dragons") or 0),
