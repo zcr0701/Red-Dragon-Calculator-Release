@@ -1892,7 +1892,7 @@ class CalculationWorker(QThread):
 
     def _branch_score(
         self, node: Dict[str, object]
-    ) -> Tuple[Optional[float], List[int]]:
+    ) -> Tuple[Optional[object], List[int]]:
         """按当前策略给一棵分叉树打分（叶子分布），返回 (score, 叶子伤害列表)。"""
         strategy = str(self.options.get("branch_strategy") or "kill")
         child = WhatIFDistPanel._mk_option(node)["child"]
@@ -1913,12 +1913,28 @@ class CalculationWorker(QThread):
         enemy = self.snapshot.get("opponent_hero") or {}
         h = int(enemy.get("health") or 0) + int(enemy.get("armor") or 0)
         kill = sum(1 for d in leaves if d >= h)
-        return kill / max(1, len(leaves)), leaves
+        ratio = kill / max(1, len(leaves))
 
-    def _branch_score_optimal(self, score: float, strategy: str) -> bool:
+        if not bool(self.options.get("truncate_normal", False)):
+            # 未勾选精确截断（框1）：斩杀比例相同时优先选溢出伤害最高的树。
+            # 溢出伤害 = 各斩杀叶子超出斩杀线的伤害之和，如
+            # [48(57%)|32(43%)] 对 32 血敌方 = 4×16 = 64 > [32(100%)] 的 0。
+            overflow = sum(max(0, d - h) for d in leaves if d >= h)
+            return (ratio, overflow), leaves
+
+        return ratio, leaves
+
+    def _branch_score_optimal(self, score: object, strategy: str) -> bool:
         """策略是否已达到理论最优：达到后可直接放弃其余树的搜索。"""
         if strategy == "kill":
-            return score >= 1.0
+            ratio = score[0] if isinstance(score, tuple) else score
+
+            if bool(self.options.get("truncate_normal", False)):
+                return ratio >= 1.0
+
+            # 未勾选精确截断：溢出伤害会打破同比例平局，不能提前收工，
+            # 必须把所有树搜完才能确定最高溢出（与“跑所有树”一致）。
+            return False
 
         if strategy == "max":
             return score >= int(self.options.get("max_alex") or 10) * 16
@@ -1952,7 +1968,12 @@ class CalculationWorker(QThread):
         if not scored:
             return
 
-        scored.sort(key=lambda x: -x[0])
+        scored.sort(
+            key=lambda x: (
+                -x[0][0] if isinstance(x[0], tuple) else -x[0],
+                -x[0][1] if isinstance(x[0], tuple) else 0.0,
+            )
+        )
         best = scored[0][1]
         opt = WhatIFDistPanel._mk_option(best)
         child_path = list(opt["child"].get("path") or [])
@@ -2614,10 +2635,15 @@ class CalculationWorker(QThread):
                                         upper = (
                                             suff + (len(qd_pool) - known)
                                         ) / len(qd_pool)
+                                        best_ratio = (
+                                            best_now[0]
+                                            if isinstance(best_now, tuple)
+                                            else best_now
+                                        )
 
                                         # 严格小于才剪：平局（kill 比例相等）保留，
                                         # 交给外层按分支顺序稳定决出，避免运行抖动
-                                        if upper < best_now:
+                                        if upper < best_ratio:
                                             tree_abort["flag"] = True
                                             pruned = True
                                             break
