@@ -2110,6 +2110,22 @@ class CalculationWorker(QThread):
         # 主干来源：source_tree 里策略最优（已排序）且包含真分叉的完整路径；
         # 该路径由 C++ 生成过，前缀可精确重放，分支续接才可能与主干同一局面。
         source_branches = list((source_tree or {}).get("branches") or [])
+        src_root = [str(s) for s in ((source_tree or {}).get("root") or [])]
+
+        # 源树已是“一条主干 + 续接分支”（每个分支路径都从分叉卡标注开始，
+        # 前缀与主干共享，如 异教地图（发现：X）-…）：直接沿用，
+        # 避免 guide 重建成并列线路或把已有子树（持枪要挟子分支）拍平。
+        if src_root and len(source_branches) >= 2:
+            src_fork = re.sub(
+                r"[（(].*[）)]$", "", str(src_root[-1])
+            )
+
+            if src_fork and all(
+                src_fork in str((b.get("path") or b.get("mid") or [""])[0])
+                for b in source_branches
+            ):
+                return source_tree
+
         trunk_src: Optional[List[str]] = None
 
         for tb in source_branches:
@@ -2161,6 +2177,13 @@ class CalculationWorker(QThread):
         remaining = max(2.0, 10.0 - elapsed)
         per_branch = min(2.5, max(1.0, remaining / 4.0))
 
+        def _fork_step(outcome: str) -> str:
+            """分叉卡步骤标注：异教地图是“发现：X”，其余是“（X）”。"""
+            if fork_card == "异教地图":
+                return "异教地图（发现：" + outcome + "）"
+
+            return fork_card + "（" + outcome + "）"
+
         def _search_one(outcome: str) -> Optional[Dict[str, object]]:
             if self._stop:
                 return None
@@ -2187,7 +2210,7 @@ class CalculationWorker(QThread):
             # 分叉卡本身也钉进前缀（如 …-持枪要挟（补水））：重放后继续搜索时
             # 该卡必然紧跟在主干之后，不会中途插 闪避 等别的牌导致“在分叉前
             # 就偏出主干”的并列线路。
-            pinned_prefix = prefix + [fork_card + "（" + outcome + "）"]
+            pinned_prefix = prefix + [_fork_step(outcome)]
 
             try:
                 res_x = engine.compute(
@@ -3185,6 +3208,15 @@ class CalculationWorker(QThread):
 
                             best_x = (res_x.get("results") or [{}])[0]
                             pth_x = list(best_x.get("path") or [])
+                            qd_step = "持枪要挟（" + card + "）"
+                            tail_x: List[str] = []
+
+                            for k, s in enumerate(pth_x):
+                                if qd_step in str(s):
+                                    tail_x = [
+                                        str(x) for x in pth_x[k + 1 :]
+                                    ]
+                                    break
 
                             return {
                                 "card": card,
@@ -3194,13 +3226,10 @@ class CalculationWorker(QThread):
                                 "fork_damage": int(
                                     best_x.get("fork_damage") or 0
                                 ),
-                                # 0 伤害死路：仍保留分叉标注，前端显示 持枪要挟（X）
-                                # 而不是空路径的 “?”
-                                "mid": (
-                                    ["持枪要挟（" + card + "）"]
-                                    if not pth_x
-                                    else []
-                                ),
+                                # 子分叉标注始终以 持枪要挟（X） 开头：钉死搜索
+                                # 成功时其后接真实续接；重放失败退回的完整线路只保留
+                                # 标注（不再把并列线路的第一张牌当标签）。
+                                "mid": [qd_step] + tail_x,
                                 "path": pth_x,
                             }
 
