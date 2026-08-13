@@ -3002,6 +3002,210 @@ class CalculationWorker(QThread):
 
         return pick
 
+    def _expand_cultist(
+        self,
+        prefix: List[str],
+        fork_info: Dict[str, str],
+        used: Dict[str, int],
+        main_cont: List[str],
+        main_damage: int,
+        main_dragons: int,
+        main_mana: int,
+        best_exchange: List[Tuple[int, int]],
+        t0: float,
+        depth: int = 0,
+    ) -> List[Dict[str, object]]:
+        """异教地图：第一次拿 X（每张牌一个分支）× 第二次拿 Y（每张剩余牌一个分支）。
+
+        实际出牌思路就是“第一次拿了啥、第二次拿了啥”——分支数上限 =
+        打异教地图时牌库剩余 × 打标记牌时牌库剩余（N×M），不是 C(N,3) 组合。
+        每对 (X,Y) 用 forced_cultist_pool=[X,Y] 把两次抽取都钉死，独立搜索；
+        Y 的范围是牌库剩余（其他抽牌已抽走的自然不在牌库里）。
+        """
+        if self._stop or depth > 4:
+            return []
+
+        deck_items = self.snapshot.get("deck") or []
+        deck_count: Dict[str, int] = {}
+
+        for d in deck_items:
+            n = _canon_deck_name(str(d.get("name") or ""))
+
+            if n:
+                deck_count[n] = deck_count.get(n, 0) + 1
+
+        cards = [n for n in deck_count if deck_count[n] > used.get(n, 0)]
+
+        if len(cards) < 2:
+            return []
+
+        top_k = max(1, int(self.options.get("branch_top_k", 3) or 3))
+        main_outcome = str(fork_info.get("outcome") or "")
+        # 第一次拿：按单卡估计取前 K（主线实际抽到的牌强制保留）
+        xs = sorted(
+            cards, key=lambda c: -self._cultist_card_damage.get(c, 0)
+        )[:top_k]
+
+        if main_outcome in cards and main_outcome not in xs:
+            xs = [main_outcome] + xs[: max(0, len(xs) - 1)]
+
+        branches: List[Dict[str, object]] = []
+
+        for x in xs:
+            if time.perf_counter() - t0 > 8.5:
+                break
+
+            ys = [c for c in cards if c != x]
+            y_top = sorted(
+                ys, key=lambda c: -self._cultist_card_damage.get(c, 0)
+            )[: max(1, top_k * 2)]
+            children: List[Dict[str, object]] = []
+            own_line: Optional[Dict[str, object]] = None
+
+            for y in y_top:
+                if self._stop:
+                    break
+
+                r = self._cultist_pair_search(
+                    prefix, x, y, used, best_exchange, t0
+                )
+
+                if r is not None:
+                    if r.get("_has_re"):
+                        children.append(r)
+                    elif own_line is None:
+                        own_line = r
+
+            if children:
+                x_node: Dict[str, object] = {
+                    "card": x,
+                    "outcome": x,
+                    "damage": max(
+                        int(c.get("damage") or 0) for c in children
+                    ),
+                    "dragons": max(
+                        int(c.get("dragons") or 0) for c in children
+                    ),
+                    "mana_left": max(
+                        int(c.get("mana_left") or 0) for c in children
+                    ),
+                    "mid": ["异教地图（发现：" + x + "）"],
+                    "path": prefix + ["异教地图（发现：" + x + "）"],
+                    "fork_damage": 0,
+                }
+                x_node["children"] = children
+                branches.append(x_node)
+            elif own_line is not None:
+                branches.append(own_line)
+
+        return branches
+
+    def _cultist_pair_search(
+        self,
+        prefix: List[str],
+        x: str,
+        y: str,
+        used: Dict[str, int],
+        best_exchange: List[Tuple[int, int]],
+        t0: float,
+    ) -> Optional[Dict[str, object]]:
+        """异教地图第一次拿 X、第二次拿 Y：发现池钉死为 [X,Y]（两次抽取都唯一）。"""
+        if self._stop:
+            return None
+
+        fork_step = "异教地图（发现：" + x + "）（池：" + y + "）"
+        pinned = prefix + [fork_step]
+        cache_key = tuple(pinned)
+        cached = self._whatif_cache.get(cache_key)
+
+        if cached is not None:
+            return cached
+
+        elapsed = time.perf_counter() - t0
+        remaining = max(2.0, 10.0 - elapsed)
+        per_branch = min(1.5, max(0.6, remaining / 24.0))
+        kwargs = dict(
+            min_alex=int(self.options["min_alex"]),
+            max_alex=int(self.options["max_alex"]),
+            depth=int(self.options["depth"]),
+            max_paths=max(3000000, int(self.options.get("max_paths") or 0)),
+            threads=2,
+            time_budget_sec=per_branch,
+            wide_widths=[3000],
+            heuristics=[6],
+            etc_band=list(self.options.get("etc_band") or []),
+            only_best_damage=True,
+            branch_expand=True,
+            exchanges=best_exchange,
+            lethal_threshold=-1,
+            should_stop=lambda: self._stop,
+        )
+
+        def _run(budget: float, beam: int = 3000) -> Optional[Dict[str, object]]:
+            k2 = dict(kwargs)
+            k2["time_budget_sec"] = budget
+            k2["wide_widths"] = [beam]
+
+            try:
+                res_x = engine.compute(
+                    self.snapshot,
+                    branch_prefix=pinned,
+                    forced_cultist_pool=[x, y],
+                    **k2,
+                )
+                bx = (res_x.get("results") or [{}])[0]
+                pth = [str(s) for s in (bx.get("path") or [])]
+            except Exception:  # noqa: BLE001
+                return None
+
+            if not pth or len(pth) < len(pinned):
+                return None
+
+            if pth[: len(prefix)] != prefix:
+                return None
+
+            if (
+                "异教地图" not in str(pth[len(prefix)])
+                or x not in str(pth[len(prefix)])
+            ):
+                return None
+
+            cont_all = [str(s) for s in pth[len(prefix) + 1 :]]
+            re_idx = next(
+                (
+                    i
+                    for i, s in enumerate(cont_all)
+                    if "异教地图再抽" in str(s) and y in str(s)
+                ),
+                -1,
+            )
+
+            if re_idx >= 0:
+                mid = cont_all[re_idx:]
+                has_re = True
+            else:
+                mid = [fork_step] + cont_all
+                has_re = False
+
+            return {
+                "card": y,
+                "outcome": y,
+                "damage": int(bx.get("damage") or 0),
+                "dragons": int(bx.get("dragons") or 0),
+                "mana_left": int(bx.get("mana") or 0),
+                "mid": mid,
+                "path": pth,
+                "fork_damage": int(bx.get("fork_damage") or 0),
+                "_has_re": has_re,
+            }
+
+        r = _run(per_branch)
+
+        if r is not None:
+            self._whatif_cache[cache_key] = r
+
+        return r
+
     def _precompute_children(
         self,
         parent_res: Optional[Dict[str, object]],
