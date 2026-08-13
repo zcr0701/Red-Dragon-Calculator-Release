@@ -2155,12 +2155,15 @@ class CalculationWorker(QThread):
                             return {"card": card, "path": []}
 
                         try:
-                            # 不把“持枪要挟（X）”钉成前缀后的第一张：分支按最优时机打持枪
-                            # （先铺 鱼-刀油-牛-晦 再中途打，脱水/误炸等也能到 64 伤；
-                            #  钉成第一张时只有补水(+2费)能活，其余全 0）。
+                            # 把“持枪要挟（X）”钉在主干的分叉点：分支严格从主干
+                            # （鱼-刀油-牛-晦-步-持枪）续算，保证分支与主干连接一致。
+                            # 钉死后的真实结果：补水/脱水/误炸/不许乱动 64、
+                            # 袋底藏沙 16、杂牌 32（自由搜索的 48 是“持枪最后打”
+                            # 的并行线，不接主干，已废弃）。
                             res_x = engine.compute(
                                 self.snapshot,
-                                branch_prefix=qd_prefix,
+                                branch_prefix=qd_prefix
+                                + ["持枪要挟（" + card + "）"],
                                 discover_quickdraw_choice=card,
                                 exchanges=best_exchange,
                                 lethal_threshold=-1,
