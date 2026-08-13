@@ -1689,19 +1689,44 @@ static vector<State> generate_successors(const State& st) {
                             drawn_sets.push_back({st.forced_draw_choice});
                         }
                     } else if (forced) {
-                        // 潜伏帷幕抽 2 张：只保留包含指定随从的组合。
+                        // 潜伏帷幕抽 2 张：forced_draw_choice 支持 "X、Y" 双随从组合
+                        // （WhatIF 分支 = C(剩余,2)，钉死整个组合）；单名时保持旧行为
+                        // （只保留包含该随从的组合）。
                         // 缺失池不足抽取张数时（如只剩 1 个随从），直接抽剩余全部——
                         // 与常规路径的 missing < draw_count 处理一致，且避免组合越界。
+                        vector<string> want_set;
+                        {
+                            static const string sep = "、";  // UTF-8 3 字节
+                            size_t pos = 0;
+                            while (pos <= st.forced_draw_choice.size()) {
+                                size_t nxt = st.forced_draw_choice.find(sep, pos);
+                                if (nxt == string::npos) {
+                                    string acc = st.forced_draw_choice.substr(pos);
+                                    if (!acc.empty()) want_set.push_back(acc);
+                                    break;
+                                }
+                                string acc = st.forced_draw_choice.substr(pos, nxt - pos);
+                                if (!acc.empty()) want_set.push_back(acc);
+                                pos = nxt + sep.size();
+                            }
+                        }
+                        auto comb_contains_want = [&](const vector<string>& comb) {
+                            for (const string& w : want_set) {
+                                if (std::find(comb.begin(), comb.end(), w)
+                                    == comb.end()) {
+                                    return false;
+                                }
+                            }
+                            return true;
+                        };
                         if ((int)missing.size() <= draw_count) {
-                            if (std::find(missing.begin(), missing.end(),
-                                          st.forced_draw_choice) != missing.end()) {
+                            if (comb_contains_want(missing)) {
                                 drawn_sets.push_back(missing);
                             }
                         } else {
                             auto combs = combo_combinations(missing, draw_count);
                             for (auto& comb : combs) {
-                                if (std::find(comb.begin(), comb.end(),
-                                              st.forced_draw_choice) != comb.end()) {
+                                if (comb_contains_want(comb)) {
                                     drawn_sets.push_back(std::move(comb));
                                 }
                             }

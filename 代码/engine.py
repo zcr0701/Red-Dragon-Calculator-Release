@@ -553,11 +553,12 @@ def plan_exchanges_top(
     “不同的随从栏空位 / 不同英雄血量档 / 不同存活随从”，让可能产生最优解的
     异质场面也有机会入选（0=纯按分数取前 top_n）。
     """
-    # 只有攻击力 >= 1 的我方随从能主动发起交换（0 攻随从不能攻击）
+    # 只有攻击力 >= 1 且不是本回合刚下的（召唤失调）我方随从能主动交换。
     friend_indices = [
         index
         for index, item in enumerate(board, start=1)
         if int(item.get("attack") or 0) >= 1
+        and not item.get("summoned_this_turn")
     ]
     enemy_indices = [0] + list(range(1, len(enemy_board) + 1))  # 0 = 敌方英雄
     if not friend_indices:
