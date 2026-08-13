@@ -5010,12 +5010,26 @@ class MiniWindow(QWidget):
         self.mini_result = QTextBrowser()
         self.mini_result.setReadOnly(True)
         self.mini_result.document().setMaximumBlockCount(3000)
+        self.mini_result.setMinimumHeight(60)
         # 正常计算（多轮）优先：占主空间可滚动，不被下方 WhatIF 挤没
         root.addWidget(self.mini_result, 1)
         # WhatIF 引导面板（指引出牌 + 分叉点选 + 最高/平均/保底/值得）
+        # 包进滚动区并限高：内容多时内部滚动条，不把窗口顶高、不遮正常计算文字
+        self.mini_whatif_scroll = QScrollArea()
+        self.mini_whatif_scroll.setWidgetResizable(True)
+        self.mini_whatif_scroll.setFrameShape(0)  # QFrame.NoFrame
+        # 固定高度：WhatIF 内容多时内部滚动条，窗口不无限长高
+        self.mini_whatif_scroll.setFixedHeight(180)
+        # 高度策略 Ignored：不参与布局最小尺寸，避免把窗口顶高
+        self.mini_whatif_scroll.setSizePolicy(
+            QSizePolicy.Preferred, QSizePolicy.Ignored
+        )
         self.mini_whatif_guide = WhatIFDistPanel()
-        self.mini_whatif_guide.setVisible(False)
-        root.addWidget(self.mini_whatif_guide)
+        # 面板本身常显，滚动区控制整体显隐
+        self.mini_whatif_guide.setVisible(True)
+        self.mini_whatif_scroll.setWidget(self.mini_whatif_guide)
+        self.mini_whatif_scroll.setVisible(False)
+        root.addWidget(self.mini_whatif_scroll)
         self.set_formula_font(self.main.mini_font_size())
 
         grip = QSizeGrip(self)
@@ -5031,6 +5045,12 @@ class MiniWindow(QWidget):
         self.mini_whatif_guide._content_changed()
 
     # ---- 拖动 / 吸附 / 调整大小 ----
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt 命名
+        """最小尺寸不随内容增长：WhatIF 内容多时用内部滚动条，
+        结果区/WhatIF 区各自可压缩滚动，窗口不被顶高。"""
+        base = super().minimumSizeHint()
+        return QSize(base.width(), max(180, self.height()))
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         if event.button() == Qt.LeftButton:
@@ -5277,7 +5297,10 @@ class MiniWindow(QWidget):
         self.mini_whatif_guide.set_whatif(
             data, colors=colors, normal_damage=normal_dmg
         )
-        self.mini_whatif_guide.setVisible(has_whatif)
+        prev_size = self.size()
+        self.mini_whatif_scroll.setVisible(has_whatif)
+        # 保持窗口尺寸：WhatIF 显示时压缩结果区而非顶高窗口
+        self.resize(prev_size)
 
     def _mini_original_text(
         self,
