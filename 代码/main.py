@@ -3870,7 +3870,8 @@ class MainWindow(QWidget):
         player = snap.get("player_name") or "?"
         opponent = snap.get("opponent_name") or "?"
         reason = snap.get("reason") or ""
-        self.game_label.setText(f"{player} vs {opponent}（{reason}）")
+        spectator = "（观战）" if snap.get("spectator") else ""
+        self.game_label.setText(f"{player} vs {opponent}{spectator}（{reason}）")
 
         crystals = snap.get("crystals")
         mana = snap.get("mana")
@@ -3924,6 +3925,20 @@ class MainWindow(QWidget):
             cost_text = f"{cost}费" if cost is not None else "?费"
             ghost = "（殒命）" if item.get("ghostly") or index in deadly_display else ""
             hand_lines.append(f"{index:2d}. [{cost_text}] {item['name']}{ghost}")
+
+        if snap.get("spectator"):
+            hand_lines.append("")
+            hand_lines.append("── 观战：对方手牌 ──")
+            opp_hand = snap.get("opponent_hand") or []
+
+            if opp_hand:
+                for index, item in enumerate(opp_hand, start=1):
+                    cost = item.get("cost")
+                    cost_text = f"{cost}费" if cost is not None else "?费"
+                    name = item.get("name") or "（未揭示）"
+                    hand_lines.append(f"{index:2d}. [{cost_text}] {name}")
+            else:
+                hand_lines.append("（对方手牌未知）")
 
         hand_text = "\n".join(hand_lines) or "（空）"
 
