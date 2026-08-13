@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import cloud_report
+import deck_tracker
 from PyQt5.QtCore import (
     QEventLoop,
     QPoint,
@@ -3330,7 +3331,10 @@ class MainWindow(QWidget):
         state_grid = QGridLayout(state_box)
         self.game_label = QLabel("未在对局中")
         self.mana_label = QLabel("水晶：- / 法力：-")
-        self.deck_label = QLabel("牌库：-")
+        self.deck_label = _ClickLabel("牌库：-")
+        self.deck_label.setCursor(QCursor(Qt.PointingHandCursor))
+        self.deck_label.setToolTip("点击查看卡组明细（记牌器：HDT/卡组档案/Power.log 追踪）")
+        self.deck_label.clicked.connect(self._show_deck_detail)
         self.weapon_label = QLabel("武器：无")
         self.secrets_label = QLabel("奥秘：无")
         self.hero_label = QLabel("英雄：-")
@@ -3798,6 +3802,42 @@ class MainWindow(QWidget):
         settings.remove("custom_log_file")
         self._apply_custom_path(None, None)
 
+    def _show_deck_detail(self, *_args) -> None:
+        """点击 牌库 标签：展示 原卡组 / 剩余牌库 / 已离开牌库。"""
+        snap = self.snapshot or {}
+        original = snap.get("original_deck") or []
+        remaining = snap.get("remaining_deck") or []
+        drawn = snap.get("drawn_deck") or []
+        source = snap.get("deck_source")
+
+        def _fmt(items):
+            return "、".join(f"{i['name']}×{i['count']}" for i in items) or "（暂无）"
+
+        parts = []
+
+        if original:
+            parts.append(f"原卡组（{sum(i['count'] for i in original)} 张）：\n{_fmt(original)}")
+
+        if remaining:
+            parts.append(f"\n剩余牌库（{sum(i['count'] for i in remaining)} 张）：\n{_fmt(remaining)}")
+
+        if drawn:
+            parts.append(f"\n已离开牌库：\n{_fmt(drawn)}")
+
+        if not parts:
+            parts.append(
+                "牌库尚未记录。\n\n打开 HDT（会自动读取收藏里的卡组）即可在对局中实时重建牌库；"
+                "没有 HDT 时，Power.log 会追踪本局已抽到的卡。"
+            )
+
+        source_text = {
+            "hdt": "HDT 记牌器",
+            "profile": "卡组档案",
+            "powerlog": "Power.log 追踪",
+        }.get(source, "未记录")
+        parts.append(f"\n来源：{source_text}")
+        QMessageBox.information(self, "牌库明细", "\n".join(parts))
+
     def _apply_snapshot(self, snap: Dict[str, object]) -> None:
         self.snapshot = snap
         log_path = snap.get("log_path")
@@ -3825,8 +3865,42 @@ class MainWindow(QWidget):
             f"水晶：{crystals if crystals is not None else '-'} / 法力：{mana if mana is not None else '-'}"
         )
 
-        deck = snap.get("deck") or []
-        self.deck_label.setText(f"牌库：{len(deck)} 张")
+        self.deck_label.setText(deck_tracker.deck_summary(snap))
+
+        remaining = snap.get("remaining_deck") or []
+        original = snap.get("original_deck") or []
+        drawn = snap.get("drawn_deck") or []
+
+        if remaining or original or drawn:
+            lines = []
+
+            if original:
+                lines.append(
+                    "原卡组（"
+                    + "，".join(f"{i['name']}×{i['count']}" for i in original)
+                    + "）"
+                )
+
+            if remaining:
+                lines.append(
+                    "剩余牌库（"
+                    + "，".join(f"{i['name']}×{i['count']}" for i in remaining)
+                    + "）"
+                )
+
+            if drawn:
+                lines.append(
+                    "已离开牌库（"
+                    + "，".join(f"{i['name']}×{i['count']}" for i in drawn)
+                    + "）"
+                )
+
+            self.deck_label.setToolTip("\n".join(lines))
+        else:
+            self.deck_label.setToolTip(
+                "牌库尚未记录：打开 HDT（会自动读取收藏卡组）即可在对局中实时重建；"
+                "没有 HDT 时 Power.log 会追踪本局已抽到的卡"
+            )
 
         weapon = snap.get("weapon")
         self.weapon_label.setText(f"武器：{weapon['name'] if weapon else '无'}")
@@ -4976,6 +5050,15 @@ class MiniWindow(QWidget):
                 f" | 水晶{crystals if crystals is not None else '-'}"
                 f"/法力{mana if mana is not None else '-'}"
             )
+
+        remaining_total = sum(
+            int(i.get("count") or 0)
+            for i in (snap.get("remaining_deck") or [])
+        )
+        deck_source = snap.get("deck_source")
+
+        if remaining_total or deck_source:
+            text += f" | 牌库{remaining_total}"
 
         if not in_game:
             text += "（未在对局）"

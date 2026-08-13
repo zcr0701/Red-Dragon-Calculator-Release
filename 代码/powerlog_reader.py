@@ -37,6 +37,8 @@ from hslog.packets import (
 )
 from hslog.player import coerce_to_entity_id
 
+import deck_tracker
+
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -337,6 +339,9 @@ class PowerLogParser:
         # 垂钓时光探底追踪：最近一次垂钓时光的选择（id/候选底牌），解析后写入 dredge_bottom
         self._dredge_choice: Optional[dict] = None
         self._dredge_bottom: List[str] = []
+        # 记牌器兜底：曾经处于 DECK 区的实体 id（含起手牌/抽牌/燃烧/换牌回库），
+        # 用于在没有 HDT 时重建“已离开牌库”的卡。
+        self._ever_in_deck: Set[int] = set()
 
     def feed_line(self, line: str) -> None:
         try:
@@ -363,12 +368,24 @@ class PowerLogParser:
                     continue
 
                 self._on_play_entity(entity_id, game)
+            elif isinstance(packet, TagChange) and packet.tag == GameTag.ZONE:
+                self._on_zone_change(packet)
             elif isinstance(packet, TagChange) and packet.tag == GameTag.TURN:
                 self._on_turn_change(packet.value)
             elif isinstance(packet, Choices):
                 self._on_dredge_choices(packet, game)
             elif isinstance(packet, (SendChoices, ChosenEntities)):
                 self._on_dredge_chosen(packet, game)
+
+    def _on_zone_change(self, packet) -> None:
+        """记录进入过 DECK 区的实体 id（换牌回库/抽牌/燃烧都会先进 DECK）。"""
+        try:
+            entity_id = coerce_to_entity_id(packet.entity)
+        except Exception:
+            return
+
+        if packet.value == Zone.DECK:
+            self._ever_in_deck.add(entity_id)
 
     def _on_dredge_choices(self, packet, game) -> None:
         """DebugPrintEntityChoices：Source=垂钓时光 时记录 3 张探底候选（复制实体带 card_id）。"""
@@ -714,6 +731,33 @@ class PowerLogParser:
             else 0
         )
 
+        # 记牌器兜底：曾经在牌库、现已不在牌库、且非生成的已知卡 = 已离开牌库
+        drawn_deck: Dict[str, int] = {}
+
+        if local_player is not None:
+            local_controller = local_player.controller
+
+            for ent in game.entities.values():
+                if ent.id not in self._ever_in_deck:
+                    continue
+
+                if ent.zone == Zone.DECK:
+                    continue
+
+                if ent.tags.get(GameTag.CREATOR):
+                    continue
+
+                if ent.tags.get(GameTag.CONTROLLER) != local_controller:
+                    continue
+
+                card_id = ent.card_id or ""
+
+                if not card_id:
+                    continue
+
+                name = card_name(card_id)
+                drawn_deck[name] = drawn_deck.get(name, 0) + 1
+
         current_effects = [
             {"name": name, "count": count}
             for name, count in sorted(self.pending_effects.items())
@@ -786,6 +830,7 @@ class PowerLogParser:
             "enemy_board": enemy_board,
             "deck": deck,
             "deck_unknown_cards": deck_unknown_cards,
+            "drawn_deck_raw": drawn_deck,
             "secrets": secrets,
             "weapon": weapon,
             "etc_band": etc_band,
@@ -993,18 +1038,22 @@ class LogWatcher:
 
         # 无新行且解析器未被重置：直接返回上次快照，避免每 tick 全量重建
         if (
-            count == 0
-            and self._cached_snapshot is not None
-            and self._cache_generation == self._parser_generation
+            count != 0
+            or self._cached_snapshot is None
+            or self._cache_generation != self._parser_generation
         ):
-            return self._cached_snapshot
+            snap = self.parser.snapshot()
+            snap["log_path"] = str(self.log_file) if self.log_file else None
+            snap["session_dir"] = str(self.session_dir) if self.session_dir else None
+            self._cached_snapshot = snap
+            self._cache_generation = self._parser_generation
 
-        snap = self.parser.snapshot()
-        snap["log_path"] = str(self.log_file) if self.log_file else None
-        snap["session_dir"] = str(self.session_dir) if self.session_dir else None
-        self._cached_snapshot = snap
-        self._cache_generation = self._parser_generation
-        return snap
+        # 记牌器合并：每个 tick 都重读 HDT 状态（HDT 每 0.5s 更新），
+        # 牌库剩余内容实时重建；Power.log 追踪的已出卡作为兜底。
+        return deck_tracker.merge_snapshot(
+            self._cached_snapshot,
+            drawn_deck=self._cached_snapshot.get("drawn_deck_raw"),
+        )
 
 
 def _snapshot_key(snap: dict) -> tuple:
