@@ -1964,23 +1964,17 @@ class CalculationWorker(QThread):
         return False  # expect / floor 无有限上界，需搜完全部
 
     def _apply_branch_strategy(self, whatif_tree: Dict[str, object]) -> None:
-        """从 whatif_tree 顶层分叉树中按策略选一棵，重排 root/branches 呈现它。
+        """一棵树：主干不变，分叉全部展示；策略只决定分叉排序（最优在前）。
 
         策略（互斥，默认 kill）：
-          kill   斩杀伤害比例最大：Dn ≥ 敌方血量+护甲 的叶子占比最高
-          max    小概率最高伤害：只看最大叶子伤害（无论概率多小）
-          expect 最高期望伤害：叶子伤害加权平均最高
-          floor  最高平均保底伤害：最低叶子伤害最高（保底）
+          kill   斩杀比例最高者排前（同比例溢出高者优先）
+          max    最高伤害者排前
+          expect 期望伤害高者排前
+          floor  保底（最低叶子）高者排前
         """
         branches = list(whatif_tree.get("branches") or [])
 
         if len(branches) <= 1:
-            return
-
-        # 顶层分支全是叶子（如 持枪要挟 的 5+2 个发现结果）：它们同属一棵树
-        # 的随机分叉，不是互相竞争的 N 颗树，直接全部展示，不做筛树——
-        # 否则会把分叉收成单条路径，WhatIF 什么都不显示。
-        if not any(tb.get("children") for tb in branches):
             return
 
         scored: List[Tuple[float, Dict[str, object]]] = []
@@ -2002,22 +1996,8 @@ class CalculationWorker(QThread):
                 -x[0][1] if isinstance(x[0], tuple) else 0.0,
             )
         )
-        best = scored[0][1]
-        opt = WhatIFDistPanel._mk_option(best)
-        child_path = list(opt["child"].get("path") or [])
-        root = list(whatif_tree.get("root") or [])
-
-        # 选中树的分支路径以分支卡自身开头（如 暗影之门（持枪要挟））：
-        # 与主干末尾的分支卡（暗影之门）去重，避免路径起点重复。
-        if root and child_path:
-            last_base = re.sub(r"[（(].*[）)]$", "", str(root[-1]))
-            first_base = re.sub(r"[（(].*[）)]$", "", str(child_path[0]))
-
-            if last_base == first_base:
-                root = root[:-1]
-
-        whatif_tree["root"] = root + child_path
-        whatif_tree["branches"] = best.get("children") or []
+        # 只排序，不筛树：同一棵树的全部随机分叉都展示
+        whatif_tree["branches"] = [tb for _score, tb in scored]
 
     def _refine_quickdraw_branches(
         self,
@@ -2570,24 +2550,55 @@ class CalculationWorker(QThread):
 
                         if is_auto_beam:
                             draw_kwargs["wide_widths"] = [3000]
+                            # 只开单启发深挖：heuristics=None 会变成 4 通道 × 3000，
+                            # 1.5s 预算下每通道太浅，分支搜索常返回空/漏算。
+                            draw_kwargs["heuristics"] = [6]
 
                         res_i = engine.compute(
                             self.snapshot,
                             branch_prefix=prefix_draw,
                             forced_draw_choice=mn,
+                            forced_draw_card=branch_card,
                             exchanges=best_exchange,
                             lethal_threshold=lethal,
                             should_stop=lambda: self._stop,
                             **draw_kwargs,
                         )
+
+                        # 并行 3~8 个分支抢 CPU 时，1.5s 预算偶发返回空/漏算：
+                        # 空结果重试一次（预算翻倍），保证每个抽取结果都有分支。
+                        if (
+                            not (res_i.get("results") or [{}])[0].get("path")
+                            and not self._stop
+                        ):
+                            retry_kwargs = dict(draw_kwargs)
+                            retry_kwargs["time_budget_sec"] = min(
+                                6.0, max(3.0, draw_budget * 2)
+                            )
+                            res_i = engine.compute(
+                                self.snapshot,
+                                branch_prefix=prefix_draw,
+                                forced_draw_choice=mn,
+                                forced_draw_card=branch_card,
+                                exchanges=best_exchange,
+                                lethal_threshold=lethal,
+                                should_stop=lambda: self._stop,
+                                **retry_kwargs,
+                            )
                         # 强制搜索的 draw_branches 按“最后一张抽牌”命名：探底抽到行骗
                         # 后又行骗抽到晦时，完整延续被命名为“晦鳞巢母”。因此优先选
-                        # “路径里包含该强制结果”且伤害/余费最高的分支（精确同名仅兜底）。
+                        # “分支卡自身标注含该强制结果”且伤害/余费最高的分支——
+                        # 只匹配 暗影之门（X） 这种分支卡标注，避免 殒命暗影 字样
+                        # 出现在 挖掘宝藏[殒命暗影] 的变形标记上被误选。
                         draw_matched = [
                             b
                             for b in (res_i.get("draw_branches") or [])
                             if (b.get("path") or [])
-                            and any(mn in str(s) for s in b["path"])
+                            and any(
+                                str(s).startswith(branch_card + "（")
+                                and mn in str(s)
+                                for s in b["path"]
+                            )
                         ]
                         best_i = (
                             max(
@@ -2656,8 +2667,9 @@ class CalculationWorker(QThread):
                                 )
 
                                 if qd_pruned:
-                                    # 该树已不可能超过当前最优树，整棵放弃
-                                    return None
+                                    # 剪枝只节省时间，不再整棵放弃分支：
+                                    # 一棵树的全部随机分叉都要展示
+                                    qd_children = qd_children or []
 
                                 node["children"] = qd_children
                             else:
@@ -2907,9 +2919,8 @@ class CalculationWorker(QThread):
                                 ):
                                     shared_best["best"] = score
 
-                            if self._branch_score_optimal(score, strategy):
-                                pool.shutdown(wait=False, cancel_futures=True)
-                                break
+                            # 一棵树的全部随机分叉都要展示：达到策略理论最优也
+                            # 不取消其余分支的搜索（只记录，不提前收工）。
 
                     for mn in branch_pool:
                         node = node_by_mn.get(mn)

@@ -387,6 +387,7 @@ struct State {
     bool etc_band_provided = false;   // JSON 显式传了 etc_band（空数组=牛池已空）
     string forced_discover_choice;    // 可能分支机制：强制持枪要挟发现某张牌（空=全部展开）
     string forced_draw_choice;        // WhatIF 同级分支：强制抽随从卡抽到某张随从（空=全部展开）
+    string forced_draw_card;          // 强制抽取只作用于该分支卡（空=任意抽牌卡都消耗）
     int quickdraw_choice = -1;        // 路径中第一张持枪要挟的发现牌（QUICKDRAW_MODELED_POOL 下标；-1=无）
     bool used_quickdraw = false;      // 路径中是否打出过持枪要挟（原版=不含持枪的最优线）
     bool used_draw_branch = false;    // 路径中是否打出过抽随从分支卡（行骗/挖掘宝藏/潜伏帷幕/垂钓时光）
@@ -453,6 +454,7 @@ struct State {
         c.etc_band_provided = etc_band_provided;
         c.forced_discover_choice = forced_discover_choice;
         c.forced_draw_choice = forced_draw_choice;
+        c.forced_draw_card = forced_draw_card;
         c.quickdraw_choice = quickdraw_choice;
         c.used_quickdraw = used_quickdraw;
         c.used_draw_branch = used_draw_branch;
@@ -1156,6 +1158,15 @@ static vector<State> apply_search_effect(State base, const Card& card,
 
 static bool combo_active(const State& s) { return s.cards_played_this_turn > 0; }
 
+// 强制抽取是否作用于当前这张抽牌卡：forced_draw_card 为空时任意抽牌卡
+// 都消耗（旧行为）；指定后只有该分支卡消耗，其他抽牌卡照常随机展开，
+// 避免 暗影之门(行骗) 这种分支把强制抽取错配到 挖掘宝藏/异教地图再抽 上。
+static bool forced_draw_applies(const State& s, const Card& card) {
+    if (s.forced_draw_choice.empty()) return false;
+    if (s.forced_draw_card.empty()) return true;
+    return s.forced_draw_card == card.name();
+}
+
 // 牌库是否有完整追踪数据（remaining_deck 全部是真实卡名）；只要还有
 // 空名占位（旧日志/未追踪）就退回旧固定勾选池。
 static bool deck_has_tracking(const State& s);
@@ -1339,6 +1350,17 @@ static vector<State> generate_successors(const State& st) {
         }
         if (duplicate) continue;
 
+        // WhatIF 分支钉死：强制抽取的分支卡必须先打出（如 暗影之门(行骗) 的
+        // 分支搜索里，暗影之门 是下一步，其他牌（挖掘宝藏/双面生意等）暂不展开，
+        // 避免强制抽取被别的抽牌卡抢先消耗或分支卡根本没打）。
+        if (
+            !st.forced_draw_card.empty()
+            && !st.forced_draw_choice.empty()
+            && card.name() != st.forced_draw_card
+        ) {
+            continue;
+        }
+
         // 黑水弯刀：两个动作——
         //   交易（消耗 1 费，不计入本回合出牌）：置入牌库 + 抽 1 张 +
         //     手牌中一张 >0 费法术随机 -1 费；
@@ -1449,9 +1471,15 @@ static vector<State> generate_successors(const State& st) {
                 pool.push_back(make_card("未知抽牌"));
             }
 
+            const bool forced = forced_draw_applies(st, card);
             for (const Card& d : pool) {
+                if (forced && d.name() != st.forced_draw_choice) continue;
                 State base = st.clone_reserved();
                 if (!play_card_base(base, hand_index, -1, false, false)) continue;
+                if (forced) {
+                    base.forced_draw_choice.clear();
+                    base.forced_draw_card.clear();
+                }
                 Card drawn = d;
                 drawn.cultist_map_drawn = true;
                 for (auto it = base.deck.begin(); it != base.deck.end(); ++it) {
@@ -1495,9 +1523,15 @@ static vector<State> generate_successors(const State& st) {
                 pool.push_back(make_card("未知抽牌"));
             }
 
+            const bool forced = forced_draw_applies(st, card);
             for (const Card& d : pool) {
+                if (forced && d.name() != st.forced_draw_choice) continue;
                 State base = st.clone_reserved();
                 if (!play_card_base(base, hand_index, -1, false, false)) continue;
+                if (forced) {
+                    base.forced_draw_choice.clear();
+                    base.forced_draw_card.clear();
+                }
                 for (auto it = base.deck.begin(); it != base.deck.end(); ++it) {
                     if (it->name() == d.name()) {
                         Card drawn = *it;
@@ -1630,7 +1664,7 @@ static vector<State> generate_successors(const State& st) {
                     if (d.type == "spell") base_junk_spells += d.count;
             }
 
-            const bool forced = !st.forced_draw_choice.empty();
+            const bool forced = forced_draw_applies(st, card);
             // 强制抽取目标是法术时，跳过随从分支（交给下方法术分支处理）。
             bool forced_is_spell = false;
             if (forced) {
@@ -1946,7 +1980,7 @@ static vector<State> generate_successors(const State& st) {
         // 打出垂钓时光 = 从底 3 张选 1 张入手（连击额外抽 1 张）；每个已知底牌一个分支，
         // 不足 3 张时补“未知杂牌”分支；选中后其余已知牌留在牌库底（下次垂钓时光再用）。
         if (card.effect_idx == N_E_FISHIN && st.branch_expand && !st.dredge_bottom.empty()) {
-            const bool forced = !st.forced_draw_choice.empty();
+            const bool forced = forced_draw_applies(st, card);
             vector<string> opts;
             for (const string& n : st.dredge_bottom) {
                 if (std::find(opts.begin(), opts.end(), n) == opts.end()) opts.push_back(n);
@@ -3522,6 +3556,8 @@ static State state_from_json(const JVal& root) {
     if (qd && qd->type == JVal::STR) st.forced_discover_choice = qd->str;
     const JVal* fdc = root.find("forced_draw_choice");
     if (fdc && fdc->type == JVal::STR) st.forced_draw_choice = fdc->str;
+    const JVal* fdcard = root.find("forced_draw_card");
+    if (fdcard && fdcard->type == JVal::STR) st.forced_draw_card = fdcard->str;
     const JVal* deck = root.find("deck");
     if (deck && deck->type == JVal::ARR) {
         for (const auto& item : deck->arr) {

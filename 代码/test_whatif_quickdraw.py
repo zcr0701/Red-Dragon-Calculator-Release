@@ -123,7 +123,7 @@ def main():
         print("FAIL: WhatIF 未包含持枪要挟分支标注")
         return 1
 
-    # 溢出平局决胜：未勾选精确截断时，kill 同比例优先选溢出伤害高的树
+    # 一棵树全部展示：策略只排序（最优在前）；同比例时溢出高者排前
     worker2 = M.CalculationWorker(snap, {**options, "truncate_normal": False})
 
     def mk_leaf(card, dmg):
@@ -159,11 +159,11 @@ def main():
         ],
     }
     worker2._apply_branch_strategy(tie_tree)
-    chosen_root = list(tie_tree.get("root") or [])
-    print("tie-break root tail:", chosen_root[-1] if chosen_root else None)
+    ordered = [str(b.get("outcome") or b.get("card")) for b in (tie_tree.get("branches") or [])]
+    print("tie-break order:", ordered)
 
-    if not chosen_root or str(chosen_root[-1]) != "牛":
-        print("FAIL: 同比例未按溢出伤害决胜（应选 48|32 的牛树而非 32|32 的狐树）")
+    if ordered != ["牛", "狐"]:
+        print("FAIL: 同比例未按溢出伤害排序（48|32 的牛树应排在 32|32 的狐树前）")
         return 1
 
     # 主干必须到 持枪要挟，不能是空（（起点））
