@@ -2107,6 +2107,28 @@ static int subchain_score(const State& s) {
             }
         }
     }
+    //    a2) 龙鱼权威判定（用户确认：先出龙 = 场上龙在 board 中的次序 < 鱼）：
+    //        新随从一律进 board 末尾，所以龙若站在鲨鱼左边，必是先龙后鱼打出、
+    //        没吃到双倍战吼（只打 8 伤）。用伤害缺口佐证（alex_damage <
+    //        alex_play_count×16）避免 暗影步(鲨鱼) 后重铺导致的站位误判——
+    //        两者同时成立才 -1000。
+    if (shark_on > 0 && s.alex_play_count > 0
+        && s.alex_damage < s.alex_play_count * 16) {
+        int shark_pos = -1;
+        for (size_t bi = 0; bi < s.board.size(); bi++) {
+            if (s.board[bi].name_idx == N_SHARK) { shark_pos = (int)bi; break; }
+        }
+        if (shark_pos > 0) {
+            for (int bi = 0; bi < shark_pos; bi++) {
+                if (s.board[bi].dragon) { score -= 1000; break; }
+            }
+        }
+    }
+    //    a3) 伤害缺口兜底：只要累计龙伤不是 16 的整倍数（有龙没吃到鱼），无论之后
+    //        是否舞动重铺成鱼龙次序，都 -1000——先打出的 8 伤龙造成的缺口无法弥补。
+    if (s.alex_play_count > 0 && s.alex_damage < s.alex_play_count * 16) {
+        score -= 1000;
+    }
     if (shark_on > 0 && board_d > 0) {
         score += 24;
     }
