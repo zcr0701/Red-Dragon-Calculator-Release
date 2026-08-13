@@ -1528,7 +1528,7 @@ static vector<State> generate_successors(const State& st) {
                 }
                 add_card_to_hand_or_burn(base, drawn);
                 // 发现池剩余 = 池中除选中的 d 以外的牌；
-                // 未钉死时近似 = 牌库顺序里 d 之后的 2 张（仅用于束宽搜索的再抽）
+                // 未钉死/整副池时 = 牌库剩余全部（再抽分支数 = 此时牌库剩余 M）
                 base.cultist_pool.clear();
 
                 if (!st.forced_cultist_pool.empty()) {
@@ -1538,8 +1538,6 @@ static vector<State> generate_successors(const State& st) {
                         }
                     }
                 } else if (deck_has_tracking(st)) {
-                    int added = 0;
-
                     for (const auto& c : st.deck) {
                         if (c.name() == d.name()) continue;
 
@@ -1552,13 +1550,13 @@ static vector<State> generate_successors(const State& st) {
                         }
 
                         base.cultist_pool.push_back(c.name());
-
-                        if (++added >= 2) break;
                     }
                 }
                 base.path_mut().back() += "（发现：" + d.name() + "）";
 
-                if (!base.cultist_pool.empty()) {
+                // 只有小池（钉死的 2~3 张）才写池标注；整副牌库（N-1 张）不写，
+                // 避免路径被超长标注刷屏，也便于重放匹配。
+                if (!base.cultist_pool.empty() && base.cultist_pool.size() <= 3) {
                     string note = "（池：";
                     bool first = true;
 
@@ -3682,9 +3680,6 @@ static State state_from_json(const JVal& root) {
                 st.forced_cultist_pool.push_back(item.str);
             }
         }
-        if (st.forced_cultist_pool.size() > 3) {
-            st.forced_cultist_pool.resize(3);
-        }
     }
     const JVal* deck = root.find("deck");
     if (deck && deck->type == JVal::ARR) {
@@ -3936,6 +3931,7 @@ int main(int argc, char** argv) {
         for (const auto& item : bp->arr)
             if (item.type == JVal::STR) branch_prefix.push_back(item.str);
     }
+
 
     State search_start = st;
 

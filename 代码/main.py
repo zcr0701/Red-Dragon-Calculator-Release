@@ -3039,42 +3039,46 @@ class CalculationWorker(QThread):
         if len(cards) < 2:
             return []
 
-        top_k = max(1, int(self.options.get("branch_top_k", 3) or 3))
-        main_outcome = str(fork_info.get("outcome") or "")
-        # 第一次拿：按单卡估计取前 K（主线实际抽到的牌强制保留）
-        xs = sorted(
-            cards, key=lambda c: -self._cultist_card_damage.get(c, 0)
-        )[:top_k]
-
-        if main_outcome in cards and main_outcome not in xs:
-            xs = [main_outcome] + xs[: max(0, len(xs) - 1)]
-
+        # 第一次分支数量 = N（此时牌库剩余卡牌数量），全部展开
+        xs = cards
         branches: List[Dict[str, object]] = []
 
         for x in xs:
-            if time.perf_counter() - t0 > 8.5:
-                break
-
             ys = [c for c in cards if c != x]
-            y_top = sorted(
-                ys, key=lambda c: -self._cultist_card_damage.get(c, 0)
-            )[: max(1, top_k * 2)]
             children: List[Dict[str, object]] = []
             own_line: Optional[Dict[str, object]] = None
 
-            for y in y_top:
-                if self._stop:
-                    break
+            if not ys:
+                continue
 
-                r = self._cultist_pair_search(
-                    prefix, x, y, used, best_exchange, t0
-                )
+            with ThreadPoolExecutor(
+                max_workers=min(6, max(2, len(ys))),
+                thread_name_prefix="whatif-cultist",
+            ) as pool_ex:
+                futs = {
+                    pool_ex.submit(
+                        self._cultist_pair_search,
+                        prefix,
+                        x,
+                        y,
+                        used,
+                        best_exchange,
+                        t0,
+                    ): y
+                    for y in ys
+                }
 
-                if r is not None:
-                    if r.get("_has_re"):
-                        children.append(r)
-                    elif own_line is None:
-                        own_line = r
+                for fut in as_completed(futs):
+                    if self._stop:
+                        break
+
+                    r = fut.result()
+
+                    if r is not None:
+                        if r.get("_has_re"):
+                            children.append(r)
+                        elif own_line is None:
+                            own_line = r
 
             if children:
                 x_node: Dict[str, object] = {
@@ -3123,7 +3127,7 @@ class CalculationWorker(QThread):
 
         elapsed = time.perf_counter() - t0
         remaining = max(2.0, 10.0 - elapsed)
-        per_branch = min(1.5, max(0.6, remaining / 24.0))
+        per_branch = min(0.8, max(0.35, remaining / 200.0))
         kwargs = dict(
             min_alex=int(self.options["min_alex"]),
             max_alex=int(self.options["max_alex"]),
@@ -3141,7 +3145,7 @@ class CalculationWorker(QThread):
             should_stop=lambda: self._stop,
         )
 
-        def _run(budget: float, beam: int = 3000) -> Optional[Dict[str, object]]:
+        def _run(budget: float, beam: int = 800) -> Optional[Dict[str, object]]:
             k2 = dict(kwargs)
             k2["time_budget_sec"] = budget
             k2["wide_widths"] = [beam]
