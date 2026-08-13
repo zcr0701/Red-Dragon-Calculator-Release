@@ -1528,9 +1528,10 @@ static vector<State> generate_successors(const State& st) {
                 }
                 add_card_to_hand_or_burn(base, drawn);
                 // 发现池剩余 = 池中除选中的 d 以外的牌；
-                // 未钉死（正常束宽搜索）时用“d 之后的两张”近似小池——
-                // 保持主束宽聚焦（再抽只 2 个分支），不会被 N×M 摊薄到搜不出伤害；
-                // WhatIF 的完整 N×M 由 Python 逐对 forced_cultist_pool 钉死搜索负责。
+                // 未钉死（WhatIF 主搜索）时 = 牌库剩余全部（再抽分支数 = M），
+                // 与“第二次拿 Y = 此时牌库剩余”的模型一致。
+                // 正常搜索（V1.2.1 正常线）是独立的 branch_expand=False 计算，
+                // 不经过这里，不会被 N×M 摊薄影响。
                 base.cultist_pool.clear();
 
                 if (!st.forced_cultist_pool.empty()) {
@@ -1540,8 +1541,6 @@ static vector<State> generate_successors(const State& st) {
                         }
                     }
                 } else if (deck_has_tracking(st)) {
-                    int added = 0;
-
                     for (const auto& c : st.deck) {
                         if (c.name() == d.name()) continue;
 
@@ -1554,8 +1553,6 @@ static vector<State> generate_successors(const State& st) {
                         }
 
                         base.cultist_pool.push_back(c.name());
-
-                        if (++added >= 2) break;
                     }
                 }
                 base.path_mut().back() += "（发现：" + d.name() + "）";

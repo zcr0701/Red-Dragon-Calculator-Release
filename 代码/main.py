@@ -3830,6 +3830,47 @@ class CalculationWorker(QThread):
                     **common_kwargs,
                 )
 
+            # —— 正常搜索与 WhatIF 完全独立 ——
+            # 正常线单独用 branch_expand=False 跑一次：分支卡（异教地图/持枪/垂钓…）
+            # 一律当抽杂牌/禁抽处理，不参与任何分支展开；WhatIF 的异教地图改动
+            # 不可能影响它（之前的正常线是从展开搜索里派生的，才会被带崩）。
+            if not self._stop:
+                try:
+                    normal_res = engine.compute(
+                        self.snapshot,
+                        lethal_threshold=(
+                            _lethal_threshold(self.snapshot, best_exchange)
+                            if bool(self.options.get("truncate_normal", False))
+                            else -1
+                        ),
+                        exchanges=best_exchange,
+                        min_alex=int(self.options["min_alex"]),
+                        max_alex=int(self.options["max_alex"]),
+                        depth=int(self.options["depth"]),
+                        max_paths=int(self.options["max_paths"]),
+                        threads=int(self.options.get("threads", 4)),
+                        time_budget_sec=float(
+                            self.options.get("time_budget_sec", 3.0)
+                        ),
+                        wide_widths=wide_widths,
+                        heuristics=heuristics,
+                        etc_band=list(self.options.get("etc_band") or []),
+                        only_best_damage=True,
+                        branch_expand=False,
+                    )
+                    normal_orig = normal_res.get("original")
+
+                    if not normal_orig:
+                        normal_orig = (
+                            (normal_res.get("results") or [{}])[0]
+                            if normal_res.get("results")
+                            else {}
+                        )
+
+                    result["original"] = normal_orig
+                except Exception:  # noqa: BLE001 - 正常线失败不阻塞 WhatIF
+                    pass
+
             # 第一阶段：正常计算完成，先显示正常结果（WhatIF 稍后单独显示）
             if not self._stop:
                 self.normal_ready.emit(dict(result))
