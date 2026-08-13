@@ -2134,6 +2134,9 @@ class CalculationWorker(QThread):
         self._whatif_cache: Dict[tuple, Dict[str, object]] = {}
         # 异教地图发现池粗排用的单卡伤害估计（来自主搜索 draw_branches）
         self._cultist_card_damage: Dict[str, int] = {}
+        # 主搜索里各发现结果的完整路径（异教地图（发现：X）之后的续接），
+        # 用于逐对钉死搜索失败时兜底，保证 N 个发现分支一个不少
+        self._cultist_fallback: Dict[str, List[str]] = {}
 
         for b in result.get("draw_branches") or []:
             key = str(b.get("card") or "").split("、")[0]
@@ -2143,6 +2146,24 @@ class CalculationWorker(QThread):
                 self._cultist_card_damage[key] = max(
                     self._cultist_card_damage.get(key, 0), dmg
                 )
+
+            pth = [str(s) for s in (b.get("path") or [])]
+
+            for i, s in enumerate(pth):
+                m = re.search(r"异教地图（发现：(.+?)）", str(s))
+
+                if m:
+                    x = m.group(1)
+
+                    if x not in self._cultist_fallback or int(
+                        b.get("damage") or 0
+                    ) > self._cultist_fallback.get("_dmg", {}).get(x, -1):
+                        self._cultist_fallback.setdefault("_dmg", {})[x] = int(
+                            b.get("damage") or 0
+                        )
+                        self._cultist_fallback[x] = pth
+
+                    break
 
         branches = self._expand_fork(
             prefix,
@@ -2408,11 +2429,8 @@ class CalculationWorker(QThread):
 
             return fork_card + "（" + outcome + "）"
 
-        elapsed = time.perf_counter() - t0
-        remaining = max(2.0, 10.0 - elapsed)
-        # 每个分叉结果独立 DFS 到叶子（真实伤害），预算按候选数动态分配；
-        # 候选中（异教地图 19 张）用窄束 + 翻倍重试保证大多数分支能挖到底。
-        per_branch = min(2.0, max(0.9, remaining / max(8, len(pool))))
+        # 真正完整展开：每个结果独立 DFS 到叶子，给足预算（不设总时限）
+        per_branch = 2.0
         results: Dict[str, Dict[str, object]] = {}
 
         if precomputed:
@@ -2507,17 +2525,23 @@ class CalculationWorker(QThread):
             r = _run(per_branch)
 
             if r is None:
-                # 空结果（重放失败/没挖到线）：预算 1.5 倍 + 窄束深挖重试一次
-                r2 = _run(
-                    min(2.0, max(1.2, per_branch * 1.5)),
-                    beam=1000,
-                )
+                # 空结果：预算翻倍 + 窄束深挖重试一次
+                r = _run(min(4.0, per_branch * 2.0), beam=1000)
 
-                if r2 is not None:
-                    r = r2
+            if r is None:
+                # 仍失败：保留该分支（钉死前缀兜底），绝不丢弃
+                r = {
+                    "card": outcome,
+                    "outcome": outcome,
+                    "damage": 0,
+                    "dragons": 0,
+                    "mana_left": 0,
+                    "mid": [_fork_step(outcome)],
+                    "path": pinned,
+                    "fork_damage": 0,
+                }
 
-            if r is not None:
-                self._whatif_cache[cache_key] = r
+            self._whatif_cache[cache_key] = r
 
             return r
 
@@ -2542,113 +2566,11 @@ class CalculationWorker(QThread):
         if not branches:
             return []
 
-        # 深度精修：只对伤害最高的前 K 个分支用独立搜索再挖一遍。
-        # 预计算结果（来自主搜索/父搜索的束宽）会被分支竞争低估
-        # （如 16 vs 80），独立深搜能逼近该分支的真实上限，并带回
-        # 它自己的 draw/quickdraw 分支供下一层缓存复用。
-        if depth == 0 and elapsed < 8.5:
-            top_k = max(1, int(self.options.get("branch_top_k", 3) or 3))
-            ranked = sorted(
-                branches, key=lambda b: -int(b.get("damage") or 0)
-            )[:top_k]
-
-            for b in ranked:
-                out = str(b.get("outcome") or "")
-
-                if not out or out not in pool:
-                    continue
-
-                r = _search_one(out)
-
-                if r is not None:
-                    results[out] = r
-
-            branches = [results[o] for o in pool if o in results]
-
-        # 递归：每个分支已验证的续接里找下一分叉并展开。
-        # 只对伤害最高的前 K 个分支继续挖（K=分支节点TOP-K，默认 3），
-        # 其余分支保持叶子（展示本层已找到的最高伤续接）。
-        if elapsed < 8.0 and depth < 3:
-            top_k = max(1, int(self.options.get("branch_top_k", 3) or 3))
-            # 深层只精修 1 条最优分支：再抽/持枪的候选很多，逐条重搜会超预算
-            if depth >= 1:
-                top_k = 1
-            ranked = sorted(
-                branches, key=lambda b: -int(b.get("damage") or 0)
-            )[:top_k]
-
-            for b in ranked:
-                # 只有独立搜索过的分支带 _res，能直接缓存出下一层分叉；
-                # 预计算（叶子）分支保持完整续接，不再递归重搜。
-                if b.get("_res") is None:
-                    continue
-
-                mid = list(b.get("mid") or [])
-
-                if not mid:
-                    continue
-
-                tail = [str(s) for s in mid[1:]]
-                nxt = None
-                nxt_idx = -1
-
-                for j, s in enumerate(tail):
-                    fi = self._step_fork(s)
-
-                    if fi is not None:
-                        nxt = fi
-                        nxt_idx = j
-                        break
-
-                if nxt is None:
-                    continue
-
-                child_prefix = (
-                    prefix
-                    + [str(mid[0])]
-                    + [str(s) for s in tail[:nxt_idx]]
-                )
-                child_used = dict(used)
-
-                for s in child_prefix:
-                    for n in self._drawn_from_step(s):
-                        child_used[str(n)] = child_used.get(str(n), 0) + 1
-
-                child_main_cont = [str(s) for s in tail[nxt_idx + 1 :]]
-                child_pre = self._precompute_children(
-                    b.get("_res"), nxt
-                )
-                children = self._expand_fork(
-                    child_prefix,
-                    nxt,
-                    child_used,
-                    child_main_cont,
-                    int(b.get("damage") or 0),
-                    int(b.get("dragons") or 0),
-                    int(b.get("mana_left") or 0),
-                    best_exchange,
-                    t0,
-                    depth + 1,
-                    precomputed=child_pre,
-                )
-
-                if children:
-                    b["children"] = children
-                    b["damage"] = max(
-                        int(b.get("damage") or 0),
-                        max(int(c.get("damage") or 0) for c in children),
-                    )
-                    # 父分支的续接只保留到子分叉卡（去掉结果标注），
-                    # 分叉结果全部交给子分支展示——绝不能把某个发现结果
-                    # 直接写进父行（否则看起来像“直接选了伺机待发”）。
-                    child_base = re.sub(
-                        r"[（(].*[）)]$", "", str(tail[nxt_idx])
-                    )
-                    b["mid"] = (
-                        [str(mid[0])]
-                        + [str(s) for s in tail[:nxt_idx]]
-                        + [child_base]
-                    )
+        # 递归：每个分支的续接里找下一分叉并完整展开（不 TOP-K、不丢分支）
+        for b in branches:
+            b = self._expand_continuation_forks(
+                prefix, b, used, best_exchange, t0, depth
+            )
 
         return branches
 
@@ -3017,12 +2939,12 @@ class CalculationWorker(QThread):
     ) -> List[Dict[str, object]]:
         """异教地图：第一次拿 X（每张牌一个分支）× 第二次拿 Y（每张剩余牌一个分支）。
 
-        实际出牌思路就是“第一次拿了啥、第二次拿了啥”——分支数上限 =
-        打异教地图时牌库剩余 × 打标记牌时牌库剩余（N×M），不是 C(N,3) 组合。
-        每对 (X,Y) 用 forced_cultist_pool=[X,Y] 把两次抽取都钉死，独立搜索；
-        Y 的范围是牌库剩余（其他抽牌已抽走的自然不在牌库里）。
+        真正完整展开：N 个第一次分支 × M 个第二次分支，一个都不少；
+        每个 (X,Y) 用 forced_cultist_pool=[X,Y] 钉死两次抽取独立搜索，
+        搜索失败也保留该分支（钉死前缀兜底，0 伤）；续接里的分叉
+        （持枪要挟/再抽牌/异教地图）递归展开。
         """
-        if self._stop or depth > 4:
+        if self._stop or depth > 8:
             return []
 
         deck_items = self.snapshot.get("deck") or []
@@ -3039,20 +2961,20 @@ class CalculationWorker(QThread):
         if len(cards) < 2:
             return []
 
-        # 第一次分支数量 = N（此时牌库剩余卡牌数量），全部展开
-        xs = cards
+        xs = sorted(cards, key=lambda c: -self._cultist_card_damage.get(c, 0))
         branches: List[Dict[str, object]] = []
 
         for x in xs:
             ys = [c for c in cards if c != x]
-            children: List[Dict[str, object]] = []
-            own_line: Optional[Dict[str, object]] = None
 
             if not ys:
                 continue
 
+            children: List[Dict[str, object]] = []
+            own_line: Optional[Dict[str, object]] = None
+
             with ThreadPoolExecutor(
-                max_workers=min(6, max(2, len(ys))),
+                max_workers=min(8, max(2, len(ys))),
                 thread_name_prefix="whatif-cultist",
             ) as pool_ex:
                 futs = {
@@ -3064,6 +2986,7 @@ class CalculationWorker(QThread):
                         used,
                         best_exchange,
                         t0,
+                        depth + 1,
                     ): y
                     for y in ys
                 }
@@ -3080,27 +3003,48 @@ class CalculationWorker(QThread):
                         elif own_line is None:
                             own_line = r
 
+            # 每个 X 都成为分支（即使全部 (X,Y) 搜索失败也保留，用兜底路径）
+            x_node: Dict[str, object] = {
+                "card": x,
+                "outcome": x,
+                "damage": max(
+                    (int(c.get("damage") or 0) for c in children),
+                    default=0,
+                ),
+                "dragons": max(
+                    (int(c.get("dragons") or 0) for c in children),
+                    default=0,
+                ),
+                "mana_left": max(
+                    (int(c.get("mana_left") or 0) for c in children),
+                    default=0,
+                ),
+                "mid": ["异教地图（发现：" + x + "）"],
+                "path": prefix + ["异教地图（发现：" + x + "）"],
+                "fork_damage": 0,
+            }
+
             if children:
-                x_node: Dict[str, object] = {
-                    "card": x,
-                    "outcome": x,
-                    "damage": max(
-                        int(c.get("damage") or 0) for c in children
-                    ),
-                    "dragons": max(
-                        int(c.get("dragons") or 0) for c in children
-                    ),
-                    "mana_left": max(
-                        int(c.get("mana_left") or 0) for c in children
-                    ),
-                    "mid": ["异教地图（发现：" + x + "）"],
-                    "path": prefix + ["异教地图（发现：" + x + "）"],
-                    "fork_damage": 0,
-                }
                 x_node["children"] = children
-                branches.append(x_node)
             elif own_line is not None:
-                branches.append(own_line)
+                # 该 X 没有任何线打出它（无再抽）：用最优未使用线作为叶子
+                x_node["mid"] = list(own_line.get("mid") or [])
+                x_node["path"] = list(own_line.get("path") or [])
+                x_node["damage"] = int(own_line.get("damage") or 0)
+                x_node["dragons"] = int(own_line.get("dragons") or 0)
+                x_node["mana_left"] = int(own_line.get("mana_left") or 0)
+            else:
+                # 全部搜索失败：用主搜索兜底路径（若有）
+                fb = self._cultist_fallback.get(x) or []
+
+                if fb:
+                    x_node["mid"] = [str(s) for s in fb]
+                    x_node["path"] = [str(s) for s in fb]
+                    x_node["damage"] = int(
+                        (self._cultist_fallback.get("_dmg") or {}).get(x, 0)
+                    )
+
+            branches.append(x_node)
 
         return branches
 
@@ -3112,10 +3056,20 @@ class CalculationWorker(QThread):
         used: Dict[str, int],
         best_exchange: List[Tuple[int, int]],
         t0: float,
-    ) -> Optional[Dict[str, object]]:
+        depth: int = 0,
+    ) -> Dict[str, object]:
         """异教地图第一次拿 X、第二次拿 Y：发现池钉死为 [X,Y]（两次抽取都唯一）。"""
         if self._stop:
-            return None
+            return {
+                "card": y,
+                "outcome": y,
+                "damage": 0,
+                "dragons": 0,
+                "mana_left": 0,
+                "mid": ["异教地图（发现：" + x + "）（池：" + y + "）"],
+                "path": prefix + ["异教地图（发现：" + x + "）（池：" + y + "）"],
+                "fork_damage": 0,
+            }
 
         fork_step = "异教地图（发现：" + x + "）（池：" + y + "）"
         pinned = prefix + [fork_step]
@@ -3125,9 +3079,7 @@ class CalculationWorker(QThread):
         if cached is not None:
             return cached
 
-        elapsed = time.perf_counter() - t0
-        remaining = max(2.0, 10.0 - elapsed)
-        per_branch = min(0.8, max(0.35, remaining / 200.0))
+        per_branch = 2.0
         kwargs = dict(
             min_alex=int(self.options["min_alex"]),
             max_alex=int(self.options["max_alex"]),
@@ -3145,7 +3097,7 @@ class CalculationWorker(QThread):
             should_stop=lambda: self._stop,
         )
 
-        def _run(budget: float, beam: int = 800) -> Optional[Dict[str, object]]:
+        def _run(budget: float, beam: int = 3000) -> Optional[Dict[str, object]]:
             k2 = dict(kwargs)
             k2["time_budget_sec"] = budget
             k2["wide_widths"] = [beam]
@@ -3162,18 +3114,6 @@ class CalculationWorker(QThread):
             except Exception:  # noqa: BLE001
                 return None
 
-            if not pth or len(pth) < len(pinned):
-                return None
-
-            if pth[: len(prefix)] != prefix:
-                return None
-
-            if (
-                "异教地图" not in str(pth[len(prefix)])
-                or x not in str(pth[len(prefix)])
-            ):
-                return None
-
             cont_all = [str(s) for s in pth[len(prefix) + 1 :]]
             re_idx = next(
                 (
@@ -3186,10 +3126,10 @@ class CalculationWorker(QThread):
 
             if re_idx >= 0:
                 mid = cont_all[re_idx:]
-                has_re = True
-            else:
+            elif cont_all:
                 mid = [fork_step] + cont_all
-                has_re = False
+            else:
+                mid = [fork_step]
 
             return {
                 "card": y,
@@ -3200,15 +3140,110 @@ class CalculationWorker(QThread):
                 "mid": mid,
                 "path": pth,
                 "fork_damage": int(bx.get("fork_damage") or 0),
-                "_has_re": has_re,
+                "_res": res_x,
+                "_has_re": re_idx >= 0,
             }
 
         r = _run(per_branch)
 
-        if r is not None:
+        if r is None:
+            # 搜索失败：保留该分支（钉死前缀兜底），不再丢弃
+            r = {
+                "card": y,
+                "outcome": y,
+                "damage": 0,
+                "dragons": 0,
+                "mana_left": 0,
+                "mid": [fork_step],
+                "path": pinned,
+                "fork_damage": 0,
+                "_has_re": False,
+            }
+        else:
             self._whatif_cache[cache_key] = r
+            r = self._expand_continuation_forks(
+                prefix, r, used, best_exchange, t0, depth
+            )
 
         return r
+
+    def _expand_continuation_forks(
+        self,
+        prefix: List[str],
+        branch: Dict[str, object],
+        used: Dict[str, int],
+        best_exchange: List[Tuple[int, int]],
+        t0: float,
+        depth: int,
+    ) -> Dict[str, object]:
+        """递归展开分支续接里的下一个分叉（持枪要挟/再抽牌/异教地图…）。"""
+        if self._stop or depth > 8:
+            return branch
+
+        mid = list(branch.get("mid") or [])
+
+        if len(mid) < 2:
+            return branch
+
+        tail = [str(s) for s in mid[1:]]
+        nxt = None
+        nxt_idx = -1
+
+        for j, s in enumerate(tail):
+            fi = self._step_fork(s)
+
+            if fi is not None and fi["type"] != "cultist_second":
+                nxt = fi
+                nxt_idx = j
+                break
+
+        if nxt is None:
+            return branch
+
+        child_prefix = (
+            prefix
+            + [str(mid[0])]
+            + [str(s) for s in tail[:nxt_idx]]
+        )
+        child_used: Dict[str, int] = dict(used)
+
+        for s in child_prefix:
+            for n in self._drawn_from_step(s):
+                child_used[str(n)] = child_used.get(str(n), 0) + 1
+
+        # 优先用父搜索自己的 quickdraw/draw 分支预取子分叉（无需重搜）；
+        # 缺的结果再走 _expand_fork 补齐（保留全部分支）。
+        pre = self._precompute_children(branch.get("_res"), nxt)
+        children = self._expand_fork(
+            child_prefix,
+            nxt,
+            child_used,
+            [str(s) for s in tail[nxt_idx + 1 :]],
+            int(branch.get("damage") or 0),
+            int(branch.get("dragons") or 0),
+            int(branch.get("mana_left") or 0),
+            best_exchange,
+            t0,
+            depth + 1,
+            precomputed=pre,
+        )
+
+        if children:
+            branch["children"] = children
+            child_base = re.sub(
+                r"[（(].*[）)]$", "", str(tail[nxt_idx])
+            )
+            branch["mid"] = (
+                [str(mid[0])]
+                + [str(s) for s in tail[:nxt_idx]]
+                + [child_base]
+            )
+            branch["damage"] = max(
+                int(branch.get("damage") or 0),
+                max(int(c.get("damage") or 0) for c in children),
+            )
+
+        return branch
 
     def _precompute_children(
         self,
