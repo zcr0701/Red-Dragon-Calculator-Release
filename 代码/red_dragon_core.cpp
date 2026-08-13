@@ -947,7 +947,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
             Card junk = make_card("未知快枪牌随从");
             junk.type_idx = N_T_MINION;
             add_card_to_hand_or_burn(s, junk);
-            if (!s.path().empty()) {
+            if (!s.path().empty() && !base.no_branch) {
                 s.path_mut().back() += "（" + QUICKDRAW_OTHER_MINION_NAME + "）";
             }
             states.push_back(std::move(s));
@@ -963,7 +963,7 @@ static vector<State> apply_search_effect(State base, const Card& card,
             Card junk = make_card("未知快枪牌法术");
             junk.type_idx = N_T_SPELL;
             add_card_to_hand_or_burn(s, junk);
-            if (!s.path().empty()) {
+            if (!s.path().empty() && !base.no_branch) {
                 s.path_mut().back() += "（" + QUICKDRAW_OTHER_SPELL_NAME + "）";
             }
             states.push_back(std::move(s));
@@ -2891,7 +2891,7 @@ static BeamResult run_beam_search(const State& start, const SearchParams& p, Pro
         nb_budget.t0 = std::chrono::steady_clock::now();
         nb_budget.budget_sec = p.time_budget_sec <= 0
             ? 4.0
-            : std::min(2.5, std::max(1.0, p.time_budget_sec * 0.8));
+            : std::max(2.5, std::min(3.5, p.time_budget_sec));
         ThreadOut nout;
         wide_beam_pass(start, np, nb_budget, nout, nullptr);
         add_best_no_qd(nout.best_no_qd, res.best_no_qd);

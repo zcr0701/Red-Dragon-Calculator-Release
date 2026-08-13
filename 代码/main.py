@@ -81,6 +81,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QSplitter,
+    QStackedWidget,
     QStyledItemDelegate,
     QStyle,
     QStyleOptionViewItem,
@@ -3685,41 +3686,13 @@ class MainWindow(QWidget):
 
         result_box = QGroupBox("计算结果")
         result_layout = QVBoxLayout(result_box)
-        # 结果视图切换：默认 original（正常线），WhatIF 有内容时按钮变色炫彩，点击切换
-        self._current_view = "original"
-        self._orig_view_text = ""
-        self._whatif_view_text = ""
-        self._whatif_hue = 0
-        view_row = QHBoxLayout()
-        self.view_original_btn = QPushButton("original")
-        self.view_original_btn.setCheckable(True)
-        self.view_original_btn.setChecked(True)
-        self.view_original_btn.clicked.connect(
-            lambda: self._set_result_view("original")
-        )
-        self.view_whatif_btn = QPushButton("whatif")
-        self.view_whatif_btn.setCheckable(True)
-        self.view_whatif_btn.clicked.connect(
-            lambda: self._set_result_view("whatif")
-        )
-        self._view_group = QButtonGroup(self)
-        self._view_group.addButton(self.view_original_btn)
-        self._view_group.addButton(self.view_whatif_btn)
-        self._view_group.setExclusive(True)
-        view_row.addWidget(self.view_original_btn)
-        view_row.addWidget(self.view_whatif_btn)
-        view_row.addStretch(1)
-        result_layout.addLayout(view_row)
-        # 正常计算（多轮）优先：占主空间可滚动
+        # 主窗口日志 = 完整版本（正常线 + WhatIF 全量展示），不做 original/whatif 切换；
+        # 切换在小窗里做（见 MiniWindow）。
         self.result_text = QPlainTextEdit()
         self.result_text.setReadOnly(True)
         self.result_text.setMaximumBlockCount(5000)
         result_layout.addWidget(self.result_text, 1)
         right_layout.addWidget(result_box, 1)
-
-        self._whatif_btn_timer = QTimer(self)
-        self._whatif_btn_timer.setInterval(180)
-        self._whatif_btn_timer.timeout.connect(self._cycle_whatif_btn)
 
         top.addWidget(right)
         top.setSizes([520, 600])
@@ -4620,8 +4593,8 @@ class MainWindow(QWidget):
         results = data.get("results") or []
         res0 = results[0] if results else {}
         orig = data.get("original") or {}
-        # 头部显示真实最大（含持枪要挟等分支卡的最优解）；正常线 = original（禁抽线，
-        # V1.2.1 逻辑，不打持枪要挟/抽随从卡）。两者语义不同，分开显示。
+        # 主窗口 = 完整日志：头部显示真实最大（96），正常线（original，80）与 WhatIF
+        # 都完整输出；original/whatif 切换只在小窗做。
         normal_dmg = int(data.get("max_damage") or 0)
         normal_dragons = int(data.get("max_dragons") or 0)
         normal_path = list(orig.get("path") or [])
@@ -4662,49 +4635,15 @@ class MainWindow(QWidget):
             lines.append("")
             lines.extend(_wb_tree_lines(wb))
 
-        self._orig_view_text = "\n".join(lines)
-        # WhatIF 视图（独立切换，不与 original 混排）
-        self._whatif_view_text = ""
+        # 完整日志：正常线 + WhatIF 一起输出（主窗口不分视图）
         if include_whatif:
             whatif_txt = _whatif_text_block(data)
             if whatif_txt:
-                self._whatif_view_text = whatif_txt
+                lines.append("")
+                lines.extend(whatif_txt.splitlines())
 
-        has_whatif = bool(self._whatif_view_text.strip())
-        self.view_whatif_btn.setEnabled(has_whatif)
-        if not has_whatif:
-            self._whatif_btn_timer.stop()
-            self.view_whatif_btn.setStyleSheet("")
-            if self._current_view == "whatif":
-                self._current_view = "original"
-                self.view_original_btn.setChecked(True)
-        else:
-            if not self._whatif_btn_timer.isActive():
-                self._whatif_btn_timer.start()
-            if self._current_view == "whatif":
-                self.view_whatif_btn.setChecked(True)
-        self._refresh_result_view()
-
-    def _set_result_view(self, view: str) -> None:
-        """original/whatif 视图切换。"""
-        self._current_view = view
-        self._refresh_result_view()
-
-    def _refresh_result_view(self) -> None:
-        """按当前视图把对应文本刷到结果区。"""
-        if self._current_view == "whatif" and self._whatif_view_text:
-            self.result_text.setPlainText(self._whatif_view_text)
-        else:
-            self.result_text.setPlainText(self._orig_view_text)
-
-    def _cycle_whatif_btn(self) -> None:
-        """WhatIF 有内容时按钮文字循环变色炫彩。"""
-        if not self._whatif_view_text:
-            return
-        self._whatif_hue = (self._whatif_hue + 15) % 360
-        self.view_whatif_btn.setStyleSheet(
-            "font-weight:bold; color:hsl(%d,100%%,55%%);" % self._whatif_hue
-        )
+        text = "\n".join(lines)
+        self.result_text.setPlainText(text)
 
     def _show_wb_tree(self, wb: Optional[Dict[str, object]]) -> None:
         """W-B 分支树在独立大窗口展示（有数据则填充并显示）。"""
@@ -5200,13 +5139,53 @@ class MiniWindow(QWidget):
         self.mini_calc_button.clicked.connect(self.start_calc)
         root.addWidget(self.mini_calc_button)
 
+        # 小窗结果视图切换：original（正常线，默认）/ whatif（有内容时按钮变色炫彩）
+        self._mini_current_view = "original"
+        self._mini_orig_text = ""
+        self._mini_whatif_str = ""
+        self._mini_whatif_hue = 0
+        mini_view_row = QHBoxLayout()
+        self.mini_view_original_btn = QPushButton("original")
+        self.mini_view_original_btn.setCheckable(True)
+        self.mini_view_original_btn.setChecked(True)
+        self.mini_view_original_btn.clicked.connect(
+            lambda: self._set_mini_view("original")
+        )
+        self.mini_view_whatif_btn = QPushButton("whatif")
+        self.mini_view_whatif_btn.setCheckable(True)
+        self.mini_view_whatif_btn.clicked.connect(
+            lambda: self._set_mini_view("whatif")
+        )
+        self._mini_view_group = QButtonGroup(self)
+        self._mini_view_group.addButton(self.mini_view_original_btn)
+        self._mini_view_group.addButton(self.mini_view_whatif_btn)
+        self._mini_view_group.setExclusive(True)
+        mini_view_row.addWidget(self.mini_view_original_btn)
+        mini_view_row.addWidget(self.mini_view_whatif_btn)
+        mini_view_row.addStretch(1)
+        root.addLayout(mini_view_row)
+
+        # 结果区 = QStackedWidget：
+        #   页0 original：正常线文本（QTextBrowser）
+        #   页1 whatif：交互式指引树（WhatIFDistPanel，含 返回上级/回到主干），滚动显示
+        self._mini_stack = QStackedWidget()
         self.mini_result = QTextBrowser()
         self.mini_result.setReadOnly(True)
         self.mini_result.document().setMaximumBlockCount(3000)
         self.mini_result.setMinimumHeight(60)
-        # 正常计算占满小窗（可滚动）；WhatIF 独立弹出窗口贴在小窗下方（见 _render_result）
-        root.addWidget(self.mini_result, 1)
+        self._mini_stack.addWidget(self.mini_result)  # 页0
+
+        mini_whatif_scroll = QScrollArea()
+        mini_whatif_scroll.setWidgetResizable(True)
+        mini_whatif_scroll.setFrameShape(0)  # QFrame.NoFrame
+        self._mini_whatif_panel = WhatIFDistPanel()
+        mini_whatif_scroll.setWidget(self._mini_whatif_panel)
+        self._mini_stack.addWidget(mini_whatif_scroll)  # 页1
+        root.addWidget(self._mini_stack, 1)
         self._whatif_pop: Optional["WhatIFPopWindow"] = None
+        self._mini_whatif_timer = QTimer(self)
+        self._mini_whatif_timer.setInterval(180)
+        self._mini_whatif_timer.timeout.connect(self._cycle_mini_whatif_btn)
         self.set_formula_font(self.main.mini_font_size())
 
         grip = QSizeGrip(self)
@@ -5219,11 +5198,10 @@ class MiniWindow(QWidget):
         self.mini_result.setFont(font)
         self.mini_result.document().setDefaultFont(font)
 
-        if self._whatif_pop is not None:
+        if self._mini_whatif_panel is not None:
             whatif_font = QFont(font)
             whatif_font.setPixelSize(int(size) + 4)
-            self._whatif_pop.guide.setFont(whatif_font)
-            self._whatif_pop.guide._content_changed()
+            self._mini_whatif_panel.setFont(whatif_font)
 
     # ---- 拖动 / 吸附 / 调整大小 ----
 
@@ -5456,7 +5434,7 @@ class MiniWindow(QWidget):
         self._render_result()
 
     def _render_result(self) -> None:
-        """小窗显示顺序：正常线（QTextBrowser）在前 → WhatIF 分支树（QTreeWidget）。"""
+        """小窗显示：original（正常线，默认）/ whatif 两视图切换。"""
         if self._last_data is None:
             return
 
@@ -5464,36 +5442,58 @@ class MiniWindow(QWidget):
         data = self._last_data
         colors = self.main.mini_color_enabled()
 
-        # 1) 正常线（V1.2.1 抽杂牌逻辑）
-        text = self._mini_original_text(data, colors, exchanges)
-
-        if colors:
-            self.mini_result.setHtml(text)
-        else:
-            self.mini_result.setPlainText(text)
-
-        # 2) WhatIF 引导面板：独立窗口贴在小窗正下方（等宽、内容可滚动）
+        # 1) original 视图：正常线（V1.2.1 抽杂牌逻辑）
+        self._mini_orig_text = self._mini_original_text(data, colors, exchanges)
+        # 2) whatif 视图：交互式指引树（WhatIFDistPanel，含 返回上级/回到主干）
         has_whatif = bool(
             data.get("whatif_tree")
             or data.get("quickdraw_branches")
             or data.get("draw_branches")
         )
-        orig = data.get("original") or {}
         normal_dmg = int(data.get("max_damage") or 0)
-
         if normal_dmg <= 0:
             res0 = data.get("results") or []
             normal_dmg = int((res0[0].get("damage") if res0 else 0) or 0)
+        self._mini_whatif_panel.set_whatif(
+            data, colors=colors, normal_damage=normal_dmg
+        )
 
-        if has_whatif:
-            if self._whatif_pop is None:
-                self._whatif_pop = WhatIFPopWindow(self)
+        self.mini_view_whatif_btn.setEnabled(has_whatif)
+        if not has_whatif:
+            self._mini_whatif_timer.stop()
+            self.mini_view_whatif_btn.setStyleSheet("")
+            if self._mini_current_view == "whatif":
+                self._mini_current_view = "original"
+                self.mini_view_original_btn.setChecked(True)
+        else:
+            if not self._mini_whatif_timer.isActive():
+                self._mini_whatif_timer.start()
+            if self._mini_current_view == "whatif":
+                self.mini_view_whatif_btn.setChecked(True)
+        self._set_mini_view(self._mini_current_view)
 
-            self._whatif_pop.set_whatif(
-                data, colors=colors, normal_damage=normal_dmg
-            )
-        elif self._whatif_pop is not None:
-            self._whatif_pop.hide()
+    def _set_mini_view(self, view: str) -> None:
+        """小窗 original/whatif 视图切换。"""
+        self._mini_current_view = view
+        if view == "whatif":
+            self._mini_stack.setCurrentIndex(1)
+            self._mini_whatif_panel.setVisible(True)
+        else:
+            self._mini_stack.setCurrentIndex(0)
+            colors = self.main.mini_color_enabled()
+            if colors:
+                self.mini_result.setHtml(self._mini_orig_text)
+            else:
+                self.mini_result.setPlainText(self._mini_orig_text)
+
+    def _cycle_mini_whatif_btn(self) -> None:
+        """小窗 whatif 按钮有内容时循环变色炫彩。"""
+        if not self.mini_view_whatif_btn.isEnabled():
+            return
+        self._mini_whatif_hue = (self._mini_whatif_hue + 15) % 360
+        self.mini_view_whatif_btn.setStyleSheet(
+            "font-weight:bold; color:hsl(%d,100%%,55%%);" % self._mini_whatif_hue
+        )
 
     def _mini_original_text(
         self,
@@ -5509,12 +5509,12 @@ class MiniWindow(QWidget):
         orig = data.get("original")
         results = data.get("results") or []
         res0 = results[0] if results else {}
-        # 正常线 = 真实最优路径（results[0]，含分支卡），与主窗口/头部一致；
+        # 小窗 original 视图 = 正常线（original：分支卡当杂牌打的 V1.2.1 线，如 80）；
         # 0 伤害时统一显示（无路径），不退回 0 伤长路径。
         best = (
-            res0
-            if (res0 and (res0.get("path") or []) and int(res0.get("damage") or 0) > 0)
-            else orig
+            orig
+            if (orig and (orig.get("path") or []) and int(orig.get("damage") or 0) > 0)
+            else res0
         )
 
         if best and (best.get("path") or []) and int(best.get("damage") or 0) > 0:
