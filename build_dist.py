@@ -26,10 +26,11 @@ def main() -> int:
 
     engine_exe = PROJ / "red_dragon_engine.exe"
     card_map = PROJ / "card_id_map.json"
+    dbf_map = PROJ / "dbf_id_map.json"
     qr = PROJ / "收款码.png"
 
-    if not engine_exe.is_file() or not card_map.is_file():
-        print("错误：缺少 red_dragon_engine.exe 或 card_id_map.json")
+    if not engine_exe.is_file() or not card_map.is_file() or not dbf_map.is_file():
+        print("错误：缺少 red_dragon_engine.exe / card_id_map.json / dbf_id_map.json")
         return 1
 
     engine_hash = sha256_hex(engine_exe)
@@ -67,6 +68,8 @@ def main() -> int:
         f"{engine_exe};.",
         "--add-data",
         f"{card_map};.",
+        "--add-data",
+        f"{dbf_map};.",
         str(PROJ / "main.py"),
     ]
     print("运行 PyInstaller（可能需要几分钟）...")

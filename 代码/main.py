@@ -3333,7 +3333,7 @@ class MainWindow(QWidget):
         self.mana_label = QLabel("水晶：- / 法力：-")
         self.deck_label = _ClickLabel("牌库：-")
         self.deck_label.setCursor(QCursor(Qt.PointingHandCursor))
-        self.deck_label.setToolTip("点击查看卡组明细（记牌器：HDT/卡组档案/Power.log 追踪）")
+        self.deck_label.setToolTip("点击查看卡组明细（记牌器：收藏读取/HDT/卡组档案/Power.log 追踪）")
         self.deck_label.clicked.connect(self._show_deck_detail)
         self.weapon_label = QLabel("武器：无")
         self.secrets_label = QLabel("奥秘：无")
@@ -3826,16 +3826,30 @@ class MainWindow(QWidget):
 
         if not parts:
             parts.append(
-                "牌库尚未记录。\n\n打开 HDT（会自动读取收藏里的卡组）即可在对局中实时重建牌库；"
-                "没有 HDT 时，Power.log 会追踪本局已抽到的卡。"
+                "牌库尚未记录。\n\n进入收藏/选卡组或排到对局后，会自动读取 Decks.log "
+                "里的卡组码重建牌库；有 HDT 时用 HDT 实时数据；"
+                "都不行时，Power.log 会追踪本局已抽到的卡。"
             )
 
         source_text = {
             "hdt": "HDT 记牌器",
+            "collection": "收藏读取（Decks.log 卡组码）",
             "profile": "卡组档案",
             "powerlog": "Power.log 追踪",
         }.get(source, "未记录")
-        parts.append(f"\n来源：{source_text}")
+        deck_name = snap.get("deck_name") or ""
+        deck_id = snap.get("deck_id") or ""
+        extra = ""
+
+        if deck_name:
+            extra = f"（{deck_name}"
+
+            if deck_id:
+                extra += f" #{deck_id}"
+
+            extra += "）"
+
+        parts.append(f"\n来源：{source_text}{extra}")
         QMessageBox.information(self, "牌库明细", "\n".join(parts))
 
     def _apply_snapshot(self, snap: Dict[str, object]) -> None:
@@ -3898,8 +3912,8 @@ class MainWindow(QWidget):
             self.deck_label.setToolTip("\n".join(lines))
         else:
             self.deck_label.setToolTip(
-                "牌库尚未记录：打开 HDT（会自动读取收藏卡组）即可在对局中实时重建；"
-                "没有 HDT 时 Power.log 会追踪本局已抽到的卡"
+                "牌库尚未记录：进入收藏/选卡组或排到对局后会自动读取 Decks.log 卡组码重建；"
+                "有 HDT 时用 HDT 实时数据；没有时 Power.log 会追踪本局已抽到的卡"
             )
 
         weapon = snap.get("weapon")

@@ -731,32 +731,68 @@ class PowerLogParser:
             else 0
         )
 
-        # 记牌器兜底：曾经在牌库、现已不在牌库、且非生成的已知卡 = 已离开牌库
+        # 记牌器兜底（减法模型）：已抽离 = 初始进过牌库 − 当前仍在牌库。
+        # 对每张实体按 id 追踪（_ever_in_deck），当前区域不在 DECK 且控制器
+        # 为本机玩家即算已抽离，按 card_id 计数（不依赖本地化卡名）。
+        #   - 洗回牌库再重抽：实体回到 DECK 时不计数、再离开时重新计数，
+        #     与“初始总数 − 当前牌库数”的减法语义一致，不会重复计数；
+        #   - 洗入的生成复制（夜幕奇袭等）initial_zone=DECK 同样参与；
+        #   - 直接生成在手牌/战场的卡（殒命暗影复制等）initial_zone 不是
+        #     DECK，天然不会误计；
+        #   - 初始 30 张在 Power.log 里 CardID 为空（抽到/打出才揭示），
+        #     因此按实体 id 记 _ever_in_deck，而不是按 card_id 记总数，
+        #     否则隐藏牌全部归到空 card_id 上、无法用于剩余牌库匹配。
         drawn_deck: Dict[str, int] = {}
+        drawn_unknown = 0
+        current_deck_counts: Dict[str, int] = {}
+        total_ever_in_deck = 0
 
         if local_player is not None:
-            local_controller = local_player.controller
+            # 注意：local_player.controller 是玩家名（此人乃天下绝响#5854），
+            # 不是 controller id；本机控制器 id 已在上面按账号匹配出来。
+            local_controller = self.local_controller or local_player.controller
 
-            for ent in game.entities.values():
+            # 牌库初始 30 张是 FULL_ENTITY 内嵌 tag（ZONE=DECK），不是
+            # TagChange 包，_on_zone_change 收不到；这里用 initial_zone 补录，
+            # 之后无论抽进手牌还是打出去都能被算作“已离开牌库”。
+            for ent in game.entities:
+                if getattr(ent, "initial_zone", None) == Zone.DECK:
+                    self._ever_in_deck.add(ent.id)
+
+            for ent in game.entities:
                 if ent.id not in self._ever_in_deck:
                     continue
 
-                if ent.zone == Zone.DECK:
-                    continue
-
-                if ent.tags.get(GameTag.CREATOR):
-                    continue
-
                 if ent.tags.get(GameTag.CONTROLLER) != local_controller:
+                    # 只统计本机玩家的牌库实体（对手的起手/抽牌不混入）
+                    continue
+
+                if ent.zone == Zone.DECK:
+                    cid = ent.card_id or ""
+                    current_deck_counts[cid] = current_deck_counts.get(cid, 0) + 1
+                    total_ever_in_deck += 1
                     continue
 
                 card_id = ent.card_id or ""
+                total_ever_in_deck += 1
 
                 if not card_id:
+                    # 已离开牌库但尚未揭示（如燃烧/观战延迟）：计入未知数，
+                    # 由 merge_snapshot 的 remaining_unknown 承接
+                    drawn_unknown += 1
                     continue
 
-                name = card_name(card_id)
-                drawn_deck[name] = drawn_deck.get(name, 0) + 1
+                drawn_deck[card_id] = drawn_deck.get(card_id, 0) + 1
+
+        # 减法一致性：已抽离总数应等于 初始进过牌库 − 当前仍在牌库。
+        # 个别实体缺 CONTROLLER tag（特殊英雄技能牌等）时差值并入未揭示数，
+        # 保证 merge_snapshot 的 remaining_unknown 承接，不让快照崩溃。
+        accounted = (
+            sum(drawn_deck.values()) + drawn_unknown + sum(current_deck_counts.values())
+        )
+
+        if accounted != total_ever_in_deck:
+            drawn_unknown += max(0, total_ever_in_deck - accounted)
 
         current_effects = [
             {"name": name, "count": count}
@@ -831,6 +867,7 @@ class PowerLogParser:
             "deck": deck,
             "deck_unknown_cards": deck_unknown_cards,
             "drawn_deck_raw": drawn_deck,
+            "drawn_unknown": drawn_unknown,
             "secrets": secrets,
             "weapon": weapon,
             "etc_band": etc_band,
@@ -1053,6 +1090,7 @@ class LogWatcher:
         return deck_tracker.merge_snapshot(
             self._cached_snapshot,
             drawn_deck=self._cached_snapshot.get("drawn_deck_raw"),
+            session_dir=str(self.session_dir) if self.session_dir else None,
         )
 
 
