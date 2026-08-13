@@ -45,12 +45,46 @@ def _card_text(card: Dict[str, object]) -> str:
     return f"{name}[{cost}费]"
 
 
+HERO_CLASS = {
+    "HERO_01": "法师",
+    "HERO_02": "猎人",
+    "HERO_03": "战士",
+    "HERO_03b": "潜行者",
+    "HERO_04": "圣骑士",
+    "HERO_05": "牧师",
+    "HERO_06": "德鲁伊",
+    "HERO_07": "萨满",
+    "HERO_08": "术士",
+    "HERO_09": "恶魔猎手",
+    "HERO_10": "死亡骑士",
+    "HERO_11": "武僧",
+}
+
+
+def _enemy_class(hero: Optional[Dict[str, object]]) -> str:
+    """从敌方英雄 card_id 推断职业（HERO_xx 前缀）。"""
+    if not hero:
+        return "?"
+
+    cid = str(hero.get("card_id") or "")
+
+    for prefix, cls in HERO_CLASS.items():
+        if cid.startswith(prefix):
+            return cls
+
+    return str(hero.get("name") or "?")
+
+
 def build_payload(
     snapshot: Dict[str, object],
     result: Dict[str, object],
     best_exchange: Optional[List[tuple]] = None,
 ) -> Dict[str, object]:
-    """组装上报记录：params + 手牌 + 最高伤路径（含交换/预处理/分支）+ 场面数据。"""
+    """组装上报记录：
+
+    用户ID + 场面信息（敌方职业/手牌/场面/法力/水晶/牛池等影响计算的因素）
+    + 缩写公式 + 完整对局出牌/操作记录。
+    """
     hand = snapshot.get("hand") or []
     best = (result.get("results") or [{}])[0]
 
@@ -60,12 +94,31 @@ def build_payload(
         exchanges.append(f"我方随从{fi}->{target}")
 
     return {
-        "params": {
+        # 条件1：正常计算的伤害 > 0 时才上报（由调用方在构造前判断）
+        "user_id": str(snapshot.get("player_name") or "?"),
+        # 场面信息：影响计算的全部因素
+        "scene": {
+            "enemy_class": _enemy_class(snapshot.get("opponent_hero") or {}),
+            "player_hero": snapshot.get("player_hero") or {},
+            "opponent_hero": snapshot.get("opponent_hero") or {},
+            "hand": hand,
+            "board": snapshot.get("board") or [],
+            "enemy_board": snapshot.get("enemy_board") or [],
             "crystal": snapshot.get("crystals"),
             "mana": snapshot.get("mana"),
+            "etc_band": snapshot.get("etc_band") or [],
+            "current_effects": snapshot.get("current_effects") or [],
+            "deadly_shadow_hand_indexes": (
+                snapshot.get("deadly_shadow_hand_indexes") or []
+            ),
+            "weapon": snapshot.get("weapon"),
+            "secrets": snapshot.get("secrets") or [],
+            "deck_unknown_cards": snapshot.get("deck_unknown_cards"),
         },
-        "initial_hand": [_card_text(h) for h in hand],
-        "best_solution": {
+        # 缩写公式（主窗口缩写格式，如 币-鱼-狐-刀-牛(舞龙)-…）
+        "abbr_formula": str(result.get("abbr_formula") or ""),
+        # 数据内容：完整的对局出牌、操作记录
+        "play_record": {
             "dragon_num": int(result.get("max_dragons") or 0),
             "damage": int(result.get("max_damage") or 0),
             "remain_cost": int(best.get("mana") or 0),
@@ -74,18 +127,6 @@ def build_payload(
             "exchanges": exchanges,
             # 统一 W-B 机制分支树（抽随从卡/持枪要挟分支的完整记录）
             "wb": result.get("wb"),
-        },
-        # 场面数据：敌我随从/英雄/牛池/效果等完整局面
-        "scene": {
-            "board": snapshot.get("board") or [],
-            "enemy_board": snapshot.get("enemy_board") or [],
-            "opponent_hero": snapshot.get("opponent_hero") or {},
-            "etc_band": snapshot.get("etc_band") or [],
-            "current_effects": snapshot.get("current_effects") or [],
-            "deadly_shadow_hand_indexes": snapshot.get("deadly_shadow_hand_indexes") or [],
-            "weapon": snapshot.get("weapon"),
-            "secrets": snapshot.get("secrets") or [],
-            "deck_unknown_cards": snapshot.get("deck_unknown_cards"),
         },
     }
 

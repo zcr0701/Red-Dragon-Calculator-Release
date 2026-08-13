@@ -3007,10 +3007,21 @@ class CalculationWorker(QThread):
             result["whatif_tree"] = whatif_tree
             result["original"] = result.get("original") or None
 
-            # 静默云端上报数据：场面数据 + 最高伤路径（含交换/预处理/分支完整记录）
-            result["upload_payload"] = cloud_report.build_payload(
-                self.snapshot, result, best_exchange
-            )
+            # 静默云端上报数据：仅当 正常计算伤害 > 0 时上报；
+            # 内容 = 用户ID + 场面信息（敌方职业/手牌/场面/法力/水晶/牛池等）
+            # + 缩写公式 + 完整对局出牌/操作记录。
+            if int(result.get("max_damage") or 0) > 0:
+                best_path0 = list(
+                    ((result.get("results") or [{}])[0].get("path") or [])
+                )
+                result["abbr_formula"] = "-".join(
+                    abbreviate_step(str(s)) for s in best_path0
+                )
+                result["upload_payload"] = cloud_report.build_payload(
+                    self.snapshot, result, best_exchange
+                )
+            else:
+                result["upload_payload"] = None
             self.finished_ok.emit(result)
         except InterruptedError as exc:
             self.failed.emit(str(exc))
