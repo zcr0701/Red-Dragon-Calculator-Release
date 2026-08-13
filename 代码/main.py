@@ -1518,6 +1518,29 @@ class WhatIFDistPanel(QWidget):
     @classmethod
     def _mk_option(cls, tb: Dict[str, object]) -> Dict[str, object]:
         """把一个分叉结果 tb 构建为 {label, child}。"""
+        damage = int(tb.get("damage") or 0)
+        mana = int(tb.get("mana_left") or 0)
+
+        if tb.get("full_path"):
+            # 分支为完整独立线路（不受主干前缀约束）：子路径显示整条线，
+            # 标签取线路里的 持枪要挟（X），避免“续接主干”造成误导
+            # （如主干已舞动回手、分支却脱水(暗5)）。
+            full = [
+                str(s)
+                for s in (tb.get("path") or tb.get("mid") or [])
+            ]
+            qidx = next(
+                (i for i, s in enumerate(full) if "持枪要挟" in str(s)),
+                -1,
+            )
+            label = (
+                str(full[qidx])
+                if qidx >= 0
+                else str(tb.get("outcome") or "?")
+            )
+            child = cls._mk_node(full, damage, mana)
+            return {"label": label, "child": child, "damage": damage, "mana": mana}
+
         mid = [str(s) for s in (tb.get("mid") or tb.get("path") or [])]
         # 子分叉（持枪要挟/再次抽牌）的 path 可能是完整路径（含前缀“币”）：
         # 从该结果卡截取尾部，避免选项标签显示成“币”
@@ -1529,8 +1552,6 @@ class WhatIFDistPanel(QWidget):
         label = str(mid[0]) if mid else str(tb.get("outcome") or "?")
         tail = mid[1:]
         children = tb.get("children") or []
-        damage = int(tb.get("damage") or 0)
-        mana = int(tb.get("mana_left") or 0)
 
         if children:
             fork_idx = -1
@@ -2275,6 +2296,7 @@ class CalculationWorker(QThread):
                                 "mana_left": int(b.get("mana_left") or 0),
                                 "mid": mid0,
                                 "path": pth,
+                                "full_path": True,
                             }
                         )
 
@@ -2935,6 +2957,7 @@ class CalculationWorker(QThread):
                                 "mana_left": int(b.get("mana_left") or 0),
                                 "mid": [str(s) for s in pth],
                                 "path": pth,
+                                "full_path": True,
                             }
                         )
 
@@ -2949,6 +2972,7 @@ class CalculationWorker(QThread):
                                 "mana_left": int(b.get("mana_left") or 0),
                                 "mid": [str(s) for s in pth],
                                 "path": pth,
+                                "full_path": True,
                             }
                         )
 
@@ -3613,10 +3637,12 @@ class MainWindow(QWidget):
             "框2=W-B机制：抽随从卡/持枪要挟各分支回溯计算搜到 伤害 ≥ 敌方英雄血量+护甲 即停（加速分支计算）"
         )
         self.truncate_exchange_check = QCheckBox("框3")
-        self.truncate_exchange_check.setChecked(True)
+        self.truncate_exchange_check.setChecked(False)
         self.truncate_exchange_check.setToolTip(
             "框3=场面交换：需要场面交换调用多个场面分别计算时，"
-            "每个场面搜到 伤害 ≥ 敌方英雄血量+护甲 即停（加速多场面计算）"
+            "勾选后每个场面搜到 伤害 ≥ 敌方英雄血量+护甲 即停（加速多场面计算，"
+            "但会漏掉同一交换下的更高伤线，如腾牛后 48 伤只报 32）；"
+            "默认不勾选 = 每个交换场面搜满时间预算，取真正最高伤"
         )
         trunc_row.addWidget(self.truncate_normal_check)
         trunc_row.addWidget(self.truncate_branch_check)
