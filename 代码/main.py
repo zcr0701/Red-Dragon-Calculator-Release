@@ -98,7 +98,7 @@ from powerlog_reader import LogWatcher
 
 BASE_DIR = Path(__file__).resolve().parent
 
-DRAW_FORK_MARKERS = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光", "暗影之门")
+DRAW_FORK_MARKERS = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光", "暗影之门", "异教地图")
 
 if getattr(sys, "frozen", False):
     # PyInstaller 打包：程序文件（引擎 exe / 卡名映射 / 日志目录）都放在主程序同目录
@@ -901,7 +901,7 @@ def format_whatif_tree(data: Dict[str, object], colors: bool = False) -> str:
         lines[-1] += f"({main_dmg}伤余{main_mana}费)"
 
     # 抽随从卡同级分支（行骗/挖掘宝藏/潜伏帷幕/垂钓时光）
-    draw_markers = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光", "暗影之门")
+    draw_markers = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光", "暗影之门", "异教地图")
     di = next(
         (i for i, s in enumerate(main_path) if any(m in str(s or "") for m in draw_markers)),
         -1,
@@ -2236,7 +2236,7 @@ class CalculationWorker(QThread):
                 # 行骗/挖掘宝藏/潜伏帷幕/垂钓时光 的每个抽取结果作为次级节点，
                 # 其后的持枪要挟发现结果作为次次级节点；叶子伤害的最小值 = 保底伤害
                 # （无论随机结果如何都不低于它）。
-                draw_markers = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光", "暗影之门")
+                draw_markers = ("行骗", "挖掘宝藏", "潜伏帷幕", "垂钓时光", "暗影之门", "异教地图")
                 di = next(
                     (
                         i
@@ -2415,6 +2415,21 @@ class CalculationWorker(QThread):
                     elif branch_card in ("挖掘宝藏", "潜伏帷幕"):
                         # 随机抽牌库中的随从：分支数量 = 牌库剩余随从数量
                         branch_pool = deck_minions or missing_draw
+                    elif branch_card == "异教地图":
+                        # 发现牌库 3 张（C(3,N)）后选择最优 1 张：分支 = 剩余卡牌
+                        branch_pool = [
+                            str(d.get("name"))
+                            for d in deck_items
+                            if d.get("name")
+                        ]
+
+                        if branch_pool:
+                            seen = set()
+                            branch_pool = [
+                                n
+                                for n in branch_pool
+                                if not (n in seen or seen.add(n))
+                            ]
                     else:
                         branch_pool = missing_draw
                     tree_branches: List[Dict[str, object]] = []

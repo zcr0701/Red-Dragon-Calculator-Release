@@ -114,6 +114,7 @@ static const uint16_t N_QUICKDRAW = intern_idx("持枪要挟");
 static const uint16_t N_FISHIN = intern_idx("垂钓时光");
 static const uint16_t N_FOX = intern_idx("狐人老千");
 static const uint16_t N_BONE = intern_idx("锯齿骨刺");
+static const uint16_t N_CUTLASS = intern_idx("黑水弯刀");
 // 卡牌类型
 static const uint16_t N_T_MINION = intern_idx("minion");
 static const uint16_t N_T_SPELL = intern_idx("spell");
@@ -167,6 +168,7 @@ struct Card {
     bool locked_one_cost = false;
     bool entered_hand_this_turn = false;  // 快枪判定：本回合进入手牌（含回手/发现/复制）
     bool is_mini_copy = false;            // 暗影施法者/幻觉药水制造的 1/1 复制（回手不还原）
+    bool cultist_map_drawn = false;       // 异教地图发现抽上来的牌：本回合使用后再抽 1 张
 
     const string& name() const { return intern_str(name_idx); }
     const string& original_name() const { return intern_str(original_idx); }
@@ -500,7 +502,8 @@ static int effective_cost(const State& s, const Card& card) {
 static bool same_playable_card(const State& s, const Card& a, const Card& b) {
     if (a.name_idx != b.name_idx || a.current_cost() != b.current_cost() ||
         a.is_deadly_shadow != b.is_deadly_shadow ||
-        a.locked_one_cost != b.locked_one_cost)
+        a.locked_one_cost != b.locked_one_cost ||
+        a.cultist_map_drawn != b.cultist_map_drawn)
         return false;
     if (a.effect_idx == N_E_GAMBLER &&
         a.entered_hand_this_turn != b.entered_hand_this_turn)
@@ -1338,6 +1341,191 @@ static vector<State> generate_successors(const State& st) {
             }
         }
         if (duplicate) continue;
+
+        // 黑水弯刀 交易（免费动作，不耗法力、不计入本回合出牌）：
+        // 置入牌库 + 抽 1 张 + 手牌中一张 >0 费法术随机 -1 费。
+        // 分支数 = 手牌中 >0 费法术数 × 牌库剩余卡牌数（按唯一名展开）。
+        if (card.name_idx == N_CUTLASS) {
+            State base0 = st.clone_reserved();
+            base0.hand.erase(base0.hand.begin() + hand_index);
+            Card cutlass = card;
+            cutlass.temp_cost = -1;
+            cutlass.entered_hand_this_turn = false;
+            base0.deck.push_back(cutlass);
+
+            // 可减费目标：手牌中 >0 费法术（按名去重，复制体减同张等价）
+            vector<int> spell_idx;
+            vector<string> seen_spell;
+            for (int i = 0; i < base0.hand_size(); i++) {
+                const Card& h = base0.hand[i];
+                if (!h.is_spell_like() || h.current_cost() <= 0) continue;
+                if (std::find(seen_spell.begin(), seen_spell.end(), h.name())
+                    != seen_spell.end()) continue;
+                seen_spell.push_back(h.name());
+                spell_idx.push_back(i);
+            }
+
+            // 抽牌目标：牌库剩余（唯一名；无追踪数据时用“未知抽牌”杂牌）
+            vector<Card> draw_targets;
+            if (deck_has_tracking(base0)) {
+                vector<string> seen_draw;
+                for (const auto& d : base0.deck) {
+                    if (std::find(seen_draw.begin(), seen_draw.end(), d.name())
+                        != seen_draw.end()) continue;
+                    seen_draw.push_back(d.name());
+                    draw_targets.push_back(d);
+                }
+            } else {
+                draw_targets.push_back(make_card("未知抽牌"));
+            }
+
+            if (st.branch_expand) {
+                for (int si : spell_idx) {
+                    for (const Card& d : draw_targets) {
+                        State base = base0.clone_reserved();
+                        for (auto it = base.deck.begin(); it != base.deck.end(); ++it) {
+                            if (it->name() == d.name()) {
+                                Card drawn = *it;
+                                base.deck.erase(it);
+                                add_card_to_hand_or_burn(base, drawn);
+                                break;
+                            }
+                        }
+                        int cc = base.hand[si].current_cost();
+                        base.hand[si].temp_cost = std::max(0, cc - 1);
+                        base.path_mut().push_back(
+                            "黑水弯刀（交易）（" + d.name() + "、" + base.hand[si].name() + "）"
+                        );
+                        base.used_draw_branch = true;
+                        base.fork_damage = base.alex_damage;
+                        base.last_draw_key = d.name() + "、" + base.hand[si].name();
+                        out.push_back(std::move(base));
+                    }
+                }
+            }
+
+            // 正常线（确定性）：交易抽“未知抽牌”杂牌、不减费（随机减费不进正常线）
+            {
+                State junk = base0.clone_reserved();
+                Card unknown = make_card("未知抽牌");
+                add_card_to_hand_or_burn(junk, unknown);
+                junk.path_mut().push_back("黑水弯刀（交易）");
+                out.push_back(std::move(junk));
+            }
+            // 交易分支已生成；继续走下方常规展开（普通装备 2/2 武器仍可用）
+        }
+
+        // 异教地图：随机发现牌库 3 张（C(3,N)），选择最优 1 张抽上（并非随机）；
+        // 该牌本回合使用后再从剩余两张发现牌中抽 1 张（同样选择最优）。
+        if (card.effect_idx == N_E_CULTIST && st.branch_expand) {
+            vector<Card> pool;
+            if (deck_has_tracking(st)) {
+                vector<string> seen;
+                for (const auto& d : st.deck) {
+                    if (std::find(seen.begin(), seen.end(), d.name()) != seen.end()) continue;
+                    seen.push_back(d.name());
+                    pool.push_back(d);
+                }
+            } else {
+                pool.push_back(make_card("未知抽牌"));
+            }
+
+            for (const Card& d : pool) {
+                State base = st.clone_reserved();
+                if (!play_card_base(base, hand_index, -1, false, false)) continue;
+                Card drawn = d;
+                drawn.cultist_map_drawn = true;
+                for (auto it = base.deck.begin(); it != base.deck.end(); ++it) {
+                    if (it->name() == d.name()) {
+                        base.deck.erase(it);
+                        break;
+                    }
+                }
+                add_card_to_hand_or_burn(base, drawn);
+                base.path_mut().back() += "（发现：" + d.name() + "）";
+                base.used_draw_branch = true;
+                base.fork_damage = base.alex_damage;
+                base.last_draw_key = d.name();
+                out.push_back(std::move(base));
+            }
+
+            // 正常线（确定性）：异教地图抽“未知抽牌”杂牌
+            {
+                State junk = st.clone_reserved();
+                if (play_card_base(junk, hand_index, -1, false, false)) {
+                    Card unknown = make_card("未知抽牌");
+                    add_card_to_hand_or_burn(junk, unknown);
+                    out.push_back(std::move(junk));
+                }
+            }
+            continue;  // 异教地图分支覆盖普通打出
+        }
+
+        // 异教地图发现牌的使用：本回合使用抽上来的牌 → 再抽 1 张（选择最优；
+        // 从剩余两张发现牌中选取，按牌库剩余卡牌展开；标记只触发一次）。
+        if (card.cultist_map_drawn && st.branch_expand) {
+            vector<Card> pool;
+            if (deck_has_tracking(st)) {
+                vector<string> seen;
+                for (const auto& d : st.deck) {
+                    if (std::find(seen.begin(), seen.end(), d.name()) != seen.end()) continue;
+                    seen.push_back(d.name());
+                    pool.push_back(d);
+                }
+            } else {
+                pool.push_back(make_card("未知抽牌"));
+            }
+
+            // 先打出该牌（play_card_base）再结算自身效果（apply_search_effect：
+            // 含 出牌计数/殒命变形/牛发现等多分支），最后追加“异教地图再抽”。
+            State base_play = st.clone_reserved();
+            vector<State> played;
+            if (play_card_base(base_play, hand_index, -1, false, false)) {
+                played = apply_search_effect(
+                    std::move(base_play), card, -1, false, false
+                );
+            }
+
+            for (State& ps : played) {
+                for (const Card& d2 : pool) {
+                    State base = ps.clone_reserved();
+                    for (auto it = base.deck.begin(); it != base.deck.end(); ++it) {
+                        if (it->name() == d2.name()) {
+                            Card drawn2 = *it;
+                            base.deck.erase(it);
+                            add_card_to_hand_or_burn(base, drawn2);
+                            break;
+                        }
+                    }
+                    for (auto& h : base.hand) h.cultist_map_drawn = false;
+                    if (!base.path().empty()) {
+                        base.path_mut().back() += "（异教地图再抽：" + d2.name() + "）";
+                    }
+                    base.used_draw_branch = true;
+                    base.fork_damage = base.alex_damage;
+                    base.last_draw_key = d2.name();
+                    out.push_back(std::move(base));
+                }
+            }
+
+            // 正常线：使用发现牌 → 抽“未知抽牌”杂牌
+            {
+                State junk = st.clone_reserved();
+                if (play_card_base(junk, hand_index, -1, false, false)) {
+                    vector<State> played_junk = apply_search_effect(
+                        std::move(junk), card, -1, false, false
+                    );
+                    for (State& pj : played_junk) {
+                        Card unknown = make_card("未知抽牌");
+                        add_card_to_hand_or_burn(pj, unknown);
+                        for (auto& h : pj.hand) h.cultist_map_drawn = false;
+                        out.push_back(std::move(pj));
+                    }
+                }
+            }
+            continue;  // 使用发现牌必然触发再抽，跳过普通打出
+        }
+
         int cost = effective_cost(st, card);
         if (cost < 0) continue;
         if (st.mana < cost) continue;
