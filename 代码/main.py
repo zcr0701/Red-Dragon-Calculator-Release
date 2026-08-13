@@ -2132,6 +2132,18 @@ class CalculationWorker(QThread):
         main = main_results[0]
         # 前缀钉死搜索结果缓存：同一 (前缀+分叉结果) 只搜一次
         self._whatif_cache: Dict[tuple, Dict[str, object]] = {}
+        # 异教地图发现池粗排用的单卡伤害估计（来自主搜索 draw_branches）
+        self._cultist_card_damage: Dict[str, int] = {}
+
+        for b in result.get("draw_branches") or []:
+            key = str(b.get("card") or "").split("、")[0]
+            dmg = int(b.get("damage") or 0)
+
+            if key:
+                self._cultist_card_damage[key] = max(
+                    self._cultist_card_damage.get(key, 0), dmg
+                )
+
         branches = self._expand_fork(
             prefix,
             fork_info,
@@ -2186,11 +2198,18 @@ class CalculationWorker(QThread):
         m1 = re.search(r"异教地图（发现：(.+?)）", s)
 
         if m1:
+            pool_m = re.search(r"（池：(.+?)）", s)
+            pool_cards = (
+                pool_m.group(1).split("、")
+                if pool_m
+                else []
+            )
             return {
                 "type": "cultist_first",
                 "card": "异教地图",
                 "outcome": m1.group(1),
                 "base": "异教地图",
+                "pool": pool_cards,
             }
 
         mq = re.search(r"持枪要挟[（(](.+?)[）)]", s)
@@ -2248,6 +2267,7 @@ class CalculationWorker(QThread):
         fork_type: str,
         fork_card: str,
         used: Dict[str, int],
+        pool: Optional[List[str]] = None,
     ) -> List[str]:
         """分叉结果池：按牌库剩余卡池计算（used = 前缀里已抽走的牌名→张数）。"""
         deck_items = self.snapshot.get("deck") or []
@@ -2280,7 +2300,27 @@ class CalculationWorker(QThread):
                 engine.QUICKDRAW_OTHER_SPELL,
             ]
 
-        if fork_type in ("cultist_first", "cultist_second") or fork_card in (
+        if fork_type == "cultist_second":
+            # 再抽只从发现池剩余里选（其他抽牌抽走池中牌会减少）
+            remain = [
+                _canon_deck_name(str(n))
+                for n in (pool or [])
+                if deck_count.get(_canon_deck_name(str(n)), 0)
+                > used.get(_canon_deck_name(str(n)), 0)
+            ]
+            return remain
+
+        if fork_type == "cultist_first":
+            cards = _remaining(list(deck_count.keys()))
+
+            if len(cards) < 3:
+                return []
+
+            return [
+                "、".join(t) for t in itertools.combinations(cards, 3)
+            ]
+
+        if fork_card in (
             "暗影之门",
             "异教地图",
         ):
@@ -2334,6 +2374,21 @@ class CalculationWorker(QThread):
         fork_type = fork_info["type"]
         fork_card = fork_info["card"]
         main_outcome = fork_info["outcome"]
+
+        if fork_type == "cultist_first":
+            return self._expand_cultist(
+                prefix,
+                fork_info,
+                used,
+                main_cont,
+                main_damage,
+                main_dragons,
+                main_mana,
+                best_exchange,
+                t0,
+                depth,
+            )
+
         pool = self._whatif_pool(fork_type, fork_card, used)
 
         if not pool:
@@ -2596,6 +2651,356 @@ class CalculationWorker(QThread):
                     )
 
         return branches
+
+    def _expand_cultist(
+        self,
+        prefix: List[str],
+        fork_info: Dict[str, str],
+        used: Dict[str, int],
+        main_cont: List[str],
+        main_damage: int,
+        main_dragons: int,
+        main_mana: int,
+        best_exchange: List[Tuple[int, int]],
+        t0: float,
+        depth: int = 0,
+    ) -> List[Dict[str, object]]:
+        """异教地图：发现池（3 张）→ 选 1 → 续接（再抽只从池剩 2 张抽）。
+
+        发现池 = 牌库剩余卡的三张组合（C(n,3)）；按池内最优单卡伤害粗排取
+        前 TOP-K 个池（策略/预算受限）。每个池下面 3 个“选X”分支，每个选支
+        用 C++ forced_cultist_pool 把池钉死，续接里再抽只从池剩余两张里选。
+        """
+        if self._stop or depth > 4:
+            return []
+
+        deck_items = self.snapshot.get("deck") or []
+        deck_count: Dict[str, int] = {}
+
+        for d in deck_items:
+            n = _canon_deck_name(str(d.get("name") or ""))
+
+            if n:
+                deck_count[n] = deck_count.get(n, 0) + 1
+
+        cards = [
+            n for n in deck_count if deck_count[n] > used.get(n, 0)
+        ]
+
+        if len(cards) < 3:
+            return []
+
+        triples = list(itertools.combinations(cards, 3))
+        main_outcome = str(fork_info.get("outcome") or "")
+        top_k = max(1, int(self.options.get("branch_top_k", 3) or 3))
+
+        # 粗排：池内最优单卡伤害（主搜索 draw_branches 估计），取 TOP-K*4 候选
+        scored = sorted(
+            triples,
+            key=lambda t: -max(
+                self._cultist_card_damage.get(str(c), 0) for c in t
+            ),
+        )
+        candidates = scored[: max(4, top_k)]
+
+        # 主结局所在的池必须保留（主搜索路径上实际抽到的牌）
+        if main_outcome and main_outcome in cards:
+            main_triple = None
+
+            for t in candidates:
+                if main_outcome in t:
+                    main_triple = list(t)
+                    break
+
+            if main_triple is None:
+                others = sorted(
+                    cards,
+                    key=lambda c: -self._cultist_card_damage.get(str(c), 0),
+                )[:2]
+                main_triple = [main_outcome] + [
+                    c for c in others if c != main_outcome
+                ][:2]
+                candidates = [tuple(main_triple)] + candidates[: max(0, len(candidates) - 1)]
+
+        branches: List[Dict[str, object]] = []
+        expanded: List[Dict[str, object]] = []
+
+        for triple in candidates:
+            if time.perf_counter() - t0 > 8.5:
+                break
+
+            triple_names = [str(c) for c in triple]
+            pool_name = "、".join(triple_names)
+            pool_node: Dict[str, object] = {
+                "card": pool_name,
+                "outcome": pool_name,
+                "damage": 0,
+                "dragons": 0,
+                "mana_left": 0,
+                "mid": ["异教地图（发现池：" + pool_name + "）"],
+                "path": prefix + ["异教地图（发现池：" + pool_name + "）"],
+                "fork_damage": 0,
+            }
+            pick_nodes: List[Dict[str, object]] = []
+
+            for x in triple_names:
+                pick = self._cultist_pick(
+                    prefix,
+                    triple_names,
+                    x,
+                    used,
+                    main_outcome,
+                    main_cont,
+                    main_damage,
+                    main_dragons,
+                    main_mana,
+                    best_exchange,
+                    t0,
+                )
+
+                if pick is not None:
+                    pick_nodes.append(pick)
+
+            if pick_nodes:
+                pool_node["children"] = pick_nodes
+                pool_node["damage"] = max(
+                    int(p.get("damage") or 0) for p in pick_nodes
+                )
+                pool_node["dragons"] = max(
+                    int(p.get("dragons") or 0) for p in pick_nodes
+                )
+                pool_node["mana_left"] = max(
+                    int(p.get("mana_left") or 0) for p in pick_nodes
+                )
+                expanded.append(pool_node)
+
+        # 按真实池伤害取 TOP-K 展示（粗排只是候选，避免浅层估计把深线池剪掉）
+        expanded.sort(key=lambda p: -int(p.get("damage") or 0))
+        branches = expanded[:top_k]
+
+        return branches
+
+    def _cultist_pick(
+        self,
+        prefix: List[str],
+        triple: List[str],
+        x: str,
+        used: Dict[str, int],
+        main_outcome: str,
+        main_cont: List[str],
+        main_damage: int,
+        main_dragons: int,
+        main_mana: int,
+        best_exchange: List[Tuple[int, int]],
+        t0: float,
+    ) -> Optional[Dict[str, object]]:
+        """异教地图选中 X：钉死发现池，从池中抽 X，续接再抽只从池剩余两张抽。"""
+        if self._stop:
+            return None
+
+        pool_rest = "、".join(c for c in triple if c != x)
+        fork_step = "异教地图（发现：" + x + "）（池：" + pool_rest + "）"
+
+        # 注意：主搜索路径的“再抽”是近似池算的，不能直接复用——
+        # 这里统一用钉死池（forced_cultist_pool）重新搜索，保证再抽只从池剩两张里选。
+
+        elapsed = time.perf_counter() - t0
+        remaining = max(2.0, 10.0 - elapsed)
+        per_branch = min(1.5, max(0.8, remaining / 10.0))
+        pinned = prefix + [fork_step]
+        kwargs = dict(
+            min_alex=int(self.options["min_alex"]),
+            max_alex=int(self.options["max_alex"]),
+            depth=int(self.options["depth"]),
+            max_paths=max(3000000, int(self.options.get("max_paths") or 0)),
+            threads=2,
+            time_budget_sec=per_branch,
+            wide_widths=[3000],
+            heuristics=[6],
+            etc_band=list(self.options.get("etc_band") or []),
+            only_best_damage=True,
+            branch_expand=True,
+            exchanges=best_exchange,
+            lethal_threshold=-1,
+            should_stop=lambda: self._stop,
+        )
+
+        def _run(budget: float, beam: int = 3000) -> Optional[Dict[str, object]]:
+            k2 = dict(kwargs)
+            k2["time_budget_sec"] = budget
+            k2["wide_widths"] = [beam]
+
+            try:
+                res_x = engine.compute(
+                    self.snapshot,
+                    branch_prefix=pinned,
+                    forced_cultist_pool=list(triple),
+                    **k2,
+                )
+                bx = (res_x.get("results") or [{}])[0]
+                pth = [str(s) for s in (bx.get("path") or [])]
+            except Exception:  # noqa: BLE001
+                return None
+
+            if not pth or len(pth) < len(pinned):
+                return None
+
+            if pth[: len(prefix)] != prefix:
+                return None
+
+            actual = str(pth[len(prefix)])
+
+            if "异教地图" not in actual or x not in actual:
+                return None
+
+            cont = [str(s) for s in pth[len(prefix) + 1 :]]
+            return {
+                "card": x,
+                "outcome": x,
+                "damage": int(bx.get("damage") or 0),
+                "dragons": int(bx.get("dragons") or 0),
+                "mana_left": int(bx.get("mana") or 0),
+                "mid": [fork_step] + cont,
+                "path": pth,
+                "fork_damage": int(bx.get("fork_damage") or 0),
+                "pool": [c for c in triple if c != x],
+                "_res": res_x,
+            }
+
+        cache_key = tuple(pinned)
+        cached = self._whatif_cache.get(cache_key)
+
+        if cached is not None:
+            return self._expand_pick_continuation(
+                cached, prefix, triple, x, best_exchange, t0
+            )
+
+        r = _run(per_branch)
+
+        if r is not None:
+            self._whatif_cache[cache_key] = r
+            return self._expand_pick_continuation(
+                r, prefix, triple, x, best_exchange, t0
+            )
+
+        return None
+
+    def _expand_pick_continuation(
+        self,
+        pick: Dict[str, object],
+        prefix: List[str],
+        triple: List[str],
+        x: str,
+        best_exchange: List[Tuple[int, int]],
+        t0: float,
+    ) -> Dict[str, object]:
+        """在选中 X 的续接里找再抽分叉：再抽只从发现池剩余两张（triple 去 X）里选。"""
+        mid = list(pick.get("mid") or [])
+        tail = [str(s) for s in mid[1:]]
+        nxt = None
+        nxt_idx = -1
+
+        for j, s in enumerate(tail):
+            fi = self._step_fork(s)
+
+            if fi is not None and fi["type"] == "cultist_second":
+                nxt = fi
+                nxt_idx = j
+                break
+
+        if nxt is None:
+            return pick
+
+        pool_rest = [c for c in triple if c != x]
+        child_prefix = (
+            prefix
+            + [str(mid[0])]
+            + [str(s) for s in tail[:nxt_idx]]
+        )
+        child_used: Dict[str, int] = {}
+
+        for s in child_prefix:
+            for n in self._drawn_from_step(s):
+                child_used[str(n)] = child_used.get(str(n), 0) + 1
+
+        children: List[Dict[str, object]] = []
+        main_re_outcome = str(nxt.get("outcome") or "")
+        main_re_tail = [str(s) for s in tail[nxt_idx + 1 :]]
+        pre = self._precompute_children(pick.get("_res"), nxt)
+
+        for y in pool_rest:
+            yn = _canon_deck_name(y)
+            # 钉死再抽：前缀 = 主干 + 选X + 到再抽前的步骤 + 再抽步
+            base_of_re = re.sub(
+                r"（异教地图再抽：.*?）$", "", str(tail[nxt_idx])
+            )
+            pinned = child_prefix + [base_of_re + "（异教地图再抽：" + yn + "）"]
+
+            elapsed = time.perf_counter() - t0
+            remaining = max(1.5, 10.0 - elapsed)
+            per_branch = min(1.5, max(0.8, remaining / 8.0))
+
+            if yn == main_re_outcome:
+                # 主线自己走的再抽结果：直接复用该步之后的续接
+                pth_y = child_prefix + [base_of_re + "（异教地图再抽：" + yn + "）"] + main_re_tail
+                by = {
+                    "damage": int(pick.get("damage") or 0),
+                    "dragons": int(pick.get("dragons") or 0),
+                    "mana": int(pick.get("mana_left") or 0),
+                    "fork_damage": int(pick.get("fork_damage") or 0),
+                }
+            elif yn in pre:
+                # 父搜索的 draw_branches 里已有该再抽结果：直接缓存复用
+                pb = pre[yn]
+                pth_y = list(pb.get("path") or [])
+                by = {
+                    "damage": int(pb.get("damage") or 0),
+                    "dragons": int(pb.get("dragons") or 0),
+                    "mana": int(pb.get("mana_left") or 0),
+                    "fork_damage": int(pb.get("fork_damage") or 0),
+                }
+            else:
+                # 父搜索没覆盖到的再抽结果：不再单独重搜（预算受限），跳过
+                continue
+
+            if (
+                not pth_y
+                or len(pth_y) < len(child_prefix) + 1
+                or pth_y[: len(child_prefix)] != child_prefix
+            ):
+                continue
+
+            cont_y = [str(s) for s in pth_y[len(child_prefix) + 1 :]]
+            children.append(
+                {
+                    "card": yn,
+                    "outcome": yn,
+                    "damage": int(by.get("damage") or 0),
+                    "dragons": int(by.get("dragons") or 0),
+                    "mana_left": int(by.get("mana") or 0),
+                    "mid": [base_of_re + "（异教地图再抽：" + yn + "）"]
+                    + cont_y,
+                    "path": pth_y,
+                    "fork_damage": int(by.get("fork_damage") or 0),
+                }
+            )
+
+        if children:
+            pick["children"] = children
+            child_base = re.sub(
+                r"[（(].*[）)]$", "", str(tail[nxt_idx])
+            )
+            pick["mid"] = (
+                [str(mid[0])]
+                + [str(s) for s in tail[:nxt_idx]]
+                + [child_base]
+            )
+            pick["damage"] = max(
+                int(pick.get("damage") or 0),
+                max(int(c.get("damage") or 0) for c in children),
+            )
+
+        return pick
 
     def _precompute_children(
         self,

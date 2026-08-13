@@ -88,7 +88,7 @@ def main():
     ]
     payload = engine.build_payload(snap2, time_budget_sec=2.0, branch_expand=True)
     payload["replay_path"] = [
-        "异教地图（发现：行骗）",
+        "异教地图（发现：行骗）（池：暗影步、闪避）",
         "行骗（异教地图再抽：暗影步）",
     ]
     exe = engine.find_engine()

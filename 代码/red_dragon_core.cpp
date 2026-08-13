@@ -388,6 +388,8 @@ struct State {
     string forced_discover_choice;    // 可能分支机制：强制持枪要挟发现某张牌（空=全部展开）
     string forced_draw_choice;        // WhatIF 同级分支：强制抽随从卡抽到某张随从（空=全部展开）
     string forced_draw_card;          // 强制抽取只作用于该分支卡（空=任意抽牌卡都消耗）
+    vector<string> forced_cultist_pool;  // WhatIF：钉死的异教地图发现池（3 张；空=未钉死）
+    vector<string> cultist_pool;         // 异教地图发现池剩余：第一抽后剩 2 张；其他抽牌抽走会减少
     int quickdraw_choice = -1;        // 路径中第一张持枪要挟的发现牌（QUICKDRAW_MODELED_POOL 下标；-1=无）
     bool used_quickdraw = false;      // 路径中是否打出过持枪要挟（原版=不含持枪的最优线）
     bool used_draw_branch = false;    // 路径中是否打出过抽随从分支卡（行骗/挖掘宝藏/潜伏帷幕/垂钓时光）
@@ -455,6 +457,10 @@ struct State {
         c.forced_discover_choice = forced_discover_choice;
         c.forced_draw_choice = forced_draw_choice;
         c.forced_draw_card = forced_draw_card;
+        c.forced_cultist_pool.assign(
+            forced_cultist_pool.begin(), forced_cultist_pool.end()
+        );
+        c.cultist_pool.assign(cultist_pool.begin(), cultist_pool.end());
         c.quickdraw_choice = quickdraw_choice;
         c.used_quickdraw = used_quickdraw;
         c.used_draw_branch = used_draw_branch;
@@ -691,6 +697,16 @@ static State breakdance_branch(const State& base) {
     return s;
 }
 
+// 任意抽牌把异教地图发现池里的牌抽走 → 发现池对应减少
+static void remove_from_cultist_pool(State& s, const string& name) {
+    for (size_t i = 0; i < s.cultist_pool.size(); i++) {
+        if (s.cultist_pool[i] == name) {
+            s.cultist_pool.erase(s.cultist_pool.begin() + i);
+            break;
+        }
+    }
+}
+
 // 效果结算：单分支效果原地修改（零克隆，对应“增量状态”优化）；
 // 仅牛头人发现等真多分支效果走克隆路径。
 static bool apply_effect_inplace(State& s, uint16_t e, const Card& card,
@@ -808,6 +824,7 @@ static bool apply_effect_inplace(State& s, uint16_t e, const Card& card,
                 Card drawn = *it;
                 s.deck.erase(it);
                 add_card_to_hand_or_burn(s, drawn);
+                remove_from_cultist_pool(s, drawn.name());
                 break;
             }
             if (combo) {
@@ -817,6 +834,7 @@ static bool apply_effect_inplace(State& s, uint16_t e, const Card& card,
                     Card drawn = *it;
                     s.deck.erase(it);
                     add_card_to_hand_or_burn(s, drawn);
+                    remove_from_cultist_pool(s, drawn.name());
                     break;
                 }
             }
@@ -836,6 +854,7 @@ static bool apply_effect_inplace(State& s, uint16_t e, const Card& card,
                 Card drawn = s.deck.front();
                 s.deck.erase(s.deck.begin());
                 add_card_to_hand_or_burn(s, drawn);
+                remove_from_cultist_pool(s, drawn.name());
             }
         } else {
             Card unknown = make_card("未知抽牌");
@@ -1253,6 +1272,13 @@ static void deck_draw_minion(State& s, const string& name) {
             break;
         }
     }
+    // 其他抽牌把发现池里的牌抽走 → 发现池对应减少
+    for (size_t i = 0; i < s.cultist_pool.size(); i++) {
+        if (s.cultist_pool[i] == name) {
+            s.cultist_pool.erase(s.cultist_pool.begin() + i);
+            break;
+        }
+    }
     for (size_t i = 0; i < COMBO_MINION_POOL.size(); i++) {
         if (COMBO_MINION_POOL[i] == name) {
             s.combo_deck_mask &= (uint8_t)~(1u << i);
@@ -1460,15 +1486,26 @@ static vector<State> generate_successors(const State& st) {
         // 该牌本回合使用后再从剩余两张发现牌中抽 1 张（同样选择最优）。
         if (card.effect_idx == N_E_CULTIST && st.branch_expand) {
             vector<Card> pool;
-            if (deck_has_tracking(st)) {
+            vector<string> pool_names;
+
+            if (!st.forced_cultist_pool.empty()) {
+                // WhatIF 钉死：发现池 = 指定的 3 张
+                pool_names = st.forced_cultist_pool;
+
+                for (const string& n : pool_names) {
+                    pool.push_back(make_card(n));
+                }
+            } else if (deck_has_tracking(st)) {
                 vector<string> seen;
                 for (const auto& d : st.deck) {
                     if (std::find(seen.begin(), seen.end(), d.name()) != seen.end()) continue;
                     seen.push_back(d.name());
                     pool.push_back(d);
                 }
+                pool_names = seen;
             } else {
                 pool.push_back(make_card("未知抽牌"));
+                pool_names.push_back("未知抽牌");
             }
 
             const bool forced = forced_draw_applies(st, card);
@@ -1480,6 +1517,7 @@ static vector<State> generate_successors(const State& st) {
                     base.forced_draw_choice.clear();
                     base.forced_draw_card.clear();
                 }
+                base.forced_cultist_pool.clear();  // 钉死池消费一次即失效
                 Card drawn = d;
                 drawn.cultist_map_drawn = true;
                 for (auto it = base.deck.begin(); it != base.deck.end(); ++it) {
@@ -1489,7 +1527,50 @@ static vector<State> generate_successors(const State& st) {
                     }
                 }
                 add_card_to_hand_or_burn(base, drawn);
+                // 发现池剩余 = 池中除选中的 d 以外的牌；
+                // 未钉死时近似 = 牌库顺序里 d 之后的 2 张（仅用于束宽搜索的再抽）
+                base.cultist_pool.clear();
+
+                if (!st.forced_cultist_pool.empty()) {
+                    for (const string& n : st.forced_cultist_pool) {
+                        if (n != d.name()) {
+                            base.cultist_pool.push_back(n);
+                        }
+                    }
+                } else if (deck_has_tracking(st)) {
+                    int added = 0;
+
+                    for (const auto& c : st.deck) {
+                        if (c.name() == d.name()) continue;
+
+                        if (std::find(
+                                base.cultist_pool.begin(),
+                                base.cultist_pool.end(),
+                                c.name()
+                            ) != base.cultist_pool.end()) {
+                            continue;
+                        }
+
+                        base.cultist_pool.push_back(c.name());
+
+                        if (++added >= 2) break;
+                    }
+                }
                 base.path_mut().back() += "（发现：" + d.name() + "）";
+
+                if (!base.cultist_pool.empty()) {
+                    string note = "（池：";
+                    bool first = true;
+
+                    for (const string& n : base.cultist_pool) {
+                        if (!first) note += "、";
+                        note += n;
+                        first = false;
+                    }
+
+                    note += "）";
+                    base.path_mut().back() += note;
+                }
                 base.used_draw_branch = true;
                 base.fork_damage = base.alex_damage;
                 base.last_draw_key = d.name();
@@ -1537,6 +1618,7 @@ static vector<State> generate_successors(const State& st) {
                         Card drawn = *it;
                         base.deck.erase(it);
                         add_card_to_hand_or_burn(base, drawn);
+                        remove_from_cultist_pool(base, d.name());
                         break;
                     }
                 }
@@ -1562,18 +1644,25 @@ static vector<State> generate_successors(const State& st) {
         }
 
         // 异教地图发现牌的使用：本回合使用抽上来的牌 → 再抽 1 张（选择最优；
-        // 从剩余两张发现牌中选取，按牌库剩余卡牌展开；标记只触发一次）。
+        // 从发现池剩余（cultist_pool，最多 2 张）中选取，不是整副牌库；
+        // 池里的牌若已被其他抽牌抽走则对应减少（空池不再抽）。标记只触发一次。
         if (card.cultist_map_drawn && st.branch_expand) {
             vector<Card> pool;
-            if (deck_has_tracking(st)) {
-                vector<string> seen;
-                for (const auto& d : st.deck) {
-                    if (std::find(seen.begin(), seen.end(), d.name()) != seen.end()) continue;
-                    seen.push_back(d.name());
-                    pool.push_back(d);
+
+            for (const string& n : st.cultist_pool) {
+                // 池里的牌必须还在牌库里（可能已被其他抽牌抽走/烧毁）
+                bool in_deck = false;
+
+                for (const auto& c : st.deck) {
+                    if (c.name() == n) {
+                        in_deck = true;
+                        break;
+                    }
                 }
-            } else {
-                pool.push_back(make_card("未知抽牌"));
+
+                if (in_deck) {
+                    pool.push_back(make_card(n));
+                }
             }
 
             // 先打出该牌（play_card_base）再结算自身效果（apply_search_effect：
@@ -1589,6 +1678,7 @@ static vector<State> generate_successors(const State& st) {
             for (State& ps : played) {
                 for (const Card& d2 : pool) {
                     State base = ps.clone_reserved();
+                    base.cultist_pool.clear();  // 再抽后发现池清空
                     for (auto it = base.deck.begin(); it != base.deck.end(); ++it) {
                         if (it->name() == d2.name()) {
                             Card drawn2 = *it;
@@ -2036,6 +2126,7 @@ static vector<State> generate_successors(const State& st) {
                     add_card_to_hand_or_burn(base, junk);
                 } else {
                     add_card_to_hand_or_burn(base, make_card(pick));
+                    remove_from_cultist_pool(base, pick);
                     // 选中后其余已知牌留在牌库底
                     base.dredge_bottom.clear();
                     for (const string& n : st.dredge_bottom) {
@@ -2183,6 +2274,7 @@ static uint64_t state_hash(const State& s) {
     h = mix_hash(h, (uint64_t)s.next_two_cards_count);
     h = mix_hash(h, (uint64_t)s.sp_cost_inc);
     for (const auto& p : s.oil_stacks) h = mix_hash(h, (uint64_t)p.first * 31 + (uint64_t)p.second);
+    for (const auto& n : s.cultist_pool) h = mix_hash(h, str_hash(n));
     for (const auto& n : s.dredge_bottom) h = mix_hash(h, str_hash(n));
     h = mix_hash(h, (uint64_t)s.combo_deck_mask);
     return h;
@@ -3583,6 +3675,17 @@ static State state_from_json(const JVal& root) {
     if (fdc && fdc->type == JVal::STR) st.forced_draw_choice = fdc->str;
     const JVal* fdcard = root.find("forced_draw_card");
     if (fdcard && fdcard->type == JVal::STR) st.forced_draw_card = fdcard->str;
+    const JVal* fcp = root.find("forced_cultist_pool");
+    if (fcp && fcp->type == JVal::ARR) {
+        for (const auto& item : fcp->arr) {
+            if (item.type == JVal::STR && !item.str.empty()) {
+                st.forced_cultist_pool.push_back(item.str);
+            }
+        }
+        if (st.forced_cultist_pool.size() > 3) {
+            st.forced_cultist_pool.resize(3);
+        }
+    }
     const JVal* deck = root.find("deck");
     if (deck && deck->type == JVal::ARR) {
         for (const auto& item : deck->arr) {
@@ -3665,6 +3768,7 @@ static bool verify_rec(const State& st, const vector<string>& replay, size_t i,
     }
     string want = exact ? canonical_action_exact(replay[i]) : canonical_action(replay[i]);
     vector<State> succs = generate_successors(st);
+
     for (State& succ : succs) {
         if (succ.path().empty()) continue;
         string got = exact ? canonical_action_exact(succ.path().back())
