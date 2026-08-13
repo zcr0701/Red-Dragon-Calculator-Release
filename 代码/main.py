@@ -2206,11 +2206,16 @@ class CalculationWorker(QThread):
                             card = str(b.get("card") or "")
                             pth = list(b.get("path") or [])
                             tail = WhatIFTreeWidget._tail_steps(pth, card)
-                            mid0 = (
-                                ["持枪要挟（" + card + "）"]
-                                if not (tail or pth)
-                                else [str(s) for s in (tail or pth)]
-                            )
+
+                            if not (tail or pth):
+                                mid0 = ["持枪要挟（" + card + "）"]
+                            elif len(tail) <= 1:
+                                # 持枪在末尾（如 其他快枪牌 杂牌分支：前面已完成伤害，
+                                # 持枪只是最后一张牌）：截取后只剩分叉卡本身，展示完整路径
+                                mid0 = [str(s) for s in pth]
+                            else:
+                                mid0 = [str(s) for s in tail]
+
                             qd_tree.append(
                                 {
                                     "outcome": card,
