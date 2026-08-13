@@ -4584,11 +4584,19 @@ class MainWindow(QWidget):
         """把正常计算（+ 可选 WhatIF）渲染到主窗口结果文本。"""
         # 主窗口结果 = 正常线（V1.2.1 逻辑：行骗/挖掘宝藏/潜伏帷幕/垂钓时光可打出，
         # 抽牌按“抽杂牌”确定性处理），与 小窗 正常线 段完全一致。
-        orig = data.get("original") or {}
-        normal_dmg = int(orig.get("damage") or 0)
-        normal_dragons = int(orig.get("dragons") or 0)
-        normal_path = list(orig.get("path") or [])
         results = data.get("results") or []
+        res0 = results[0] if results else {}
+        orig = data.get("original") or {}
+        # 头部/正常线显示真实最大（含持枪要挟等分支卡的最优解），而不是禁抽线：
+        # 之前这里取 original（不让打持枪要挟，6水晶持枪局面只有 48），
+        # 导致搜索明明找到 96 却显示 48（000329/002425/003646/004955）。
+        normal_dmg = int(data.get("max_damage") or 0)
+        normal_dragons = int(data.get("max_dragons") or 0)
+        normal_path = list(res0.get("path") or [])
+        if normal_dmg <= 0 or not normal_path:
+            normal_dmg = int(orig.get("damage") or 0)
+            normal_dragons = int(orig.get("dragons") or 0)
+            normal_path = list(orig.get("path") or [])
         lines = [
             "搜索方式：纯束宽搜索",
             f"最大伤害：{normal_dmg}，最大龙数：{normal_dragons}",
@@ -5406,7 +5414,7 @@ class MiniWindow(QWidget):
             or data.get("draw_branches")
         )
         orig = data.get("original") or {}
-        normal_dmg = int(orig.get("damage") or 0)
+        normal_dmg = int(data.get("max_damage") or 0)
 
         if normal_dmg <= 0:
             res0 = data.get("results") or []
@@ -5434,16 +5442,21 @@ class MiniWindow(QWidget):
         挖掘宝藏/潜伏帷幕不模拟抽牌）；0 伤害时统一显示（无路径）。
         """
         orig = data.get("original")
+        results = data.get("results") or []
+        res0 = results[0] if results else {}
+        # 正常线 = 真实最优路径（results[0]，含分支卡），与主窗口/头部一致；
+        # 0 伤害时统一显示（无路径），不退回 0 伤长路径。
+        best = (
+            res0
+            if (res0 and (res0.get("path") or []) and int(res0.get("damage") or 0) > 0)
+            else orig
+        )
 
-        if (
-            orig
-            and (orig.get("path") or [])
-            and int(orig.get("damage") or 0) > 0
-        ):
+        if best and (best.get("path") or []) and int(best.get("damage") or 0) > 0:
             orig_data: Dict[str, object] = {
-                "max_damage": orig.get("damage"),
-                "max_dragons": orig.get("dragons"),
-                "results": [orig],
+                "max_damage": best.get("damage"),
+                "max_dragons": best.get("dragons"),
+                "results": [best],
             }
         else:
             # 原版线不存在或 0 伤害：直接显示“（无路径）”，
