@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -957,6 +958,7 @@ class LogWatcher:
         game_dir: Optional[str] = None,
         log_file: Optional[str] = None,
         player_id: Optional[int] = None,
+        background: bool = True,
     ):
         self.custom_log_file = Path(log_file) if log_file else None
         self.game_dir = game_dir or detect_game_dir()
@@ -973,10 +975,63 @@ class LogWatcher:
         self._parser_generation = 0  # parser.reset() 时 +1，用于快照缓存失效
         self._cached_snapshot: Optional[dict] = None
         self._cache_generation = -1
+        # 后台读取线程：读文件/喂解析器/建快照/合并记牌器全部在后台做，
+        # 主线程只取最新快照，避免抽牌/出牌爆发时 UI 卡顿。
+        self._stop_event = threading.Event()
+        self._latest_lock = threading.Lock()
+        self._session_scan_counter = 0
+        self._reader: Optional[threading.Thread] = None
         if self.custom_log_file is not None:
             # 自定义日志首次附加：直接定位到最后一个 GameState CREATE_GAME，
             # 避免从文件头逐局推进（观战/多局日志会延迟读取最新一局）
             self._restart_at_latest_game()
+        if background:
+            self._reader = threading.Thread(
+                target=self._reader_loop,
+                name="powerlog-reader",
+                daemon=True,
+            )
+            self._reader.start()
+
+    def stop(self) -> None:
+        """停止后台读取线程（切换日志源/退出时调用）。"""
+        self._stop_event.set()
+
+    def _reader_loop(self) -> None:
+        """后台循环：增量读行 → 解析 → 建快照 → 合并记牌器，结果缓存给主线程。"""
+        while not self._stop_event.is_set():
+            try:
+                self._refresh()
+                count = self.read_new()
+
+                if (
+                    count > 0
+                    or self._cached_snapshot is None
+                    or self._cache_generation != self._parser_generation
+                ):
+                    snap = self.parser.snapshot()
+                    snap["log_path"] = (
+                        str(self.log_file) if self.log_file else None
+                    )
+                    snap["session_dir"] = (
+                        str(self.session_dir) if self.session_dir else None
+                    )
+                    merged = deck_tracker.merge_snapshot(
+                        snap,
+                        drawn_deck=snap.get("drawn_deck_raw"),
+                        session_dir=(
+                            str(self.session_dir) if self.session_dir else None
+                        ),
+                    )
+
+                    with self._latest_lock:
+                        self._cached_snapshot = merged
+                        self._cache_generation = self._parser_generation
+            except Exception:
+                # 单轮失败（文件被占用/会话切换）下一轮自动重试，不影响主线程
+                pass
+
+            self._stop_event.wait(0.25)
 
     def _last_game_offset(self) -> Optional[int]:
         """从文件尾部找最后一个 GameState CREATE_GAME 的行首字节偏移。"""
@@ -1036,7 +1091,17 @@ class LogWatcher:
                     self._restart_at_latest_game()
             return
 
-        session = find_latest_session(self.game_dir)
+        # 新会话才需要重扫目录（每 ~20 轮 = 约 5s 一次）；当前会话仍在时
+        # 直接沿用，避免每个 tick 枚举全部会话文件夹（随历史会话数线性变慢）。
+        self._session_scan_counter += 1
+        session = (
+            find_latest_session(self.game_dir)
+            if self._session_scan_counter % 20 == 1
+            or self.session_dir is None
+            or self.log_file is None
+            or not self.log_file.exists()
+            else self.session_dir
+        )
 
         if session != self.session_dir:
             self.session_dir = session
@@ -1069,6 +1134,14 @@ class LogWatcher:
                     break
 
                 first = False
+
+                # 半行（游戏正在写入）：等下一 tick 写完再解析，避免把半行
+                # 脏包喂给 hslog；游标退回行首，文件没继续增长时 count=0，
+                # 快照走缓存不会反复重建。
+                if not raw.endswith(b"\n"):
+                    self._pos = f.tell() - len(raw)
+                    break
+
                 self.parser.feed_line(raw.decode("utf-8", errors="ignore"))
                 count += 1
                 self._pos = f.tell()
@@ -1085,28 +1158,65 @@ class LogWatcher:
         return count
 
     def snapshot(self) -> dict:
+        with self._latest_lock:
+            cached = self._cached_snapshot
+
+        if cached is not None:
+            # 主线程只读最新快照：后台线程负责增量更新，绝不在 UI 线程解析
+            return cached
+
+        if self._reader is not None and self._reader.is_alive():
+            # 后台线程启动中：等它出第一份快照（最多 ~2s），
+            # 避免主线程与读取线程并发操作解析器/文件游标。
+            deadline = time.time() + 2.0
+
+            while time.time() < deadline and not self._stop_event.is_set():
+                self._stop_event.wait(0.05)
+
+                with self._latest_lock:
+                    cached = self._cached_snapshot
+
+                if cached is not None:
+                    return cached
+
+            return {
+                "in_game": False,
+                "reason": "日志尚未解析完成",
+                "hand": [],
+                "opponent_hand": [],
+                "board": [],
+                "deck": [],
+                "secrets": [],
+                "weapon": None,
+                "current_effects": [],
+                "deadly_shadow_hand_indexes": [],
+                "dredge_bottom": [],
+                "crystals": None,
+                "mana": None,
+                "player_hero": None,
+                "opponent_hero": None,
+                "game_state": None,
+                "game_over": False,
+                "spectator": False,
+            }
+
+        # background=False（CLI --once/--watch）：同步读一次
         self._refresh()
-        count = self.read_new()
-
-        # 无新行且解析器未被重置：直接返回上次快照，避免每 tick 全量重建
-        if (
-            count != 0
-            or self._cached_snapshot is None
-            or self._cache_generation != self._parser_generation
-        ):
-            snap = self.parser.snapshot()
-            snap["log_path"] = str(self.log_file) if self.log_file else None
-            snap["session_dir"] = str(self.session_dir) if self.session_dir else None
-            self._cached_snapshot = snap
-            self._cache_generation = self._parser_generation
-
-        # 记牌器合并：每个 tick 都重读 HDT 状态（HDT 每 0.5s 更新），
-        # 牌库剩余内容实时重建；Power.log 追踪的已出卡作为兜底。
-        return deck_tracker.merge_snapshot(
-            self._cached_snapshot,
-            drawn_deck=self._cached_snapshot.get("drawn_deck_raw"),
+        self.read_new()
+        snap = self.parser.snapshot()
+        snap["log_path"] = str(self.log_file) if self.log_file else None
+        snap["session_dir"] = str(self.session_dir) if self.session_dir else None
+        merged = deck_tracker.merge_snapshot(
+            snap,
+            drawn_deck=snap.get("drawn_deck_raw"),
             session_dir=str(self.session_dir) if self.session_dir else None,
         )
+
+        with self._latest_lock:
+            self._cached_snapshot = merged
+            self._cache_generation = self._parser_generation
+
+        return merged
 
 
 def _snapshot_key(snap: dict) -> tuple:
@@ -1133,12 +1243,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.log_file:
-        watcher = LogWatcher(game_dir=args.game_dir, player_id=args.player_id)
+        watcher = LogWatcher(
+            game_dir=args.game_dir,
+            player_id=args.player_id,
+            background=False,
+        )
         path = Path(args.log_file)
         watcher.session_dir = path.parent
         watcher.log_file = path
         watcher.parser.reset()
-        watcher._pos = 0
+        offset = watcher._last_game_offset()
+        watcher._pos = offset if offset is not None else 0
         watcher.read_new()
         snap = watcher.parser.snapshot()
         snap["log_path"] = str(path)
@@ -1148,7 +1263,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         return 0
 
-    watcher = LogWatcher(game_dir=args.game_dir, player_id=args.player_id)
+    watcher = LogWatcher(
+        game_dir=args.game_dir,
+        player_id=args.player_id,
+        background=False,
+    )
 
     if args.watch:
         last_key = None

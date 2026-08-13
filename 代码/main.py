@@ -4505,6 +4505,9 @@ class MainWindow(QWidget):
         game_dir: Optional[str],
         log_file: Optional[str],
     ) -> None:
+        if self.watcher is not None:
+            self.watcher.stop()
+
         self._custom_game_dir = game_dir or ""
         self._custom_log_file = log_file or ""
         self.watcher = LogWatcher(
