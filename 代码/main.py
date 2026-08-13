@@ -2272,6 +2272,15 @@ class CalculationWorker(QThread):
         )
 
         if src_tb is not None and main_outcome in pool:
+            # 主干来源分支自身的抽取结果才是权威 outcome（标注正则可能因
+            # 路径截断取不到），避免把别的结果错标成 pool[0]。
+            src_card = str(
+                src_tb.get("card") or src_tb.get("outcome") or main_outcome
+            )
+
+            if src_card in pool:
+                main_outcome = src_card
+
             src_pth = [str(s) for s in (src_tb.get("path") or [])]
             results[main_outcome] = {
                 "card": main_outcome,
