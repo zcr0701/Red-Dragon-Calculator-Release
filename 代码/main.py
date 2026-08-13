@@ -2128,20 +2128,20 @@ class CalculationWorker(QThread):
                     # quickdraw_branches。
                     qd_prefix = [str(s) for s in best_path[:qi]]
                     elapsed0 = time.perf_counter() - whatif_t0
-                    remaining0 = max(1.5, 10.0 - elapsed0)
-                    qd_budget0 = min(2.0, max(1.0, remaining0 / 3.0))
+                    remaining0 = max(2.0, 14.0 - elapsed0)
+                    qd_budget0 = min(4.0, max(1.5, remaining0 / 2.0))
                     qd0_kwargs = dict(common_kwargs)
                     qd0_kwargs["time_budget_sec"] = qd_budget0
                     qd0_kwargs["max_paths"] = max(
                         3000000, int(self.options.get("max_paths") or 0)
                     )
-                    qd0_kwargs["wide_widths"] = [2000]
+                    qd0_kwargs["wide_widths"] = [3000]
                     qd0_kwargs["heuristics"] = [6]
                     qd0_kwargs["threads"] = max(
                         2,
                         min(
                             4,
-                            int(qd0_kwargs.get("threads", 4) / 2),
+                            int(qd0_kwargs.get("threads", 4)),
                         ),
                     )
                     qd_pool0 = [str(c) for c in engine.QUICKDRAW_CHOICES]
@@ -2155,10 +2155,12 @@ class CalculationWorker(QThread):
                             return {"card": card, "path": []}
 
                         try:
+                            # 不把“持枪要挟（X）”钉成前缀后的第一张：分支按最优时机打持枪
+                            # （先铺 鱼-刀油-牛-晦 再中途打，脱水/误炸等也能到 64 伤；
+                            #  钉成第一张时只有补水(+2费)能活，其余全 0）。
                             res_x = engine.compute(
                                 self.snapshot,
-                                branch_prefix=qd_prefix
-                                + ["持枪要挟（" + card + "）"],
+                                branch_prefix=qd_prefix,
                                 discover_quickdraw_choice=card,
                                 exchanges=best_exchange,
                                 lethal_threshold=-1,
@@ -2169,6 +2171,13 @@ class CalculationWorker(QThread):
                             return {"card": card, "path": []}
 
                         best_x = (res_x.get("results") or [{}])[0]
+                        pth_x = list(best_x.get("path") or [])
+
+                        # 结果路径里必须真的打出了 持枪要挟（X），否则分支无效
+                        if not any(
+                            "持枪要挟（" + card + "）" in str(s) for s in pth_x
+                        ):
+                            return {"card": card, "path": []}
 
                         return {
                             "card": card,
@@ -2178,7 +2187,7 @@ class CalculationWorker(QThread):
                             "fork_damage": int(
                                 best_x.get("fork_damage") or 0
                             ),
-                            "path": list(best_x.get("path") or []),
+                            "path": pth_x,
                         }
 
                     qd_tree: List[Dict[str, object]] = []
@@ -2563,22 +2572,20 @@ class CalculationWorker(QThread):
                             return [], False
 
                         elapsed = time.perf_counter() - whatif_t0
-                        remaining = max(1.5, 10.0 - elapsed)
-                        qd_budget = min(2.0, max(1.0, remaining / 3.0))
+                        remaining = max(2.0, 14.0 - elapsed)
+                        qd_budget = min(4.0, max(1.5, remaining / 2.0))
                         qd_kwargs = dict(common_kwargs)
                         qd_kwargs["time_budget_sec"] = qd_budget
                         qd_kwargs["max_paths"] = max(
                             3000000, int(self.options.get("max_paths") or 0)
                         )
-                        # 分叉点已是深线局部小场面，窄束 + 少线程即可，避免
-                        # 与外部抽取分支搜索抢 CPU（最多并行 4 个 C++ 进程）
-                        qd_kwargs["wide_widths"] = [2000]
+                        qd_kwargs["wide_widths"] = [3000]
                         qd_kwargs["heuristics"] = [6]
                         qd_kwargs["threads"] = max(
                             2,
                             min(
                                 4,
-                                int(qd_kwargs.get("threads", 4) / 2),
+                                int(qd_kwargs.get("threads", 4)),
                             ),
                         )
                         tree_abort = {"flag": False}
