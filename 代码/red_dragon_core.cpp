@@ -2106,12 +2106,29 @@ static int subchain_score(const State& s) {
         const auto& p = s.path();
         if (!p.empty() && p.back().find("生命的缚誓者") != string::npos
             && p.back().find("（") == string::npos) {
+            // 先龙后鱼只有“本可以先鱼后龙”才算失误：
+            // ① 鲨鱼当前可打出；② 或手牌有可打出的刀油（下两张 -2）能先减费下鱼。
+            // 两者都不成立（没法力/没刀油，只能龙先出）时不否决，保留这条 8 伤线——
+            // 避免把唯一可行解也杀掉（用户确认）。
+            bool fish_first_possible = false;
             for (const auto& c : s.hand) {
                 int cc = effective_cost(s, c);
                 if (c.name_idx == N_SHARK && cc >= 0 && cc <= s.mana) {
-                    score -= 1000;
+                    fish_first_possible = true;
                     break;
                 }
+            }
+            if (!fish_first_possible) {
+                for (const auto& c : s.hand) {
+                    int cc = effective_cost(s, c);
+                    if (c.name_idx == N_SCABBS && cc >= 0 && cc <= s.mana) {
+                        fish_first_possible = true;
+                        break;
+                    }
+                }
+            }
+            if (fish_first_possible) {
+                score -= 1000;
             }
         }
     }

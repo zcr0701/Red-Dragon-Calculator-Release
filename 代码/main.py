@@ -2138,20 +2138,20 @@ class CalculationWorker(QThread):
                     qd_prefix = [str(s) for s in best_path[:qi]]
                     elapsed0 = time.perf_counter() - whatif_t0
                     remaining0 = max(2.0, 14.0 - elapsed0)
-                    qd_budget0 = min(4.0, max(1.5, remaining0 / 2.0))
+                    qd_budget0 = min(6.0, max(1.5, remaining0 / 2.0))
                     qd0_kwargs = dict(common_kwargs)
                     qd0_kwargs["time_budget_sec"] = qd_budget0
                     qd0_kwargs["max_paths"] = max(
                         3000000, int(self.options.get("max_paths") or 0)
                     )
-                    # 分支续算用默认四通道（多启发互补）：单通道 [3000]/H6 在
-                    # 6水晶持枪局面只续出 64/80，四通道能续出 96。
-                    qd0_kwargs["wide_widths"] = None
-                    qd0_kwargs["heuristics"] = None
+                    # 分支续算用 6000×2（H6+H8）：默认四通道在 6水晶持枪局面
+                    # 只续出 72（舞[殒]-龙 少踩鱼），宽通道稳定续出 112。
+                    qd0_kwargs["wide_widths"] = [6000, 6000]
+                    qd0_kwargs["heuristics"] = [6, 8]
                     qd0_kwargs["threads"] = max(
                         2,
                         min(
-                            4,
+                            8,
                             int(qd0_kwargs.get("threads", 4)),
                         ),
                     )
@@ -2207,7 +2207,7 @@ class CalculationWorker(QThread):
                     qd_tree: List[Dict[str, object]] = []
 
                     with ThreadPoolExecutor(
-                        max_workers=min(4, len(qd_pool0)),
+                        max_workers=2,
                         thread_name_prefix="whatif-qd0",
                     ) as pool:
                         futs0 = [pool.submit(_qd_one0, c) for c in qd_pool0]
@@ -2588,20 +2588,19 @@ class CalculationWorker(QThread):
 
                         elapsed = time.perf_counter() - whatif_t0
                         remaining = max(2.0, 14.0 - elapsed)
-                        qd_budget = min(4.0, max(1.5, remaining / 2.0))
+                        qd_budget = min(6.0, max(1.5, remaining / 2.0))
                         qd_kwargs = dict(common_kwargs)
                         qd_kwargs["time_budget_sec"] = qd_budget
                         qd_kwargs["max_paths"] = max(
                             3000000, int(self.options.get("max_paths") or 0)
                         )
-                        # 分支续算用默认四通道（多启发互补）：单通道 [3000]/H6 在
-                        # 6水晶持枪局面只续出 64/80，四通道能续出 96。
-                        qd_kwargs["wide_widths"] = None
-                        qd_kwargs["heuristics"] = None
+                        # 分支续算用 6000×2（H6+H8）：稳定续出 112（72 分支修正）。
+                        qd_kwargs["wide_widths"] = [6000, 6000]
+                        qd_kwargs["heuristics"] = [6, 8]
                         qd_kwargs["threads"] = max(
                             2,
                             min(
-                                4,
+                                8,
                                 int(qd_kwargs.get("threads", 4)),
                             ),
                         )
@@ -2664,7 +2663,7 @@ class CalculationWorker(QThread):
                         pruned = False
 
                         with ThreadPoolExecutor(
-                            max_workers=min(4, len(qd_pool)),
+                            max_workers=2,
                             thread_name_prefix="whatif-qd",
                         ) as pool:
                             futs = {
