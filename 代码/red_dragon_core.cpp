@@ -1342,16 +1342,21 @@ static vector<State> generate_successors(const State& st) {
         }
         if (duplicate) continue;
 
-        // 黑水弯刀 交易（免费动作，不耗法力、不计入本回合出牌）：
-        // 置入牌库 + 抽 1 张 + 手牌中一张 >0 费法术随机 -1 费。
+        // 黑水弯刀：两个动作——
+        //   交易（消耗 1 费，不计入本回合出牌）：置入牌库 + 抽 1 张 +
+        //     手牌中一张 >0 费法术随机 -1 费；
+        //   装备（普通打出）：2/2 武器。
         // 分支数 = 手牌中 >0 费法术数 × 牌库剩余卡牌数（按唯一名展开）。
         if (card.name_idx == N_CUTLASS) {
-            State base0 = st.clone_reserved();
-            base0.hand.erase(base0.hand.begin() + hand_index);
-            Card cutlass = card;
-            cutlass.temp_cost = -1;
-            cutlass.entered_hand_this_turn = false;
-            base0.deck.push_back(cutlass);
+            // ===== 交易（消耗 1 费）=====
+            if (st.mana >= 1) {
+                State base0 = st.clone_reserved();
+                base0.mana -= 1;  // 交易本身消耗 1 费
+                base0.hand.erase(base0.hand.begin() + hand_index);
+                Card cutlass = card;
+                cutlass.temp_cost = -1;
+                cutlass.entered_hand_this_turn = false;
+                base0.deck.push_back(cutlass);
 
             // 可减费目标：手牌中 >0 费法术（按名去重，复制体减同张等价）
             vector<int> spell_idx;
@@ -1412,7 +1417,24 @@ static vector<State> generate_successors(const State& st) {
                 junk.path_mut().push_back("黑水弯刀（交易）");
                 out.push_back(std::move(junk));
             }
-            // 交易分支已生成；继续走下方常规展开（普通装备 2/2 武器仍可用）
+            }
+
+            // ===== 装备（普通打出 2/2 武器）：黑水弯刀（装备）=====
+            {
+                State eq = st.clone_reserved();
+                if (play_card_base(eq, hand_index, -1, false, false)) {
+                    vector<State> succs = apply_search_effect(
+                        std::move(eq), card, -1, false, false
+                    );
+                    for (State& s2 : succs) {
+                        if (!s2.path().empty()) {
+                            s2.path_mut().back() = "黑水弯刀（装备）";
+                        }
+                        out.push_back(std::move(s2));
+                    }
+                }
+            }
+            continue;  // 交易 + 装备两个动作已全部生成
         }
 
         // 异教地图：随机发现牌库 3 张（C(3,N)），选择最优 1 张抽上（并非随机）；

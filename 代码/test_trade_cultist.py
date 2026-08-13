@@ -38,8 +38,8 @@ def base_snap():
 def main():
     # 1) 黑水弯刀交易分支存在，且手牌 >0 费法术 × 牌库剩余卡牌
     snap = base_snap()
-    snap["crystals"] = 0
-    snap["mana"] = 0
+    snap["crystals"] = 1
+    snap["mana"] = 1  # 交易本身消耗 1 费
     snap["hand"] = [
         {"name": "黑水弯刀", "cost": 1},
         {"name": "行骗", "cost": 2},
