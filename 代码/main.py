@@ -2114,7 +2114,9 @@ class CalculationWorker(QThread):
 
                 # 持枪要挟在第一个抽牌卡之前（或路径无抽牌卡）时，以持枪要挟为
                 # 第一个分叉点；否则抽牌卡优先（其子树内递归展开持枪要挟）。
-                qd_first = qi > 0 and (di < 0 or qi < di)
+                # qi 可为 0（持枪要挟是路径第一步）也必须以持枪为第一个分叉点，
+                # 否则持枪会被吞进主干、其 7 个发现分支不展开。
+                qd_first = qi >= 0 and (di < 0 or qi < di)
 
                 if qd_first and self._stop is False:
                     root_steps = [str(s) for s in best_path[:qi]]
