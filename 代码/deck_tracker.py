@@ -490,6 +490,44 @@ def set_manual_deck(player_name: str, items: List[dict]) -> None:
     _save_profile(profile)
 
 
+def _state_drawn(snap: dict, original: List[dict]) -> Dict[str, int]:
+    """按当前区域状态统计已抽离的原卡组卡牌（不依赖日志事件顺序）。
+
+    只统计 手牌/战场/墓地/奥秘/武器 中、card_id 属于原卡组、且非生成物
+    （creator/ghostly）的本机卡。重连/观战恢复时已抽到的牌会直接以当前
+    区域（HAND/PLAY/GRAVEYARD）创建，同样能被识别；偷来的/衍生的牌因
+    不在原卡组而被排除。每张卡最多按原卡组张数计，避免复制体重复计数。
+    """
+    original_ids = {item.get("card_id") for item in original}
+    original_counts = _to_counts(original)
+    out: Dict[str, int] = {}
+
+    for key in ("hand", "board", "local_graveyard", "secrets"):
+        for item in snap.get(key) or []:
+            cid = item.get("card_id") or ""
+
+            if not cid or cid not in original_ids:
+                continue
+
+            if item.get("creator") or item.get("ghostly"):
+                continue
+
+            out[cid] = out.get(cid, 0) + 1
+
+    weapon = snap.get("weapon") or {}
+    wcid = weapon.get("card_id") or ""
+
+    if wcid in original_ids and not (
+        weapon.get("creator") or weapon.get("ghostly")
+    ):
+        out[wcid] = out.get(wcid, 0) + 1
+
+    for cid, cnt in out.items():
+        out[cid] = min(cnt, original_counts.get(cid, cnt))
+
+    return out
+
+
 def merge_snapshot(
     snap: dict,
     drawn_deck: Optional[Dict[str, int]] = None,
@@ -552,49 +590,56 @@ def merge_snapshot(
     else:
         total_remaining = len(snap.get("deck") or [])
 
-    if original and not remaining:
-        # 有卡组但 HDT 没给剩余：剩余 = 原卡组 − 已出（档案重建）
-        # 按 card_id 精确扣减；同卡名不同版本（核心/经典）时按卡名兜底，
-        # 避免本地化或版本差异导致扣不掉。
-        counts = _to_counts(original)
-        name_to_id: Dict[str, str] = {}
+    # 已出卡与剩余牌库：HDT 在场时用 HDT 的权威剩余（原卡组 − 剩余）；
+    # 否则按当前区域状态统计已抽离的原卡组卡牌（_state_drawn），
+    # 剩余 = 原卡组 − 已出，再按 card_id 扣减、同名不同版本按卡名兜底。
+    if original:
+        if hdt is not None and remaining:
+            left_drawn = _to_counts(original) - _to_counts(remaining)
+            drawn = [
+                {"card_id": cid, "name": card_name(cid), "count": cnt}
+                for cid, cnt in sorted(left_drawn.items())
+                if cnt > 0
+            ]
+        else:
+            drawn_state = _state_drawn(snap, original)
+            drawn = [
+                {"card_id": cid, "name": card_name(cid), "count": cnt}
+                for cid, cnt in sorted(drawn_state.items())
+                if cnt > 0
+            ]
 
-        for item in original:
-            cid = item.get("card_id") or ""
-            name = item.get("name") or ""
+            if not remaining:
+                counts = _to_counts(original)
+                name_to_id: Dict[str, str] = {}
 
-            if cid and name and name not in name_to_id:
-                name_to_id[name] = cid
+                for item in original:
+                    cid = item.get("card_id") or ""
+                    name = item.get("name") or ""
 
-        for cid, cnt in (drawn_deck or {}).items():
-            if not cid:
-                continue
+                    if cid and name and name not in name_to_id:
+                        name_to_id[name] = cid
 
-            if cid in counts:
-                counts[cid] -= cnt
-            else:
-                alt = name_to_id.get(card_name(cid))
+                for cid, cnt in drawn_state.items():
+                    if not cid:
+                        continue
 
-                if alt:
-                    counts[alt] -= cnt
+                    if cid in counts:
+                        counts[cid] -= cnt
+                    else:
+                        alt = name_to_id.get(card_name(cid))
 
-        left = Counter({cid: c for cid, c in counts.items() if c > 0})
-        remaining = [
-            {"card_id": cid, "name": card_name(cid), "count": cnt}
-            for cid, cnt in sorted(left.items())
-            if cnt > 0
-        ]
+                        if alt:
+                            counts[alt] -= cnt
 
-    # 已出卡：HDT 在场时用 原卡组 − 剩余（该卡组无洗入牌，减法准确）；
-    # 否则用 Power.log 实体追踪的已出卡。
-    if hdt is not None and original and remaining:
-        left_drawn = _to_counts(original) - _to_counts(remaining)
-        drawn = [
-            {"card_id": cid, "name": card_name(cid), "count": cnt}
-            for cid, cnt in sorted(left_drawn.items())
-            if cnt > 0
-        ]
+                left = Counter({cid: c for cid, c in counts.items() if c > 0})
+                remaining = [
+                    {"card_id": cid, "name": card_name(cid), "count": cnt}
+                    for cid, cnt in sorted(left.items())
+                    if cnt > 0
+                ]
     elif drawn_deck:
+        # 纯 Power.log 兜底（无原卡组）：沿用解析器追踪的已出卡
         drawn = [
             {"card_id": cid, "name": card_name(cid), "count": cnt}
             for cid, cnt in sorted(drawn_deck.items())

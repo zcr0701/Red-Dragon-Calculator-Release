@@ -1893,7 +1893,7 @@ class CalculationWorker(QThread):
 
     def _branch_score(
         self, node: Dict[str, object]
-    ) -> Tuple[Optional[float], List[int]]:
+    ) -> Tuple[Optional[object], List[int]]:
         """按当前策略给一棵分叉树打分（叶子分布），返回 (score, 叶子伤害列表)。"""
         strategy = str(self.options.get("branch_strategy") or "kill")
         child = WhatIFDistPanel._mk_option(node)["child"]
@@ -1914,12 +1914,28 @@ class CalculationWorker(QThread):
         enemy = self.snapshot.get("opponent_hero") or {}
         h = int(enemy.get("health") or 0) + int(enemy.get("armor") or 0)
         kill = sum(1 for d in leaves if d >= h)
-        return kill / max(1, len(leaves)), leaves
+        ratio = kill / max(1, len(leaves))
 
-    def _branch_score_optimal(self, score: float, strategy: str) -> bool:
+        if not bool(self.options.get("truncate_normal", False)):
+            # 未勾选精确截断（框1）：斩杀比例相同时优先选溢出伤害最高的树。
+            # 溢出伤害 = 各斩杀叶子超出斩杀线的伤害之和，如
+            # [48(57%)|32(43%)] 对 32 血敌方 = 4×16 = 64 > [32(100%)] 的 0。
+            overflow = sum(max(0, d - h) for d in leaves if d >= h)
+            return (ratio, overflow), leaves
+
+        return ratio, leaves
+
+    def _branch_score_optimal(self, score: object, strategy: str) -> bool:
         """策略是否已达到理论最优：达到后可直接放弃其余树的搜索。"""
         if strategy == "kill":
-            return score >= 1.0
+            ratio = score[0] if isinstance(score, tuple) else score
+
+            if bool(self.options.get("truncate_normal", False)):
+                return ratio >= 1.0
+
+            # 未勾选精确截断：溢出伤害会打破同比例平局，不能提前收工，
+            # 必须把所有树搜完才能确定最高溢出（与“跑所有树”一致）。
+            return False
 
         if strategy == "max":
             return score >= int(self.options.get("max_alex") or 10) * 16
@@ -1959,12 +1975,100 @@ class CalculationWorker(QThread):
         if not scored:
             return
 
-        scored.sort(key=lambda x: -x[0])
+        scored.sort(
+            key=lambda x: (
+                -x[0][0] if isinstance(x[0], tuple) else -x[0],
+                -x[0][1] if isinstance(x[0], tuple) else 0.0,
+            )
+        )
         best = scored[0][1]
         opt = WhatIFDistPanel._mk_option(best)
         child_path = list(opt["child"].get("path") or [])
         whatif_tree["root"] = list(whatif_tree.get("root") or []) + child_path
         whatif_tree["branches"] = best.get("children") or []
+
+    def _refine_quickdraw_branches(
+        self,
+        best_exchange: List[Tuple[int, int]],
+        start_time: float,
+    ) -> Dict[str, Dict[str, object]]:
+        """用剩余预算对持枪要挟的每个发现结果单独深搜（wide=3000 并行）。
+
+        主搜索/前缀钉死搜索都会低估部分分支（袋底藏沙/其他快枪牌常停在
+        32，而逐分支深搜能到 48）；不受前缀约束的逐分支搜索逼近“跑所有树”
+        的每分支上限，返回 {card: 完整独立线路}。
+        """
+        if self._stop:
+            return {}
+
+        elapsed = time.perf_counter() - start_time
+        remaining = max(2.0, 10.0 - elapsed)
+        per_branch = min(2.5, max(1.0, remaining / 4.0))
+        pool_cards = list(engine.QUICKDRAW_CHOICES) + [
+            engine.QUICKDRAW_OTHER_MINION,
+            engine.QUICKDRAW_OTHER_SPELL,
+        ]
+        out: Dict[str, Dict[str, object]] = {}
+
+        def _one(card: str) -> Optional[Dict[str, object]]:
+            if self._stop:
+                return None
+
+            try:
+                res_x = engine.compute(
+                    self.snapshot,
+                    discover_quickdraw_choice=card,
+                    exchanges=best_exchange,
+                    lethal_threshold=-1,
+                    should_stop=lambda: self._stop,
+                    min_alex=int(self.options["min_alex"]),
+                    max_alex=int(self.options["max_alex"]),
+                    depth=int(self.options["depth"]),
+                    max_paths=max(
+                        3000000,
+                        int(self.options.get("max_paths") or 0),
+                    ),
+                    threads=2,
+                    time_budget_sec=per_branch,
+                    wide_widths=[3000],
+                    heuristics=[6],
+                    etc_band=list(self.options.get("etc_band") or []),
+                    only_best_damage=True,
+                    branch_expand=True,
+                )
+            except Exception:  # noqa: BLE001
+                return None
+
+            bx = (res_x.get("results") or [{}])[0]
+            pth = list(bx.get("path") or [])
+
+            return {
+                "card": card,
+                "outcome": card,
+                "damage": int(bx.get("damage") or 0),
+                "dragons": int(bx.get("dragons") or 0),
+                "mana_left": int(bx.get("mana") or 0),
+                "path": pth,
+            }
+
+        with ThreadPoolExecutor(
+            max_workers=min(4, len(pool_cards)),
+            thread_name_prefix="whatif-qd-refine",
+        ) as pool:
+            futs = {pool.submit(_one, c): c for c in pool_cards}
+
+            for fut in as_completed(futs):
+                if self._stop:
+                    break
+
+                r = fut.result()
+
+                if r is not None and (
+                    r.get("path") or int(r.get("damage") or 0) > 0
+                ):
+                    out[str(r.get("card") or "")] = r
+
+        return out
 
     def run(self) -> None:
         try:
@@ -2097,100 +2201,49 @@ class CalculationWorker(QThread):
                     root_steps.append("持枪要挟")
                     mq = re.search(r"持枪要挟[（(](.+?)[）)]", str(best_path[qi]))
                     main_qd = mq.group(1) if mq else ""
-                    # 从分叉点独立回溯每个发现牌（前缀钉死 持枪要挟（X）），
-                    # 保证子路径与主干 mid 场面一致，不再复用束宽内状态不一致的
-                    # quickdraw_branches。
-                    qd_prefix = [str(s) for s in best_path[:qi]]
-                    elapsed0 = time.perf_counter() - whatif_t0
-                    remaining0 = max(1.5, 10.0 - elapsed0)
-                    qd_budget0 = min(2.0, max(1.0, remaining0 / 3.0))
-                    qd0_kwargs = dict(common_kwargs)
-                    qd0_kwargs["time_budget_sec"] = qd_budget0
-                    qd0_kwargs["max_paths"] = max(
-                        3000000, int(self.options.get("max_paths") or 0)
+                    # 逐分支不受前缀约束深搜（wide=3000 并行）：
+                    # 前缀钉死会低估分支（袋底藏沙等 32 vs 48），
+                    # 这里给出每个发现结果的完整最优独立线路。
+                    refined_qd = self._refine_quickdraw_branches(
+                        best_exchange, whatif_t0
                     )
-                    qd0_kwargs["wide_widths"] = [2000]
-                    qd0_kwargs["heuristics"] = [6]
-                    qd0_kwargs["threads"] = max(
-                        2,
-                        min(
-                            4,
-                            int(qd0_kwargs.get("threads", 4) / 2),
-                        ),
-                    )
-                    qd_pool0 = [str(c) for c in engine.QUICKDRAW_CHOICES]
-                    qd_pool0 += [
+                    qd_order = list(engine.QUICKDRAW_CHOICES) + [
                         engine.QUICKDRAW_OTHER_MINION,
                         engine.QUICKDRAW_OTHER_SPELL,
                     ]
-
-                    def _qd_one0(card: str) -> Dict[str, object]:
-                        if self._stop:
-                            return {"card": card, "path": []}
-
-                        try:
-                            res_x = engine.compute(
-                                self.snapshot,
-                                branch_prefix=qd_prefix
-                                + ["持枪要挟（" + card + "）"],
-                                discover_quickdraw_choice=card,
-                                exchanges=best_exchange,
-                                lethal_threshold=-1,
-                                should_stop=lambda: self._stop,
-                                **qd0_kwargs,
-                            )
-                        except Exception:  # noqa: BLE001
-                            return {"card": card, "path": []}
-
-                        best_x = (res_x.get("results") or [{}])[0]
-
-                        return {
-                            "card": card,
-                            "damage": int(best_x.get("damage") or 0),
-                            "dragons": int(best_x.get("dragons") or 0),
-                            "mana_left": int(best_x.get("mana") or 0),
-                            "fork_damage": int(
-                                best_x.get("fork_damage") or 0
-                            ),
-                            "path": list(best_x.get("path") or []),
-                        }
-
                     qd_tree: List[Dict[str, object]] = []
 
-                    with ThreadPoolExecutor(
-                        max_workers=min(4, len(qd_pool0)),
-                        thread_name_prefix="whatif-qd0",
-                    ) as pool:
-                        futs0 = [pool.submit(_qd_one0, c) for c in qd_pool0]
+                    for card in qd_order:
+                        b = refined_qd.get(card)
 
-                        for fut0 in futs0:
-                            if self._stop:
-                                break
+                        if b is None:
+                            continue
 
-                            b = fut0.result()
-                            card = str(b.get("card") or "")
-                            pth = list(b.get("path") or [])
-                            tail = WhatIFTreeWidget._tail_steps(pth, card)
-                            mid0 = (
-                                ["持枪要挟（" + card + "）"]
-                                if not (tail or pth)
-                                else [str(s) for s in (tail or pth)]
-                            )
-                            qd_tree.append(
-                                {
-                                    "outcome": card,
-                                    "damage": int(b.get("damage") or 0),
-                                    "dragons": int(b.get("dragons") or 0),
-                                    "mana_left": int(b.get("mana_left") or 0),
-                                    "mid": mid0,
-                                    "path": pth,
-                                }
-                            )
+                        pth = list(b.get("path") or [])
+                        tail = WhatIFTreeWidget._tail_steps(pth, card)
+                        mid0 = (
+                            ["持枪要挟（" + card + "）"]
+                            if not (tail or pth)
+                            else [str(s) for s in (tail or pth)]
+                        )
+                        qd_tree.append(
+                            {
+                                "card": card,
+                                "outcome": card,
+                                "damage": int(b.get("damage") or 0),
+                                "dragons": int(b.get("dragons") or 0),
+                                "mana_left": int(b.get("mana_left") or 0),
+                                "mid": mid0,
+                                "path": pth,
+                            }
+                        )
 
                     if qd_tree:
                         leaf_damages = [int(tb.get("damage") or 0) for tb in qd_tree]
+                        # 分支是各自完整线路（起点在回合开头），root 置空避免
+                        # 与主干前缀不一致造成误导；主干由上方正常线展示。
                         whatif_tree = {
-                            "root": root_steps,
+                            "root": [],
                             "branches": qd_tree,
                             "worst": min(leaf_damages) if leaf_damages else 0,
                             "main_outcome": main_qd,
@@ -2621,10 +2674,15 @@ class CalculationWorker(QThread):
                                         upper = (
                                             suff + (len(qd_pool) - known)
                                         ) / len(qd_pool)
+                                        best_ratio = (
+                                            best_now[0]
+                                            if isinstance(best_now, tuple)
+                                            else best_now
+                                        )
 
                                         # 严格小于才剪：平局（kill 比例相等）保留，
                                         # 交给外层按分支顺序稳定决出，避免运行抖动
-                                        if upper < best_now:
+                                        if upper < best_ratio:
                                             tree_abort["flag"] = True
                                             pruned = True
                                             break
@@ -2810,6 +2868,22 @@ class CalculationWorker(QThread):
                     main_draw = list(result.get("draw_branches") or [])
                     main_qd = list(result.get("quickdraw_branches") or [])
                     fb_branches: List[Dict[str, object]] = []
+
+                    # 提升持枪分支质量：主搜索的 quickdraw_branches 是 3s 束宽
+                    # 的副产物，袋底藏沙/其他快枪牌等分支常被低估（32 vs 实际
+                    # 48）。用剩余预算对每个发现结果单独深搜一遍（wide=3000
+                    # 并行），逼近“跑所有树”的每分支上限，避免 WhatIF 显示
+                    # 次优分布（如 48(57%)|32(43%) 而非 48(100%)）。
+                    if main_qd and not self._stop:
+                        qd_refined = self._refine_quickdraw_branches(
+                            best_exchange, whatif_t0
+                        )
+
+                        if qd_refined:
+                            main_qd = [
+                                qd_refined.get(str(b.get("card") or ""), b)
+                                for b in main_qd
+                            ]
 
                     for b in main_draw:
                         pth = list(b.get("path") or [])

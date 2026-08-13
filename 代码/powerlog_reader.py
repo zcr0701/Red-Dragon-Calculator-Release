@@ -339,9 +339,6 @@ class PowerLogParser:
         # 垂钓时光探底追踪：最近一次垂钓时光的选择（id/候选底牌），解析后写入 dredge_bottom
         self._dredge_choice: Optional[dict] = None
         self._dredge_bottom: List[str] = []
-        # 记牌器兜底：曾经处于 DECK 区的实体 id（含起手牌/抽牌/燃烧/换牌回库），
-        # 用于在没有 HDT 时重建“已离开牌库”的卡。
-        self._ever_in_deck: Set[int] = set()
 
     def feed_line(self, line: str) -> None:
         try:
@@ -368,24 +365,12 @@ class PowerLogParser:
                     continue
 
                 self._on_play_entity(entity_id, game)
-            elif isinstance(packet, TagChange) and packet.tag == GameTag.ZONE:
-                self._on_zone_change(packet)
             elif isinstance(packet, TagChange) and packet.tag == GameTag.TURN:
                 self._on_turn_change(packet.value)
             elif isinstance(packet, Choices):
                 self._on_dredge_choices(packet, game)
             elif isinstance(packet, (SendChoices, ChosenEntities)):
                 self._on_dredge_chosen(packet, game)
-
-    def _on_zone_change(self, packet) -> None:
-        """记录进入过 DECK 区的实体 id（换牌回库/抽牌/燃烧都会先进 DECK）。"""
-        try:
-            entity_id = coerce_to_entity_id(packet.entity)
-        except Exception:
-            return
-
-        if packet.value == Zone.DECK:
-            self._ever_in_deck.add(entity_id)
 
     def _on_dredge_choices(self, packet, game) -> None:
         """DebugPrintEntityChoices：Source=垂钓时光 时记录 3 张探底候选（复制实体带 card_id）。"""
@@ -654,6 +639,7 @@ class PowerLogParser:
         board: List[dict] = []
         enemy_board: List[dict] = []
         deck: List[dict] = []
+        local_graveyard: List[dict] = []
         secrets: List[dict] = []
         weapon: Optional[dict] = None
         raw_band: List[str] = []
@@ -675,6 +661,9 @@ class PowerLogParser:
 
             for ent in local_player.in_zone(Zone.DECK):
                 deck.append(self._entity_item(ent))
+
+            for ent in local_player.in_zone(Zone.GRAVEYARD):
+                local_graveyard.append(self._entity_item(ent))
 
             for ent in local_player.in_zone(Zone.SECRET):
                 secrets.append(self._entity_item(ent))
@@ -731,68 +720,47 @@ class PowerLogParser:
             else 0
         )
 
-        # 记牌器兜底（减法模型）：已抽离 = 初始进过牌库 − 当前仍在牌库。
-        # 对每张实体按 id 追踪（_ever_in_deck），当前区域不在 DECK 且控制器
-        # 为本机玩家即算已抽离，按 card_id 计数（不依赖本地化卡名）。
-        #   - 洗回牌库再重抽：实体回到 DECK 时不计数、再离开时重新计数，
-        #     与“初始总数 − 当前牌库数”的减法语义一致，不会重复计数；
-        #   - 洗入的生成复制（夜幕奇袭等）initial_zone=DECK 同样参与；
-        #   - 直接生成在手牌/战场的卡（殒命暗影复制等）initial_zone 不是
-        #     DECK，天然不会误计；
-        #   - 初始 30 张在 Power.log 里 CardID 为空（抽到/打出才揭示），
-        #     因此按实体 id 记 _ever_in_deck，而不是按 card_id 记总数，
-        #     否则隐藏牌全部归到空 card_id 上、无法用于剩余牌库匹配。
+        # 记牌器兜底（当前状态减法模型）：已抽离 = 本机玩家、当前不在牌库、
+        # 非生成的已揭示卡，按 card_id 计数（不依赖本地化卡名）。
+        #   - 正常对局：起手/抽牌/打出都会离开 DECK，状态自然成立；
+        #   - 重连/观战恢复：已抽到手/已打出/已进坟场的牌在日志里直接以
+        #     当前区域创建（initial_zone 就是 HAND/PLAY/GRAVEYARD），按
+        #     “当前不在牌库”判据同样能识别，不再依赖“是否进过 DECK”；
+        #   - 洗回牌库再重抽：回到 DECK 时不计数、再离开时重新计数，与
+        #     “初始总数 − 当前牌库数”减法语义一致，不会重复计数；
+        #   - 生成物（殒命暗影复制/幻觉药水复制/硬币/武器衍生物等）都带
+        #     CREATOR 标记，直接排除；牛池备选(SETASIDE)与英雄不算抽离。
         drawn_deck: Dict[str, int] = {}
         drawn_unknown = 0
-        current_deck_counts: Dict[str, int] = {}
-        total_ever_in_deck = 0
 
         if local_player is not None:
             # 注意：local_player.controller 是玩家名（此人乃天下绝响#5854），
             # 不是 controller id；本机控制器 id 已在上面按账号匹配出来。
             local_controller = self.local_controller or local_player.controller
 
-            # 牌库初始 30 张是 FULL_ENTITY 内嵌 tag（ZONE=DECK），不是
-            # TagChange 包，_on_zone_change 收不到；这里用 initial_zone 补录，
-            # 之后无论抽进手牌还是打出去都能被算作“已离开牌库”。
             for ent in game.entities:
-                if getattr(ent, "initial_zone", None) == Zone.DECK:
-                    self._ever_in_deck.add(ent.id)
-
-            for ent in game.entities:
-                if ent.id not in self._ever_in_deck:
-                    continue
-
                 if ent.tags.get(GameTag.CONTROLLER) != local_controller:
                     # 只统计本机玩家的牌库实体（对手的起手/抽牌不混入）
                     continue
 
-                if ent.zone == Zone.DECK:
-                    cid = ent.card_id or ""
-                    current_deck_counts[cid] = current_deck_counts.get(cid, 0) + 1
-                    total_ever_in_deck += 1
+                if ent.zone in (Zone.DECK, Zone.SETASIDE):
+                    # 仍在牌库 / 牛池备选区：不算已抽离
                     continue
 
-                card_id = ent.card_id or ""
-                total_ever_in_deck += 1
+                if ent.tags.get(GameTag.CREATOR):
+                    # 生成物（复制/衍生物/英雄技能等）不是从牌库抽出的原卡
+                    continue
+
+                if getattr(ent, "type", None) == CardType.HERO:
+                    continue
+
+                card_id = getattr(ent, "card_id", None) or ""
 
                 if not card_id:
-                    # 已离开牌库但尚未揭示（如燃烧/观战延迟）：计入未知数，
-                    # 由 merge_snapshot 的 remaining_unknown 承接
                     drawn_unknown += 1
                     continue
 
                 drawn_deck[card_id] = drawn_deck.get(card_id, 0) + 1
-
-        # 减法一致性：已抽离总数应等于 初始进过牌库 − 当前仍在牌库。
-        # 个别实体缺 CONTROLLER tag（特殊英雄技能牌等）时差值并入未揭示数，
-        # 保证 merge_snapshot 的 remaining_unknown 承接，不让快照崩溃。
-        accounted = (
-            sum(drawn_deck.values()) + drawn_unknown + sum(current_deck_counts.values())
-        )
-
-        if accounted != total_ever_in_deck:
-            drawn_unknown += max(0, total_ever_in_deck - accounted)
 
         current_effects = [
             {"name": name, "count": count}
@@ -866,6 +834,7 @@ class PowerLogParser:
             "enemy_board": enemy_board,
             "deck": deck,
             "deck_unknown_cards": deck_unknown_cards,
+            "local_graveyard": local_graveyard,
             "drawn_deck_raw": drawn_deck,
             "drawn_unknown": drawn_unknown,
             "secrets": secrets,
@@ -883,6 +852,16 @@ class PowerLogParser:
         card_type = ent.type
         health = ent.tags.get(GameTag.HEALTH)
         health_max = health
+        cost = ent.tags.get(GameTag.COST)
+
+        if cost is None and card_id:
+            # 重连/观战恢复：被动态减费（刀油 −2 等）的手牌/场面卡不带 COST
+            # tag（正常对局始终带 tag，缺失只在恢复类日志出现），按
+            # “基础费 − 2（最少 0）”重建，避免引擎误按原费搜索漏掉减费线。
+            base_cost = (_load_card_map().get(card_id) or {}).get("cost")
+
+            if isinstance(base_cost, int) and base_cost >= 0:
+                cost = max(0, base_cost - 2)
 
         if card_type == CardType.MINION:
             # 当前血量 = 基础血量 - 已受伤害（DAMAGE），随标签变化实时更新
@@ -894,12 +873,16 @@ class PowerLogParser:
         return {
             "card_id": card_id,
             "name": card_name(card_id),
-            "cost": ent.tags.get(GameTag.COST),
+            "cost": cost,
             "health": health if card_type == CardType.MINION else None,
             "health_max": health_max if card_type == CardType.MINION else None,
             "attack": ent.tags.get(GameTag.ATK),
             "zone_position": ent.tags.get(GameTag.ZONE_POSITION),
             "ghostly": bool(ent.tags.get(GameTag.GHOSTLY)),
+            "creator": bool(ent.tags.get(GameTag.CREATOR)),
+            "zone": getattr(ent, "zone", None).name
+            if getattr(ent, "zone", None) is not None
+            else "",
         }
 
 

@@ -123,6 +123,49 @@ def main():
         print("FAIL: WhatIF 未包含持枪要挟分支标注")
         return 1
 
+    # 溢出平局决胜：未勾选精确截断时，kill 同比例优先选溢出伤害高的树
+    worker2 = M.CalculationWorker(snap, {**options, "truncate_normal": False})
+
+    def mk_leaf(card, dmg):
+        return {
+            "card": card,
+            "outcome": card,
+            "damage": dmg,
+            "dragons": 1,
+            "mana_left": 0,
+            "mid": [card + "（x）"],
+            "path": [card + "（x）"],
+        }
+
+    tie_tree = {
+        "root": ["币"],
+        "branches": [
+            {
+                "card": "牛",
+                "outcome": "牛",
+                "damage": 48,
+                "mid": ["牛"],
+                "path": ["牛"],
+                "children": [mk_leaf("补水", 48), mk_leaf("脱水", 32)],
+            },
+            {
+                "card": "狐",
+                "outcome": "狐",
+                "damage": 32,
+                "mid": ["狐"],
+                "path": ["狐"],
+                "children": [mk_leaf("补水", 32), mk_leaf("脱水", 32)],
+            },
+        ],
+    }
+    worker2._apply_branch_strategy(tie_tree)
+    chosen_root = list(tie_tree.get("root") or [])
+    print("tie-break root tail:", chosen_root[-1] if chosen_root else None)
+
+    if not chosen_root or str(chosen_root[-1]) != "牛":
+        print("FAIL: 同比例未按溢出伤害决胜（应选 48|32 的牛树而非 32|32 的狐树）")
+        return 1
+
     print("PASS")
     return 0
 
