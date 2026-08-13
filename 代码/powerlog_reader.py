@@ -801,6 +801,17 @@ class PowerLogParser:
         card_type = ent.type
         health = ent.tags.get(GameTag.HEALTH)
         health_max = health
+        cost = ent.tags.get(GameTag.COST)
+
+        if cost is None and card_id:
+            # 重连/观战恢复：被动态减费（刀油 −2 等）的手牌/场面卡不带 COST
+            # tag（正常对局始终带 tag，缺失只在恢复类日志出现），按
+            # “基础费 − 2（最少 0）”重建，避免引擎误按原费搜索漏掉减费线
+            # （如 狐人老千 0 费 → 5 费+硬币可打出 32 伤/2 龙）。
+            base_cost = (_load_card_map().get(card_id) or {}).get("cost")
+
+            if isinstance(base_cost, int) and base_cost >= 0:
+                cost = max(0, base_cost - 2)
 
         if card_type == CardType.MINION:
             # 当前血量 = 基础血量 - 已受伤害（DAMAGE），随标签变化实时更新
@@ -812,7 +823,7 @@ class PowerLogParser:
         return {
             "card_id": card_id,
             "name": card_name(card_id),
-            "cost": ent.tags.get(GameTag.COST),
+            "cost": cost,
             "health": health if card_type == CardType.MINION else None,
             "health_max": health_max if card_type == CardType.MINION else None,
             "attack": ent.tags.get(GameTag.ATK),
