@@ -5140,14 +5140,16 @@ class MiniWindow(QWidget):
         root.addWidget(grip, 0, Qt.AlignRight)
 
     def set_formula_font(self, size: int) -> None:
-        """设置公式（分轮结果）字号。"""
+        """设置公式（分轮结果）字号；WhatIF 指引树在此基础上放大一档（+4px）。"""
         font = self.mini_result.font()
         font.setPixelSize(int(size))
         self.mini_result.setFont(font)
         self.mini_result.document().setDefaultFont(font)
 
         if self._whatif_pop is not None:
-            self._whatif_pop.guide.setFont(font)
+            whatif_font = QFont(font)
+            whatif_font.setPixelSize(int(size) + 4)
+            self._whatif_pop.guide.setFont(whatif_font)
             self._whatif_pop.guide._content_changed()
 
     # ---- 拖动 / 吸附 / 调整大小 ----
@@ -5578,19 +5580,19 @@ class IntroDialog(QDialog):
             '<b><span style="color:#7C3AED;">小窗</span></b>按钮，弹出小窗；小窗处点击“计算”，'
             '运行<b>束宽搜索</b>。<br/>'
             '3. <b>束宽</b>默认填 0 即可；如果怀疑搜出的不是最优解，可勾选'
-            '“<b><span style="color:#DC2626;">不限时</span></b>”，并将束宽设置为'
+            '“<b><span style="color:#0F766E;">不限时</span></b>”，并将束宽设置为'
             '<b>十万</b>或更高，<b>深度40</b>或更高，以计算全局最优解。<br/>'
             '4. <b><span style="color:#D97706;">场面交换</span></b>：默认留空，自动搜索最优交换；'
-            '会根据当前场面，计算出场面得到的<b><span style="color:#D97706;">最高伤害</span></b>交换解。<br/>'
+            '会根据当前场面，计算出场面得到的<b><span style="color:#C2410C;">最高伤害</span></b>交换解。<br/>'
             '5. 小窗默认置顶，最小化需要点击按钮，默认计算最高伤害，<b>分轮</b>显示路径。'
             '<br/>'
             '6. <b><span style="color:#7C3AED;">WhatIF 分支树</span></b>：正常计算后自动展开，'
-            '以<b><span style="color:#7C3AED;">独立小窗</span></b>贴在小窗正下方显示'
-            '<b><span style="color:#7C3AED;">指引树</span></b>（一条主干 + 分叉点，'
+            '以<b><span style="color:#0EA5E9;">独立小窗</span></b>贴在小窗正下方显示'
+            '<b><span style="color:#C026D3;">指引树</span></b>（一条主干 + 分叉点，'
             '持枪要挟/垂钓时光/潜伏帷幕等分支完整展开，分支严格从主干续算，'
             '可点选分支、返回上级/回到主干）。<br/>'
             '7. 根据海量对局数据反馈设计了<b><span style="color:#D97706;">场面交换算法</span></b>，'
-            '覆盖了95%的<b><span style="color:#D97706;">预启动</span></b>'
+            '覆盖了95%的<b><span style="color:#16A34A;">预启动</span></b>'
             '复杂情况下的场面交换处理。'
             '</span>'
         )
@@ -5609,19 +5611,19 @@ class IntroDialog(QDialog):
             '　　为了实现将计算时间压缩到<b><span style="color:#DC2626;">3s以内</span></b>，'
             '以及实现支持持枪要挟，随机抽牌等分支尝试效果。该计算器经历了'
             '<b><span style="color:#D97706;">多轮底层架构的优化</span></b>和'
-            '<b><span style="color:#D97706;">相关算法的设计尝试</span></b>'
+            '<b><span style="color:#0891B2;">相关算法的设计尝试</span></b>'
             '(<b><span style="color:#D97706;">场面交换</span></b>算法，'
             '<b><span style="color:#7C3AED;">分支尝试</span></b>算法，'
             '<b><span style="color:#0E7490;">束搜索剪枝</span></b>等)，以及'
             '<b><span style="color:#EA580C;">反反复复</span></b>的bug修改，'
             '普遍覆盖了<b><span style="color:#16A34A;">95%以上的最优解</span></b>，'
-            '并且计算出许多公式表上的<b><span style="color:#D97706;">更优解</span></b>'
-            '以及一些神奇的<b><span style="color:#7C3AED;">等价路径</span></b>，'
+            '并且计算出许多公式表上的<b><span style="color:#2563EB;">更优解</span></b>'
+            '以及一些神奇的<b><span style="color:#C026D3;">等价路径</span></b>，'
             '具体由使用者自己发掘。<br/>'
             '　　由于开发这个软件的过程耗费了作者'
             '<b><span style="color:#DC2626;">大量</span></b>的时间精力和金钱，'
             '所以如果该软件帮助到了您，请务必给作者'
-            '<b><span style="color:#D97706;">一点支持</span></b>。'
+            '<b><span style="color:#F59E0B;">一点支持</span></b>。'
             '</span>'
         )
         author_body.setWordWrap(True)
