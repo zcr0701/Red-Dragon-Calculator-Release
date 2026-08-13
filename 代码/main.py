@@ -2212,16 +2212,6 @@ class CalculationWorker(QThread):
                             )
 
                     if qd_tree:
-                        # 无后续伤害的分支（总伤 − 分叉点伤 ≤ 0）直接不显示
-                        qd_tree = [
-                            tb
-                            for tb in qd_tree
-                            if int(tb.get("damage") or 0)
-                            - int(tb.get("fork_damage") or 0)
-                            > 0
-                        ]
-
-                    if qd_tree:
                         leaf_damages = [int(tb.get("damage") or 0) for tb in qd_tree]
                         whatif_tree = {
                             "root": root_steps,
