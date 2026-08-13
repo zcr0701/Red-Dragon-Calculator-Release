@@ -1867,6 +1867,14 @@ def _whatif_tree_text(data: Dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def _cloud_upload_allowed(snapshot: Dict[str, object]) -> bool:
+    """云端上报附加条件：友方场上无随从，或只有一个鲨鱼之灵。"""
+    board = snapshot.get("board") or []
+    if not board:
+        return True
+    return len(board) == 1 and str(board[0].get("name") or "") == "鲨鱼之灵"
+
+
 class CalculationWorker(QThread):
     """后台线程调用 C++ 核心，进度/结果/错误通过信号回主线程。"""
 
@@ -3011,10 +3019,14 @@ class CalculationWorker(QThread):
             result["whatif_tree"] = whatif_tree
             result["original"] = result.get("original") or None
 
-            # 静默云端上报数据：仅当 正常计算伤害 > 0 时上报；
+            # 静默云端上报数据：仅当 正常计算伤害 > 0，且友方场上无随从
+            # （或只有一个鲨鱼之灵）时上报；
             # 内容 = 用户ID + 场面信息（敌方职业/手牌/场面/法力/水晶/牛池等）
             # + 缩写公式 + 完整对局出牌/操作记录。
-            if int(result.get("max_damage") or 0) > 0:
+            if (
+                int(result.get("max_damage") or 0) > 0
+                and _cloud_upload_allowed(self.snapshot)
+            ):
                 best_path0 = list(
                     ((result.get("results") or [{}])[0].get("path") or [])
                 )
