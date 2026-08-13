@@ -205,7 +205,7 @@ static const unordered_map<string, CardDef> DB = {
     {"异教地图", {2, "spell", "cultist_map", false, false, false, -1}},
     {"行骗", {2, "spell", "swindle", false, true, false, -1}},
     {"暗影之门", {1, "spell", "shadow_gate", false, false, false, -1}},
-    {"双面生意", {2, "spell", "", false, false, false, -1}},
+    {"双面生意", {2, "secret", "", false, false, false, -1}},
     {"闪避", {2, "secret", "evasion", false, false, false, -1}},
     {"潜伏帷幕", {3, "spell", "shroud_of_concealment", false, false, false, -1}},
     {"晦鳞巢母", {3, "minion", "candlebreath_mother", true, false, false, 3}},
