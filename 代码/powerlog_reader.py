@@ -336,6 +336,8 @@ class PowerLogParser:
         self._last_turn_seen: Optional[int] = None
         self._sp_cost_expire_turn: Optional[int] = None
         self._cards_played_this_turn = 0
+        self.local_controller: Optional[int] = None
+        self.spectator_mode = False
         # 垂钓时光探底追踪：最近一次垂钓时光的选择（id/候选底牌），解析后写入 dredge_bottom
         self._dredge_choice: Optional[dict] = None
         self._dredge_bottom: List[str] = []
@@ -576,6 +578,7 @@ class PowerLogParser:
                 "in_game": False,
                 "reason": "对局尚未开始",
                 "hand": [],
+                "opponent_hand": [],
                 "board": [],
                 "deck": [],
                 "secrets": [],
@@ -589,6 +592,7 @@ class PowerLogParser:
                 "opponent_hero": None,
                 "game_state": None,
                 "game_over": False,
+                "spectator": False,
             }
 
         tree = games[-1]
@@ -597,6 +601,7 @@ class PowerLogParser:
         local_controller = self.forced_player_id
         local_player: Optional[object] = None
         opponent_player: Optional[object] = None
+        spectator_mode = False
 
         for player in game.players:
             if (
@@ -610,13 +615,25 @@ class PowerLogParser:
             else:
                 opponent_player = player
 
+        # 观战：本机账号不是对局双方（观战者），默认分析先手玩家，
+        # 双方手牌都解析（观战可见双方手牌）。
+        if local_controller is None and len(game.players) >= 2:
+            spectator_mode = True
+            local_controller = game.players[0].player_id
+            local_player = game.players[0]
+            opponent_player = (
+                game.players[1] if len(game.players) > 1 else None
+            )
+
         self.local_controller = local_controller
+        self.spectator_mode = spectator_mode
 
         if local_controller is None:
             return {
                 "in_game": False,
-                "reason": "对局尚未开始，或无法判断本机玩家",
+                "reason": "对局尚未开始，或无对局玩家",
                 "hand": [],
+                "opponent_hand": [],
                 "board": [],
                 "deck": [],
                 "secrets": [],
@@ -630,6 +647,7 @@ class PowerLogParser:
                 "opponent_hero": None,
                 "game_state": None,
                 "game_over": False,
+                "spectator": False,
             }
 
         self._process_events(tree, game)
@@ -638,6 +656,7 @@ class PowerLogParser:
         hand_entities: List[object] = []
         board: List[dict] = []
         enemy_board: List[dict] = []
+        opponent_hand: List[dict] = []
         deck: List[dict] = []
         local_graveyard: List[dict] = []
         secrets: List[dict] = []
@@ -669,6 +688,9 @@ class PowerLogParser:
                 secrets.append(self._entity_item(ent))
 
         if opponent_player is not None:
+            for ent in opponent_player.in_zone(Zone.HAND):
+                opponent_hand.append(self._entity_item(ent))
+
             for ent in opponent_player.in_zone(Zone.PLAY):
                 if ent.type == CardType.MINION:
                     enemy_board.append(self._entity_item(ent))
@@ -830,6 +852,7 @@ class PowerLogParser:
             "mana": mana,
             "cards_played_this_turn": cards_played_this_turn,
             "hand": hand,
+            "opponent_hand": opponent_hand,
             "board": board,
             "enemy_board": enemy_board,
             "deck": deck,
@@ -844,6 +867,7 @@ class PowerLogParser:
             "deadly_shadow_hand_indexes": deadly_shadow_hand_indexes,
             "dredge_bottom": list(self._dredge_bottom),
             "parser": "hslog",
+            "spectator": spectator_mode,
             "line_errors": self.line_errors,
         }
 
