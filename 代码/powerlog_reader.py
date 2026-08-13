@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from hearthstone.enums import BlockType, CardType, GameTag, PlayState, Zone
+from hearthstone.enums import BlockType, CardType, ChoiceType, GameTag, PlayState, Zone
 from hslog.export import EntityTreeExporter
 from hslog.exceptions import MissingPlayerData
 from hslog.parser import LogParser
@@ -341,6 +341,10 @@ class PowerLogParser:
         # 垂钓时光探底追踪：最近一次垂钓时光的选择（id/候选底牌），解析后写入 dredge_bottom
         self._dredge_choice: Optional[dict] = None
         self._dredge_bottom: List[str] = []
+        # 完整对局记录（云端上报）：换牌 + 每回合出牌/操作
+        self._game_record: List[dict] = []
+        self._mulligan_choice: Optional[dict] = None
+        self._turn_number: int = 0
 
     def feed_line(self, line: str) -> None:
         try:
@@ -370,9 +374,64 @@ class PowerLogParser:
             elif isinstance(packet, TagChange) and packet.tag == GameTag.TURN:
                 self._on_turn_change(packet.value)
             elif isinstance(packet, Choices):
-                self._on_dredge_choices(packet, game)
+                if packet.type == ChoiceType.MULLIGAN:
+                    self._on_mulligan_choices(packet, game)
+                else:
+                    self._on_dredge_choices(packet, game)
             elif isinstance(packet, (SendChoices, ChosenEntities)):
-                self._on_dredge_chosen(packet, game)
+                if (
+                    self._mulligan_choice is not None
+                    and getattr(packet, "id", None)
+                    == self._mulligan_choice.get("id")
+                ):
+                    self._on_mulligan_chosen(packet, game)
+                else:
+                    self._on_dredge_chosen(packet, game)
+
+    def _on_mulligan_choices(self, packet, game) -> None:
+        """DebugPrintEntityChoices：type=MULLIGAN 时记录起手牌（初始手牌）与换牌。"""
+        options: List[str] = []
+        ctrl: Optional[int] = None
+
+        for cid in getattr(packet, "choices", None) or []:
+            c = game.find_entity_by_id(cid)
+            c_card = getattr(c, "card_id", None)
+
+            if c and c_card:
+                options.append(card_name(c_card))
+
+                if ctrl is None:
+                    ctrl = c.tags.get(GameTag.CONTROLLER)
+
+        self._mulligan_choice = {
+            "id": getattr(packet, "id", None),
+            "initial_hand": options,
+        }
+        self._game_record.append(
+            {
+                "type": "mulligan",
+                "turn": 0,
+                "player_controller": ctrl,
+                "initial_hand": list(options),
+                "replaced": [],
+            }
+        )
+
+    def _on_mulligan_chosen(self, packet, game) -> None:
+        """SendChoices/ChosenEntities：换牌结果 = 被替换（换掉）的起手牌。"""
+        chosen: List[str] = []
+
+        for cid in getattr(packet, "choices", None) or []:
+            c = game.find_entity_by_id(cid)
+            c_card = getattr(c, "card_id", None)
+
+            if c and c_card:
+                chosen.append(card_name(c_card))
+
+        if self._game_record and self._game_record[-1].get("type") == "mulligan":
+            self._game_record[-1]["replaced"] = chosen
+
+        self._mulligan_choice = None
 
     def _on_dredge_choices(self, packet, game) -> None:
         """DebugPrintEntityChoices：Source=垂钓时光 时记录 3 张探底候选（复制实体带 card_id）。"""
@@ -503,6 +562,15 @@ class PowerLogParser:
         name = card_name(ent_card)
         self._consume_effects(name, ent)
 
+        # 完整对局记录：每回合出牌/操作（供云端上报）
+        self._game_record.append(
+            {
+                "type": "play",
+                "turn": self._turn_number,
+                "card": name,
+            }
+        )
+
         # 本回合打出的随从：标记召唤失调（当回合不能参与场面交换/攻击）
         if getattr(ent, "type", None) == CardType.MINION:
             self._played_minions_this_turn.add(entity_id)
@@ -515,6 +583,7 @@ class PowerLogParser:
             return
 
         self._last_turn_seen = value
+        self._turn_number = value
         self._cards_played_this_turn = 0
         self._played_minions_this_turn.clear()
 
@@ -822,6 +891,16 @@ class PowerLogParser:
             "current_effects": current_effects,
             "deadly_shadow_hand_indexes": deadly_shadow_hand_indexes,
             "dredge_bottom": list(self._dredge_bottom),
+            # 完整对局记录：换牌只留本机玩家的，出牌本来就是本机
+            "game_record": [
+                e
+                for e in self._game_record
+                if (
+                    e.get("type") != "mulligan"
+                    or e.get("player_controller")
+                    in (None, local_controller)
+                )
+            ],
             "parser": "hslog",
             "spectator": spectator_mode,
             "line_errors": self.line_errors,

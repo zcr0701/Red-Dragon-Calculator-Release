@@ -123,6 +123,8 @@ def build_payload(
             "damage": int(result.get("max_damage") or 0),
             "remain_cost": int(best.get("mana") or 0),
             "play_sequence": [str(step) for step in (best.get("path") or [])],
+            # 完整对局记录：起手牌/换牌 + 前几个回合的出牌操作（reader 自动追踪）
+            "game_record": snapshot.get("game_record") or [],
             # 场面交换处理：最优解使用的交换计划（我方随从->敌方随从/英雄）
             "exchanges": exchanges,
             # 统一 W-B 机制分支树（抽随从卡/持枪要挟分支的完整记录）

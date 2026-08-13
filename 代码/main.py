@@ -4899,6 +4899,57 @@ class WBTreeWindow(QDialog):
         self.scene.addItem(txt)
 
 
+class WhatIFPopWindow(QWidget):
+    """WhatIF 独立小窗：贴在红龙小窗正下方、等宽，内容超高时内部滚动。"""
+
+    def __init__(self, mini: "MiniWindow"):
+        super().__init__(
+            None,
+            Qt.Window | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint,
+        )
+        self.mini = mini
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self._build_ui()
+        self.hide()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(0)  # QFrame.NoFrame
+        self.guide = WhatIFDistPanel()
+        self.guide.setVisible(True)
+        self.scroll.setWidget(self.guide)
+        root.addWidget(self.scroll)
+
+    def set_whatif(
+        self,
+        data: Dict[str, object],
+        colors: bool = True,
+        normal_damage: Optional[int] = None,
+    ) -> None:
+        self.guide.set_whatif(data, colors=colors, normal_damage=normal_damage)
+        self.show()
+        self.raise_()
+        self.reposition()
+
+    def reposition(self) -> None:
+        """贴在小窗正下方，等宽；高度按内容自适应、封顶到屏幕底。"""
+        g = self.mini.frameGeometry()
+        screen = QApplication.primaryScreen().availableGeometry()
+        w = g.width()
+        x = max(screen.left(), min(g.x(), screen.right() - w))
+        top = g.bottom() + 2
+        ideal = int(self.guide.sizeHint().height()) + 8
+        h = max(120, min(ideal, max(120, screen.bottom() - top - 2)))
+        self.setGeometry(x, top, w, h)
+
+    def hideEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        super().hideEvent(event)
+
+
 class MiniWindow(QWidget):
     """始终置顶的小窗：竖条长方框（长宽比 2~4:1），可拖动/拖长，吸附屏幕边界。
 
@@ -4910,7 +4961,7 @@ class MiniWindow(QWidget):
         super().__init__(None, Qt.Window | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
         self.main = main
         self.setWindowTitle("红龙小窗(CreATedBy此人乃天下绝响#5854)")
-        self.resize(210, 560)  # 高:宽 ≈ 2.7:1（2~4:1）
+        self.resize(210, 780)  # 高:宽 ≈ 3.7:1，给结果区+WhatIF 区留足空间
         self._drag_offset: Optional[QPoint] = None
         self._last_data: Optional[Dict[str, object]] = None
         self._build_ui()
@@ -5022,25 +5073,9 @@ class MiniWindow(QWidget):
         self.mini_result.setReadOnly(True)
         self.mini_result.document().setMaximumBlockCount(3000)
         self.mini_result.setMinimumHeight(60)
-        # 正常计算（多轮）优先：占主空间可滚动，不被下方 WhatIF 挤没
+        # 正常计算占满小窗（可滚动）；WhatIF 独立弹出窗口贴在小窗下方（见 _render_result）
         root.addWidget(self.mini_result, 1)
-        # WhatIF 引导面板（指引出牌 + 分叉点选 + 最高/平均/保底/值得）
-        # 包进滚动区并限高：内容多时内部滚动条，不把窗口顶高、不遮正常计算文字
-        self.mini_whatif_scroll = QScrollArea()
-        self.mini_whatif_scroll.setWidgetResizable(True)
-        self.mini_whatif_scroll.setFrameShape(0)  # QFrame.NoFrame
-        # 固定高度：WhatIF 内容多时内部滚动条，窗口不无限长高
-        self.mini_whatif_scroll.setFixedHeight(180)
-        # 高度策略 Ignored：不参与布局最小尺寸，避免把窗口顶高
-        self.mini_whatif_scroll.setSizePolicy(
-            QSizePolicy.Preferred, QSizePolicy.Ignored
-        )
-        self.mini_whatif_guide = WhatIFDistPanel()
-        # 面板本身常显，滚动区控制整体显隐
-        self.mini_whatif_guide.setVisible(True)
-        self.mini_whatif_scroll.setWidget(self.mini_whatif_guide)
-        self.mini_whatif_scroll.setVisible(False)
-        root.addWidget(self.mini_whatif_scroll)
+        self._whatif_pop: Optional["WhatIFPopWindow"] = None
         self.set_formula_font(self.main.mini_font_size())
 
         grip = QSizeGrip(self)
@@ -5052,16 +5087,12 @@ class MiniWindow(QWidget):
         font.setPixelSize(int(size))
         self.mini_result.setFont(font)
         self.mini_result.document().setDefaultFont(font)
-        self.mini_whatif_guide.setFont(font)
-        self.mini_whatif_guide._content_changed()
+
+        if self._whatif_pop is not None:
+            self._whatif_pop.guide.setFont(font)
+            self._whatif_pop.guide._content_changed()
 
     # ---- 拖动 / 吸附 / 调整大小 ----
-
-    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt 命名
-        """最小尺寸不随内容增长：WhatIF 内容多时用内部滚动条，
-        结果区/WhatIF 区各自可压缩滚动，窗口不被顶高。"""
-        base = super().minimumSizeHint()
-        return QSize(base.width(), max(180, self.height()))
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         if event.button() == Qt.LeftButton:
@@ -5086,11 +5117,27 @@ class MiniWindow(QWidget):
                 y = screen.bottom() - self.height()
 
             self.move(x, y)
+
+            if self._whatif_pop is not None:
+                self._whatif_pop.reposition()
+
             event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         self._drag_offset = None
         event.accept()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        super().resizeEvent(event)
+
+        if self._whatif_pop is not None and self._whatif_pop.isVisible():
+            self._whatif_pop.reposition()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        super().hideEvent(event)
+
+        if self._whatif_pop is not None:
+            self._whatif_pop.hide()
 
     # ---- 与主窗口双向同步 ----
 
@@ -5292,7 +5339,7 @@ class MiniWindow(QWidget):
         else:
             self.mini_result.setPlainText(text)
 
-        # 2) WhatIF 引导面板
+        # 2) WhatIF 引导面板：独立窗口贴在小窗正下方（等宽、内容可滚动）
         has_whatif = bool(
             data.get("whatif_tree")
             or data.get("quickdraw_branches")
@@ -5305,13 +5352,15 @@ class MiniWindow(QWidget):
             res0 = data.get("results") or []
             normal_dmg = int((res0[0].get("damage") if res0 else 0) or 0)
 
-        self.mini_whatif_guide.set_whatif(
-            data, colors=colors, normal_damage=normal_dmg
-        )
-        prev_size = self.size()
-        self.mini_whatif_scroll.setVisible(has_whatif)
-        # 保持窗口尺寸：WhatIF 显示时压缩结果区而非顶高窗口
-        self.resize(prev_size)
+        if has_whatif:
+            if self._whatif_pop is None:
+                self._whatif_pop = WhatIFPopWindow(self)
+
+            self._whatif_pop.set_whatif(
+                data, colors=colors, normal_damage=normal_dmg
+            )
+        elif self._whatif_pop is not None:
+            self._whatif_pop.hide()
 
     def _mini_original_text(
         self,
