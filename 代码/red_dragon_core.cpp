@@ -386,10 +386,6 @@ struct State {
     bool used_draw_branch = false;    // 路径中是否打出过抽随从分支卡（行骗/挖掘宝藏/潜伏帷幕/垂钓时光）
     string last_draw_key;             // 最近一次抽随从分支卡抽到的随从集（如 “狐人老千”/“刀、狐”，空=未抽）
     vector<string> dredge_bottom;     // 垂钓时光探底已知牌（牌库底 3 张中已知的部分，≤3；缺位=未知杂牌）
-    uint8_t combo_deck_mask = 0;      // 牌库剩余组合随从位图（bit i = COMBO_MINION_POOL[i] 仍在牌库）
-                                      // 初始=卡组勾选随从 - 起手手牌/场面，抽走才清除；被烧/阵亡不重新入池
-    int fork_damage = 0;              // 最近一次分支卡（行骗/挖掘/潜伏/垂钓/持枪）打出时的伤害
-                                      // = 该分叉点之前的伤害；用于“后续造成伤害为0则不给展开选项”
     std::shared_ptr<vector<string>> path_buf;  // 路径共享存储（克隆 O(1)，写时复制）
 
     const vector<string>& path() const {
@@ -451,8 +447,6 @@ struct State {
         c.used_quickdraw = used_quickdraw;
         c.used_draw_branch = used_draw_branch;
         c.last_draw_key = last_draw_key;
-        c.combo_deck_mask = combo_deck_mask;
-        c.fork_damage = fork_damage;
         c.dredge_bottom.reserve(dredge_bottom.size() + 1);
         c.dredge_bottom.assign(dredge_bottom.begin(), dredge_bottom.end());
         c.path_buf = path_buf;
@@ -926,8 +920,6 @@ static vector<State> apply_search_effect(State base, const Card& card,
             State s = base.clone_reserved();
             if (s.quickdraw_choice < 0) s.quickdraw_choice = (int)ci;
             s.used_quickdraw = true;
-            s.fork_damage = base.alex_damage;
-            s.forced_draw_choice.clear();  // 强制抽牌用一次即失效
             add_card_to_hand_or_burn(s, make_card(choice));
             // 路径标注“（X）”：持枪要挟只是把快枪牌置入手牌，X 由玩家后续打出
             if (!s.path().empty()) {
@@ -942,8 +934,6 @@ static vector<State> apply_search_effect(State base, const Card& card,
             if (s.quickdraw_choice < 0)
                 s.quickdraw_choice = (int)QUICKDRAW_MODELED_POOL.size();  // 下标 5 = 其他快枪牌·随从
             s.used_quickdraw = true;
-            s.fork_damage = base.alex_damage;
-            s.forced_draw_choice.clear();
             Card junk = make_card("未知快枪牌随从");
             junk.type_idx = N_T_MINION;
             add_card_to_hand_or_burn(s, junk);
@@ -959,8 +949,6 @@ static vector<State> apply_search_effect(State base, const Card& card,
             if (s.quickdraw_choice < 0)
                 s.quickdraw_choice = (int)QUICKDRAW_MODELED_POOL.size() + 1;  // 下标 6 = 其他快枪牌·法术
             s.used_quickdraw = true;
-            s.fork_damage = base.alex_damage;
-            s.forced_draw_choice.clear();
             Card junk = make_card("未知快枪牌法术");
             junk.type_idx = N_T_SPELL;
             add_card_to_hand_or_burn(s, junk);
@@ -1171,36 +1159,23 @@ static const vector<string> COMBO_MINION_POOL = {
     "狐人老千",        // 狐 1
 };
 
-// 牌库剩余组合随从：初始 = 卡组勾选随从 - 起手手牌/场面（固定），
-// 之后只有“从牌库抽到”才减少；被舞动全场回手溢出烧掉、被杀死等
-// 都不会让随从重新回到牌库（避免 行骗 抽回已经烧掉/阵亡的随从）。
 static vector<string> combo_missing_minions(const State& s) {
     vector<string> missing;
-    for (size_t i = 0; i < COMBO_MINION_POOL.size(); i++) {
-        if (s.combo_deck_mask & (uint8_t)(1u << i)) {
-            missing.push_back(COMBO_MINION_POOL[i]);
-        }
+    auto have = [&](const string& n) {
+        for (const auto& c : s.hand) if (c.name() == n) return true;
+        for (const auto& c : s.board) if (c.name() == n) return true;
+        return false;
+    };
+    for (const string& n : COMBO_MINION_POOL) {
+        if (!have(n)) missing.push_back(n);
     }
     return missing;
-}
-
-// 从牌库抽走一张组合随从：清除位图中对应位（抽走后才不可再抽）。
-static void deck_draw_minion(State& s, const string& name) {
-    for (size_t i = 0; i < COMBO_MINION_POOL.size(); i++) {
-        if (COMBO_MINION_POOL[i] == name) {
-            s.combo_deck_mask &= (uint8_t)~(1u << i);
-            return;
-        }
-    }
 }
 
 // 组合取 k 个的所有组合（用于潜伏帷幕抽 2 张时展开分支），最多 MAX 个。
 static vector<vector<string>> combo_combinations(const vector<string>& pool, int k,
                                                   size_t max_count = 32) {
     vector<vector<string>> out;
-    // 防御：k 超出池大小（如潜伏帷幕抽 2 张但缺失池只剩 1 个随从）无合法组合，
-    // 直接返回空，由调用方按“抽剩余全部”兜底，避免越界访问 pool[idx]。
-    if (k <= 0 || k > (int)pool.size()) return out;
     vector<size_t> idx(k, 0);
     for (size_t i = 0; i < idx.size(); i++) idx[i] = i;
     while (true) {
@@ -1335,32 +1310,20 @@ static vector<State> generate_successors(const State& st) {
                             drawn_sets.push_back({st.forced_draw_choice});
                         }
                     } else if (forced) {
-                        // 潜伏帷幕抽 2 张：只保留包含指定随从的组合。
-                        // 缺失池不足抽取张数时（如只剩 1 个随从），直接抽剩余全部——
-                        // 与常规路径的 missing < draw_count 处理一致，且避免组合越界。
-                        if ((int)missing.size() <= draw_count) {
-                            if (std::find(missing.begin(), missing.end(),
-                                          st.forced_draw_choice) != missing.end()) {
-                                drawn_sets.push_back(missing);
-                            }
-                        } else {
-                            auto combs = combo_combinations(missing, draw_count);
-                            for (auto& comb : combs) {
-                                if (std::find(comb.begin(), comb.end(),
-                                              st.forced_draw_choice) != comb.end()) {
-                                    drawn_sets.push_back(std::move(comb));
-                                }
+                        // 潜伏帷幕抽 2 张：只保留包含指定随从的组合
+                        auto combs = combo_combinations(missing, draw_count);
+                        for (auto& comb : combs) {
+                            if (std::find(comb.begin(), comb.end(),
+                                          st.forced_draw_choice) != comb.end()) {
+                                drawn_sets.push_back(std::move(comb));
                             }
                         }
                     } else if ((int)missing.size() < draw_count) {
                         // 剩余随从不足抽取张数：只抽剩余的全部（单个分支）
                         State base = st.clone_reserved();
                         if (play_card_base(base, hand_index, -1, false, false)) {
-                            base.fork_damage = base.alex_damage;
-                            base.forced_draw_choice.clear();  // 强制抽牌用一次即失效
                             for (const string& mn : missing) {
                                 add_card_to_hand_or_burn(base, make_card(mn));
-                                deck_draw_minion(base, mn);
                             }
                             base.last_draw_key = "";
                             for (size_t k = 0; k < missing.size(); k++) {
@@ -1391,11 +1354,8 @@ static vector<State> generate_successors(const State& st) {
                         if ((int)missing.size() < draw_count) {
                             State base = st.clone_reserved();
                             if (play_card_base(base, hand_index, -1, false, false)) {
-                                base.fork_damage = base.alex_damage;
-                                base.forced_draw_choice.clear();
                                 for (const string& mn : missing) {
                                     add_card_to_hand_or_burn(base, make_card(mn));
-                                    deck_draw_minion(base, mn);
                                 }
                                 base.last_draw_key = "";
                                 for (size_t k = 0; k < missing.size(); k++) {
@@ -1424,8 +1384,6 @@ static vector<State> generate_successors(const State& st) {
                     for (const auto& drawn : drawn_sets) {
                         State base = st.clone_reserved();
                         if (!play_card_base(base, hand_index, -1, false, false)) continue;
-                        base.fork_damage = base.alex_damage;
-                        base.forced_draw_choice.clear();
 
                         if (!base.path().empty()) {
                             string note = "（";
@@ -1439,7 +1397,6 @@ static vector<State> generate_successors(const State& st) {
 
                         for (const string& mn : drawn) {
                             add_card_to_hand_or_burn(base, make_card(mn));
-                            deck_draw_minion(base, mn);
                         }
                         base.last_draw_key = "";
                         for (size_t k = 0; k < drawn.size(); k++) {
@@ -1513,8 +1470,6 @@ static vector<State> generate_successors(const State& st) {
             for (const string& pick : opts) {
                 State base = st.clone_reserved();
                 if (!play_card_base(base, hand_index, -1, false, false)) continue;
-                base.fork_damage = base.alex_damage;
-                base.forced_draw_choice.clear();
                 if (!apply_effect_inplace(base, N_E_FISHIN, card, -1, false)) continue;
                 if (!base.path().empty()) base.path_mut().back() += "（" + pick + "）";
                 if (pick == "未知杂牌") {
@@ -1670,7 +1625,6 @@ static uint64_t state_hash(const State& s) {
     h = mix_hash(h, (uint64_t)s.sp_cost_inc);
     for (const auto& p : s.oil_stacks) h = mix_hash(h, (uint64_t)p.first * 31 + (uint64_t)p.second);
     for (const auto& n : s.dredge_bottom) h = mix_hash(h, str_hash(n));
-    h = mix_hash(h, (uint64_t)s.combo_deck_mask);
     return h;
 }
 
@@ -2936,9 +2890,9 @@ static void print_json_result(const BeamResult& res, const SearchParams& p) {
     printf("  \"draw_branches\": [\n");
     for (size_t i = 0; i < draw_choices.size(); i++) {
         const State& pst = *draw_choices[i];
-        printf("    {\"card\": \"%s\", \"damage\": %d, \"dragons\": %d, \"mana_left\": %d, \"fork_damage\": %d, \"path\": [",
+        printf("    {\"card\": \"%s\", \"damage\": %d, \"dragons\": %d, \"mana_left\": %d, \"path\": [",
                json_escape(pst.last_draw_key).c_str(),
-               pst.alex_damage, pst.alex_play_count, pst.mana, pst.fork_damage);
+               pst.alex_damage, pst.alex_play_count, pst.mana);
         for (size_t j = 0; j < pst.path().size(); j++) {
             if (j) printf(", ");
             printf("\"%s\"", json_escape(pst.path()[j]).c_str());
@@ -2964,9 +2918,9 @@ static void print_json_result(const BeamResult& res, const SearchParams& p) {
         } else {
             card_name = QUICKDRAW_OTHER_SPELL_NAME;
         }
-        printf("    {\"card\": \"%s\", \"damage\": %d, \"dragons\": %d, \"mana_left\": %d, \"fork_damage\": %d, \"path\": [",
+        printf("    {\"card\": \"%s\", \"damage\": %d, \"dragons\": %d, \"mana_left\": %d, \"path\": [",
                json_escape(card_name).c_str(),
-               pst.alex_damage, pst.alex_play_count, pst.mana, pst.fork_damage);
+               pst.alex_damage, pst.alex_play_count, pst.mana);
         for (size_t j = 0; j < pst.path().size(); j++) {
             if (j) printf(", ");
             printf("\"%s\"", json_escape(pst.path()[j]).c_str());
@@ -3118,20 +3072,6 @@ static State state_from_json(const JVal& root) {
                 st.sp_cost_inc += layers * 2;
             }
         }
-    }
-    // 牌库剩余组合随从：固定为“卡组勾选随从 - 起手手牌/场面”；
-    // 之后只随“抽走”减少（deck_draw_minion），随从被烧/阵亡/回手不改变牌库。
-    for (size_t i = 0; i < COMBO_MINION_POOL.size(); i++) {
-        bool have = false;
-        for (const auto& c : st.hand) {
-            if (c.name() == COMBO_MINION_POOL[i]) { have = true; break; }
-        }
-        if (!have) {
-            for (const auto& c : st.board) {
-                if (c.name() == COMBO_MINION_POOL[i]) { have = true; break; }
-            }
-        }
-        if (!have) st.combo_deck_mask |= (uint8_t)(1u << i);
     }
     return st;
 }
