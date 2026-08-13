@@ -2003,7 +2003,7 @@ class CalculationWorker(QThread):
                 # 用户自设束宽：多启发互补（H6/H1/H2/H2），每通道宽度取
                 # max(用户值, 默认四通道该通道宽度)——避免单启发盲区或小束宽
                 # 在紧场面漏掉最优（如 6 水晶 48 伤线只搜出 32）；用户调大则更宽。
-                default_widths = [1100, 1500, 1100, 3000]
+                default_widths = [2400, 3000, 2400, 6000]
                 wide_widths = [max(beam, w) for w in default_widths]
                 heuristics = [6, 1, 2, 2]
             common_kwargs = {

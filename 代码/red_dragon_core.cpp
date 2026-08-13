@@ -2089,15 +2089,19 @@ static int subchain_score(const State& s) {
         }
     }
     // ④ 鱼龙优先级（150953 等）：先鱼后龙几乎总优于先龙后鱼（龙鱼更优 <0.01%）。
-    //    a) 惩罚“刚打出龙、鲨鱼在手可打出却不在场”的状态——这一口龙白少 8 伤；
+    //    a) 硬否决“刚打出龙、鲨鱼在手可打出却不在场”的状态——这一口龙白少 8 伤，
+    //       且整条线不再是 16 的倍数；用户要求把龙鱼分“降低降低再降低”，直接压到
+    //       -1000，任何含先龙后鱼的状态都不允许赢过先鱼后龙的等价线。判定必须是
+    //       “真的打出一条龙”（步骤无目标标注），排除 牛(舞龙)、暗(龙) 等仅含龙名的步骤。
     //    b) 奖励“鱼龙同场”状态——鲨鱼在场时龙必吃满 16，暗施还能借双战吼再复制两条龙。
     if (shark_on == 0 && shark_in_hand > 0) {
         const auto& p = s.path();
-        if (!p.empty() && p.back().find("生命的缚誓者") != string::npos) {
+        if (!p.empty() && p.back().find("生命的缚誓者") != string::npos
+            && p.back().find("（") == string::npos) {
             for (const auto& c : s.hand) {
                 int cc = effective_cost(s, c);
                 if (c.name_idx == N_SHARK && cc >= 0 && cc <= s.mana) {
-                    score -= 24;
+                    score -= 1000;
                     break;
                 }
             }
@@ -2770,9 +2774,11 @@ static BeamResult run_beam_search(const State& start, const SearchParams& p, Pro
     auto t0 = std::chrono::steady_clock::now();
     // 只计算最高伤害：跨通道共享最高伤，用于剪枝与提前停止
     std::atomic<int> shared_best{0};
-    // 默认四通道：H6/1100（8水晶十龙深线）、H1/1500（4水晶十龙/紧线）、
-    // H2/1100（96 伤线）、H2/3000（6水晶紧 48 伤线）
-    static const int DEFAULT_WIDE_WIDTHS[] = {1100, 1500, 1100, 3000};
+    // 默认四通道：H6/2400、H1/3000、H2/2400、H2/6000。
+    // 原 {1100,1500,1100,3000} 在 6 水晶+持枪要挟/殒命局面会漏掉 96 伤线
+    // （把持枪要挟当杂牌打、殒命复制舞动全场的深线），加宽后 3 秒内可挖出
+    // 96/6龙；8 水晶十龙 160 线由 H1/3000 通道兜底，配合龙鱼硬否决不劣化。
+    static const int DEFAULT_WIDE_WIDTHS[] = {2400, 3000, 2400, 6000};
     static const int DEFAULT_HEURISTICS[] = {6, 1, 2, 2};
     int wide_count = p.wide_width > 0 ? 1 : (int)std::max(p.wide_widths.size(), p.heuristics.size());
     if (p.wide_width <= 0 && p.wide_widths.empty() && p.heuristics.empty()) wide_count = 2;
