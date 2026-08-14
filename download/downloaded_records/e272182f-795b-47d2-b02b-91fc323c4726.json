@@ -1,0 +1,78 @@
+{
+  "params": {
+    "crystal": 4,
+    "mana": 4
+  },
+  "initial_hand": [
+    "斯卡布斯·刀油[4费]",
+    "幸运币",
+    "乐队经理精英牛头人酋长[4费]",
+    "晦鳞巢母[3费]",
+    "异教地图[2费]",
+    "暗影施法者[5费]",
+    "鲨鱼之灵[4费]",
+    "垂钓时光[1费]",
+    "狐人老千[0费]",
+    "行骗[2费]"
+  ],
+  "best_solution": {
+    "dragon_num": 1,
+    "damage": 16,
+    "remain_cost": 0,
+    "play_sequence": [
+      "鲨鱼之灵",
+      "狐人老千",
+      "斯卡布斯·刀油",
+      "乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜）->生命的缚誓者阿莱克丝塔萨）",
+      "晦鳞巢母",
+      "幸运币",
+      "舞动全场（ft.迦罗娜）",
+      "鲨鱼之灵",
+      "晦鳞巢母",
+      "斯卡布斯·刀油",
+      "暗影施法者（斯卡布斯·刀油3nd）",
+      "行骗",
+      "斯卡布斯·刀油",
+      "斯卡布斯·刀油",
+      "生命的缚誓者阿莱克丝塔萨",
+      "垂钓时光"
+    ],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [
+      {
+        "card_id": "CS2_127",
+        "name": "银背族长",
+        "cost": 3,
+        "health": 7,
+        "health_max": 7,
+        "attack": 3,
+        "zone_position": 1,
+        "ghostly": false
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 1,
+      "attack": 0
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": null,
+    "secrets": [],
+    "deck_unknown_cards": 15
+  },
+  "task_id": "e272182f-795b-47d2-b02b-91fc323c4726",
+  "report_timestamp": 1786555983
+}

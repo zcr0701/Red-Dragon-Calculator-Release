@@ -1,0 +1,45 @@
+{
+  "params": {
+    "crystal": null,
+    "mana": null
+  },
+  "initial_hand": [
+    "狐人老千[2费]",
+    "垂钓时光[1费]",
+    "疯狂之灾祸[1费]",
+    "行骗[2费]",
+    "幸运币"
+  ],
+  "best_solution": {
+    "dragon_num": 0,
+    "damage": 0,
+    "remain_cost": 0,
+    "play_sequence": [],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 0,
+      "attack": null
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": null,
+    "secrets": [],
+    "deck_unknown_cards": 26
+  },
+  "task_id": "7603a880-7520-4d75-a53d-45fa55fdfd5a",
+  "report_timestamp": 1786544521
+}

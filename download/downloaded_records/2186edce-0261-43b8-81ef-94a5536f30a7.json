@@ -1,0 +1,46 @@
+{
+  "params": {
+    "crystal": 5,
+    "mana": 5
+  },
+  "initial_hand": [
+    "鲨鱼之灵[1费]",
+    "斯卡布斯·刀油[1费]",
+    "乐队经理精英牛头人酋长[1费]",
+    "晦鳞巢母[1费]",
+    "生命的缚誓者阿莱克丝塔萨[9费]"
+  ],
+  "best_solution": {
+    "dragon_num": 3,
+    "damage": 48,
+    "remain_cost": 0,
+    "play_sequence": [
+      "斯卡布斯·刀油",
+      "乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜））",
+      "晦鳞巢母",
+      "鲨鱼之灵",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "exchanges": [],
+    "draw_whatif": null,
+    "quickdraw_branches": []
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [],
+    "opponent_hero": {
+      "health": 30,
+      "armor": 0
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": null,
+    "secrets": [],
+    "deck_unknown_cards": 10
+  },
+  "task_id": "2186edce-0261-43b8-81ef-94a5536f30a7",
+  "report_timestamp": 1786440541
+}

@@ -1,0 +1,123 @@
+{
+  "params": {
+    "crystal": 6,
+    "mana": 6
+  },
+  "initial_hand": [
+    "斯卡布斯·刀油[4费]",
+    "暗影施法者[5费]",
+    "伪造的幸运币",
+    "持枪要挟",
+    "挖掘宝藏[1费]",
+    "鲨鱼之灵[4费]",
+    "狐人老千",
+    "乐队经理精英牛头人酋长[4费]",
+    "晦鳞巢母[3费]",
+    "伪造的幸运币"
+  ],
+  "best_solution": {
+    "dragon_num": 2,
+    "damage": 32,
+    "remain_cost": 0,
+    "play_sequence": [
+      "伪造的幸运币",
+      "鲨鱼之灵",
+      "狐人老千",
+      "斯卡布斯·刀油",
+      "暗影施法者（斯卡布斯·刀油3nd）",
+      "斯卡布斯·刀油",
+      "乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜）->生命的缚誓者阿莱克丝塔萨）",
+      "晦鳞巢母",
+      "持枪要挟（脱水）",
+      "脱水（狐人老千2）",
+      "伪造的幸运币",
+      "斯卡布斯·刀油",
+      "舞动全场（ft.迦罗娜）",
+      "鲨鱼之灵",
+      "乐队经理精英牛头人酋长（幻觉药水）",
+      "晦鳞巢母",
+      "斯卡布斯·刀油",
+      "斯卡布斯·刀油",
+      "生命的缚誓者阿莱克丝塔萨",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨",
+      "挖掘宝藏"
+    ],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [
+      {
+        "card_id": "CS2_189",
+        "name": "精灵弓箭手",
+        "cost": 1,
+        "health": 1,
+        "health_max": 1,
+        "attack": 1,
+        "zone_position": 1,
+        "ghostly": false
+      },
+      {
+        "card_id": "CS2_127",
+        "name": "银背族长",
+        "cost": 3,
+        "health": 4,
+        "health_max": 4,
+        "attack": 1,
+        "zone_position": 2,
+        "ghostly": false
+      },
+      {
+        "card_id": "CS2_189",
+        "name": "精灵弓箭手",
+        "cost": 1,
+        "health": 1,
+        "health_max": 1,
+        "attack": 1,
+        "zone_position": 3,
+        "ghostly": false
+      },
+      {
+        "card_id": "DS1_055",
+        "name": "暗鳞治愈者",
+        "cost": 5,
+        "health": 5,
+        "health_max": 5,
+        "attack": 4,
+        "zone_position": 4,
+        "ghostly": false
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 2,
+      "attack": null
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": {
+      "card_id": "ULD_715t",
+      "name": "灾祸狂刀",
+      "cost": 1,
+      "health": null,
+      "health_max": null,
+      "attack": 2,
+      "zone_position": null,
+      "ghostly": false
+    },
+    "secrets": [],
+    "deck_unknown_cards": 7
+  },
+  "task_id": "cdb5e63e-779b-45d9-a230-dd6ca9e05194",
+  "report_timestamp": 1786596680
+}

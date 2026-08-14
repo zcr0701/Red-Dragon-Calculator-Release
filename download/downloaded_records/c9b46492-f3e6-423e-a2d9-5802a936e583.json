@@ -1,0 +1,270 @@
+{
+  "user_id": "此人乃天下绝响#5854",
+  "scene": {
+    "enemy_class": "德鲁伊",
+    "player_hero": {
+      "card_id": "HERO_03b",
+      "name": "瓦莉拉船长",
+      "health": 16,
+      "health_max": 30,
+      "armor": 0,
+      "attack": null
+    },
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 3,
+      "attack": 0
+    },
+    "hand": [
+      {
+        "card_id": "BAR_552",
+        "name": "斯卡布斯·刀油",
+        "cost": 4,
+        "health": 3,
+        "health_max": 3,
+        "attack": 3,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 1,
+        "ghostly": false
+      },
+      {
+        "card_id": "WC_016",
+        "name": "潜伏帷幕",
+        "cost": 3,
+        "health": null,
+        "health_max": null,
+        "attack": null,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 2,
+        "ghostly": false
+      },
+      {
+        "card_id": "CFM_630",
+        "name": "伪造的幸运币",
+        "cost": 0,
+        "health": null,
+        "health_max": null,
+        "attack": null,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 3,
+        "ghostly": false
+      },
+      {
+        "card_id": "DMF_511",
+        "name": "狐人老千",
+        "cost": 2,
+        "health": 2,
+        "health_max": 2,
+        "attack": 3,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 4,
+        "ghostly": false
+      },
+      {
+        "card_id": "DED_004",
+        "name": "黑水弯刀",
+        "cost": 1,
+        "health": 2,
+        "health_max": 2,
+        "attack": 2,
+        "durability": 2,
+        "summoned_this_turn": false,
+        "zone_position": 5,
+        "ghostly": false
+      },
+      {
+        "card_id": "CATA_111",
+        "name": "晦鳞巢母",
+        "cost": 3,
+        "health": 3,
+        "health_max": 3,
+        "attack": 4,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 6,
+        "ghostly": false
+      },
+      {
+        "card_id": "ULD_715",
+        "name": "疯狂之灾祸",
+        "cost": 1,
+        "health": null,
+        "health_max": null,
+        "attack": null,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 7,
+        "ghostly": false
+      },
+      {
+        "card_id": "CFM_630",
+        "name": "伪造的幸运币",
+        "cost": 0,
+        "health": null,
+        "health_max": null,
+        "attack": null,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 8,
+        "ghostly": false
+      },
+      {
+        "card_id": "DMF_515",
+        "name": "行骗",
+        "cost": 2,
+        "health": null,
+        "health_max": null,
+        "attack": null,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 9,
+        "ghostly": false
+      }
+    ],
+    "board": [
+      {
+        "card_id": "TRL_092",
+        "name": "鲨鱼之灵",
+        "cost": 4,
+        "health": 3,
+        "health_max": 3,
+        "attack": null,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 1,
+        "ghostly": false
+      }
+    ],
+    "enemy_board": [
+      {
+        "card_id": "EX1_593",
+        "name": "夜刃刺客",
+        "cost": 5,
+        "health": 4,
+        "health_max": 4,
+        "attack": 4,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 1,
+        "ghostly": false
+      },
+      {
+        "card_id": "CS2_120",
+        "name": "淡水鳄",
+        "cost": 2,
+        "health": 3,
+        "health_max": 3,
+        "attack": 2,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 2,
+        "ghostly": false
+      }
+    ],
+    "crystal": 5,
+    "mana": 5,
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": null,
+    "secrets": [],
+    "deck_unknown_cards": 13
+  },
+  "abbr_formula": "币-刀-潜伏帷幕(牛暗)-暗(刀2)-刀-牛(舞龙)-晦-币-刀-舞-鱼-刀-刀-龙-暗(龙4)-龙-龙",
+  "play_record": {
+    "dragon_num": 3,
+    "damage": 48,
+    "remain_cost": 0,
+    "play_sequence": [
+      "伪造的幸运币",
+      "斯卡布斯·刀油",
+      "潜伏帷幕（乐队经理精英牛头人酋长、暗影施法者）",
+      "暗影施法者（斯卡布斯·刀油2nd）",
+      "斯卡布斯·刀油",
+      "乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜）->生命的缚誓者阿莱克丝塔萨）",
+      "晦鳞巢母",
+      "伪造的幸运币",
+      "斯卡布斯·刀油",
+      "舞动全场（ft.迦罗娜）",
+      "鲨鱼之灵",
+      "斯卡布斯·刀油",
+      "斯卡布斯·刀油",
+      "生命的缚誓者阿莱克丝塔萨",
+      "暗影施法者（生命的缚誓者阿莱克丝塔萨4nd）",
+      "生命的缚誓者阿莱克丝塔萨",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "game_record": [
+      {
+        "type": "mulligan",
+        "turn": 0,
+        "player_controller": 1,
+        "initial_hand": [
+          "斯卡布斯·刀油",
+          "暗影步",
+          "异教地图",
+          "暗影施法者",
+          "幸运币"
+        ],
+        "replaced": []
+      },
+      {
+        "type": "mulligan",
+        "turn": 0,
+        "player_controller": null,
+        "initial_hand": [],
+        "replaced": []
+      },
+      {
+        "type": "play",
+        "turn": 1,
+        "card": "幸运币"
+      },
+      {
+        "type": "play",
+        "turn": 1,
+        "card": "行骗"
+      },
+      {
+        "type": "play",
+        "turn": 2,
+        "card": "异教地图"
+      },
+      {
+        "type": "play",
+        "turn": 3,
+        "card": "挖掘宝藏"
+      },
+      {
+        "type": "play",
+        "turn": 3,
+        "card": "挖掘宝藏"
+      },
+      {
+        "type": "play",
+        "turn": 3,
+        "card": "垂钓时光"
+      },
+      {
+        "type": "play",
+        "turn": 4,
+        "card": "鲨鱼之灵"
+      }
+    ],
+    "exchanges": [],
+    "wb": null
+  },
+  "task_id": "c9b46492-f3e6-423e-a2d9-5802a936e583",
+  "report_timestamp": 1786636193
+}

@@ -1,0 +1,116 @@
+{
+  "params": {
+    "crystal": 6,
+    "mana": 6
+  },
+  "initial_hand": [
+    "暗影施法者[5费]",
+    "斯卡布斯·刀油[4费]",
+    "挖掘宝藏[1费]",
+    "暗影之门[1费]",
+    "晦鳞巢母[3费]",
+    "潜伏帷幕[3费]",
+    "闪避[2费]",
+    "乐队经理精英牛头人酋长[4费]",
+    "双面生意[2费]"
+  ],
+  "best_solution": {
+    "dragon_num": 5,
+    "damage": 80,
+    "remain_cost": 1,
+    "play_sequence": [
+      "暗影之门（暗影步）",
+      "斯卡布斯·刀油",
+      "暗影施法者（斯卡布斯·刀油2nd）",
+      "斯卡布斯·刀油",
+      "乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜）->生命的缚誓者阿莱克丝塔萨）",
+      "晦鳞巢母",
+      "闪避",
+      "暗影步（晦鳞巢母6nd）",
+      "晦鳞巢母",
+      "斯卡布斯·刀油",
+      "双面生意",
+      "舞动全场（ft.迦罗娜）",
+      "鲨鱼之灵",
+      "晦鳞巢母",
+      "斯卡布斯·刀油",
+      "斯卡布斯·刀油",
+      "生命的缚誓者阿莱克丝塔萨",
+      "暗影施法者（生命的缚誓者阿莱克丝塔萨5nd）",
+      "斯卡布斯·刀油",
+      "舞动全场（ft.迦罗娜）[殒命暗影]",
+      "鲨鱼之灵",
+      "晦鳞巢母",
+      "生命的缚誓者阿莱克丝塔萨",
+      "暗影施法者（生命的缚誓者阿莱克丝塔萨3nd）",
+      "生命的缚誓者阿莱克丝塔萨",
+      "生命的缚誓者阿莱克丝塔萨",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [
+      {
+        "card_id": "TRL_092",
+        "name": "鲨鱼之灵",
+        "cost": 4,
+        "health": 3,
+        "health_max": 3,
+        "attack": null,
+        "zone_position": 1,
+        "ghostly": false,
+        "creator": false,
+        "zone": "PLAY"
+      }
+    ],
+    "enemy_board": [
+      {
+        "card_id": "EX1_593",
+        "name": "夜刃刺客",
+        "cost": 5,
+        "health": 4,
+        "health_max": 4,
+        "attack": 4,
+        "zone_position": 1,
+        "ghostly": false,
+        "creator": false,
+        "zone": "PLAY"
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 3,
+      "attack": 0
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [
+      3
+    ],
+    "weapon": {
+      "card_id": "ULD_715t",
+      "name": "灾祸狂刀",
+      "cost": 1,
+      "health": null,
+      "health_max": null,
+      "attack": 2,
+      "zone_position": null,
+      "ghostly": false,
+      "creator": true,
+      "zone": "PLAY"
+    },
+    "secrets": [],
+    "deck_unknown_cards": 8
+  },
+  "task_id": "bdbad392-569b-44cc-8478-b92e1b2d40e0",
+  "report_timestamp": 1786603996
+}

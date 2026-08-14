@@ -1,0 +1,69 @@
+{
+  "params": {
+    "crystal": 5,
+    "mana": 5
+  },
+  "initial_hand": [
+    "伪造的幸运币",
+    "鲨鱼之灵[4费]",
+    "潜伏帷幕[3费]",
+    "狐人老千[2费]",
+    "暗影施法者[5费]",
+    "晦鳞巢母[3费]",
+    "异教地图[1费]",
+    "持枪要挟",
+    "行骗[2费]"
+  ],
+  "best_solution": {
+    "dragon_num": 0,
+    "damage": 0,
+    "remain_cost": 0,
+    "play_sequence": [],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [
+      {
+        "card_id": "CS2_182",
+        "name": "冰风雪人",
+        "cost": 4,
+        "health": 5,
+        "health_max": 5,
+        "attack": 4,
+        "zone_position": 1,
+        "ghostly": false
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 1,
+      "attack": null
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": {
+      "card_id": "CS2_082",
+      "name": "邪恶短刀",
+      "cost": 1,
+      "health": null,
+      "health_max": null,
+      "attack": 1,
+      "zone_position": null,
+      "ghostly": false
+    },
+    "secrets": [],
+    "deck_unknown_cards": 14
+  },
+  "task_id": "9e41ac1b-a10f-4e6d-a6b3-3c494c94ed69",
+  "report_timestamp": 1786526574
+}

@@ -1,0 +1,111 @@
+{
+  "params": {
+    "crystal": 5,
+    "mana": 5
+  },
+  "initial_hand": [
+    "持枪要挟[1费]",
+    "行骗[2费]",
+    "垂钓时光[1费]",
+    "乐队经理精英牛头人酋长[4费]",
+    "斯卡布斯·刀油[4费]",
+    "暗影步[0费]",
+    "晦鳞巢母[3费]",
+    "暗影施法者[5费]",
+    "暗影步[0费]",
+    "双面生意[2费]"
+  ],
+  "best_solution": {
+    "dragon_num": 4,
+    "damage": 64,
+    "remain_cost": 0,
+    "play_sequence": [
+      "持枪要挟（脱水）",
+      "斯卡布斯·刀油",
+      "乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜）->生命的缚誓者阿莱克丝塔萨）",
+      "晦鳞巢母",
+      "暗影步（斯卡布斯·刀油2nd）",
+      "暗影步（晦鳞巢母3nd）",
+      "斯卡布斯·刀油",
+      "暗影施法者（斯卡布斯·刀油3nd）",
+      "晦鳞巢母",
+      "脱水（乐队经理精英牛头人酋长2）",
+      "斯卡布斯·刀油",
+      "斯卡布斯·刀油",
+      "生命的缚誓者阿莱克丝塔萨",
+      "舞动全场（ft.迦罗娜）",
+      "鲨鱼之灵",
+      "晦鳞巢母",
+      "生命的缚誓者阿莱克丝塔萨",
+      "暗影施法者（生命的缚誓者阿莱克丝塔萨3nd）",
+      "生命的缚誓者阿莱克丝塔萨",
+      "斯卡布斯·刀油",
+      "生命的缚誓者阿莱克丝塔萨",
+      "行骗（乐队经理精英牛头人酋长）"
+    ],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [
+      {
+        "card_id": "TRL_092",
+        "name": "鲨鱼之灵",
+        "cost": 4,
+        "health": 3,
+        "health_max": 3,
+        "attack": null,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 1,
+        "ghostly": false
+      }
+    ],
+    "enemy_board": [
+      {
+        "card_id": "DS1_055",
+        "name": "暗鳞治愈者",
+        "cost": 5,
+        "health": 5,
+        "health_max": 5,
+        "attack": 4,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 1,
+        "ghostly": false
+      },
+      {
+        "card_id": "CS2_189",
+        "name": "精灵弓箭手",
+        "cost": 1,
+        "health": 4,
+        "health_max": 4,
+        "attack": 3,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 2,
+        "ghostly": false
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 3,
+      "attack": 0
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": null,
+    "secrets": [],
+    "deck_unknown_cards": 16
+  },
+  "task_id": "027f1724-f40f-45a0-87b7-01fd93e5926f",
+  "report_timestamp": 1786632515
+}

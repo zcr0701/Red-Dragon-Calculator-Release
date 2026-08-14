@@ -1,0 +1,103 @@
+{
+  "params": {
+    "crystal": 5,
+    "mana": 5
+  },
+  "initial_hand": [
+    "挖掘宝藏[0费]",
+    "晦鳞巢母[3费]",
+    "异教地图[2费]",
+    "疯狂之灾祸[1费]",
+    "暗影施法者[5费]",
+    "斯卡布斯·刀油[4费]",
+    "闪避[2费]",
+    "伺机待发[0费]"
+  ],
+  "best_solution": {
+    "dragon_num": 5,
+    "damage": 80,
+    "remain_cost": 0,
+    "play_sequence": [
+      "挖掘宝藏（乐队经理精英牛头人酋长）",
+      "斯卡布斯·刀油",
+      "暗影施法者（斯卡布斯·刀油2nd）",
+      "斯卡布斯·刀油",
+      "乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜）->生命的缚誓者阿莱克丝塔萨）",
+      "晦鳞巢母",
+      "伺机待发",
+      "异教地图（发现：殒命暗影）",
+      "疯狂之灾祸",
+      "斯卡布斯·刀油",
+      "舞动全场（ft.迦罗娜）",
+      "鲨鱼之灵",
+      "晦鳞巢母",
+      "斯卡布斯·刀油",
+      "斯卡布斯·刀油",
+      "生命的缚誓者阿莱克丝塔萨",
+      "暗影施法者（生命的缚誓者阿莱克丝塔萨5nd）",
+      "斯卡布斯·刀油",
+      "舞动全场（ft.迦罗娜）[殒命暗影]",
+      "鲨鱼之灵",
+      "生命的缚誓者阿莱克丝塔萨",
+      "晦鳞巢母",
+      "暗影施法者（生命的缚誓者阿莱克丝塔萨2nd）",
+      "生命的缚誓者阿莱克丝塔萨",
+      "生命的缚誓者阿莱克丝塔萨",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [
+      {
+        "card_id": "TRL_092",
+        "name": "鲨鱼之灵",
+        "cost": 4,
+        "health": 3,
+        "health_max": 3,
+        "attack": null,
+        "zone_position": 1,
+        "ghostly": false,
+        "creator": false,
+        "summoned_this_turn": false,
+        "zone": "PLAY"
+      }
+    ],
+    "enemy_board": [
+      {
+        "card_id": "DS1_055",
+        "name": "暗鳞治愈者",
+        "cost": 5,
+        "health": 5,
+        "health_max": 5,
+        "attack": 4,
+        "zone_position": 1,
+        "ghostly": false,
+        "creator": false,
+        "summoned_this_turn": false,
+        "zone": "PLAY"
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 1,
+      "attack": 0
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": null,
+    "secrets": [],
+    "deck_unknown_cards": 18
+  },
+  "task_id": "21b3338b-409b-4c04-97d6-a38928dedbdf",
+  "report_timestamp": 1786616952
+}

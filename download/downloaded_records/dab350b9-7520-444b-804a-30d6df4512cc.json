@@ -1,0 +1,248 @@
+{
+  "user_id": "此人乃天下绝响#5854",
+  "scene": {
+    "enemy_class": "德鲁伊",
+    "player_hero": {
+      "card_id": "HERO_03b",
+      "name": "瓦莉拉船长",
+      "health": 11,
+      "health_max": 30,
+      "armor": 0,
+      "attack": 1
+    },
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 3,
+      "attack": 0
+    },
+    "hand": [
+      {
+        "card_id": "WW_411",
+        "name": "持枪要挟",
+        "cost": 1,
+        "health": null,
+        "health_max": null,
+        "attack": null,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 1,
+        "ghostly": false
+      },
+      {
+        "card_id": "DMF_515",
+        "name": "行骗",
+        "cost": 2,
+        "health": null,
+        "health_max": null,
+        "attack": null,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 2,
+        "ghostly": false
+      },
+      {
+        "card_id": "TSC_916",
+        "name": "垂钓时光",
+        "cost": 1,
+        "health": null,
+        "health_max": null,
+        "attack": null,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 3,
+        "ghostly": false
+      },
+      {
+        "card_id": "ETC_080",
+        "name": "乐队经理精英牛头人酋长",
+        "cost": 4,
+        "health": 4,
+        "health_max": 4,
+        "attack": 4,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 4,
+        "ghostly": false
+      },
+      {
+        "card_id": "BAR_552",
+        "name": "斯卡布斯·刀油",
+        "cost": 4,
+        "health": 3,
+        "health_max": 3,
+        "attack": 3,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 5,
+        "ghostly": false
+      },
+      {
+        "card_id": "EX1_144",
+        "name": "暗影步",
+        "cost": 0,
+        "health": null,
+        "health_max": null,
+        "attack": null,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 6,
+        "ghostly": false
+      },
+      {
+        "card_id": "CATA_111",
+        "name": "晦鳞巢母",
+        "cost": 3,
+        "health": 3,
+        "health_max": 3,
+        "attack": 4,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 7,
+        "ghostly": false
+      },
+      {
+        "card_id": "OG_291",
+        "name": "暗影施法者",
+        "cost": 5,
+        "health": 4,
+        "health_max": 4,
+        "attack": 4,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 8,
+        "ghostly": false
+      },
+      {
+        "card_id": "TRL_092",
+        "name": "鲨鱼之灵",
+        "cost": 2,
+        "health": 3,
+        "health_max": 3,
+        "attack": null,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 9,
+        "ghostly": false
+      },
+      {
+        "card_id": "RLK_567",
+        "name": "殒命暗影",
+        "cost": 0,
+        "health": null,
+        "health_max": null,
+        "attack": null,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 10,
+        "ghostly": false
+      }
+    ],
+    "board": [],
+    "enemy_board": [
+      {
+        "card_id": "CS2_200",
+        "name": "石拳食人魔",
+        "cost": 6,
+        "health": 7,
+        "health_max": 7,
+        "attack": 6,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 1,
+        "ghostly": false
+      },
+      {
+        "card_id": "DS1_055",
+        "name": "暗鳞治愈者",
+        "cost": 5,
+        "health": 5,
+        "health_max": 5,
+        "attack": 4,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 2,
+        "ghostly": false
+      },
+      {
+        "card_id": "CS2_189",
+        "name": "精灵弓箭手",
+        "cost": 1,
+        "health": 4,
+        "health_max": 4,
+        "attack": 3,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 3,
+        "ghostly": false
+      }
+    ],
+    "crystal": 6,
+    "mana": 6,
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [
+      10
+    ],
+    "weapon": {
+      "card_id": "CS2_082",
+      "name": "邪恶短刀",
+      "cost": 1,
+      "health": 2,
+      "health_max": 2,
+      "attack": 1,
+      "durability": 2,
+      "summoned_this_turn": false,
+      "zone_position": null,
+      "ghostly": false
+    },
+    "secrets": [],
+    "deck_unknown_cards": 13
+  },
+  "abbr_formula": "持枪要挟(补水)-刀-补水-鱼-步(刀1)-刀-暗(刀2)-刀-牛(舞龙)-晦-刀-舞-鱼-晦-牛(幻)-刀-刀-龙-舞[殒]-鱼-刀-晦-行骗(狐)-龙-暗(龙4)-龙-龙-垂钓时光(闪避)",
+  "play_record": {
+    "dragon_num": 4,
+    "damage": 64,
+    "remain_cost": 0,
+    "play_sequence": [
+      "持枪要挟（补水）",
+      "斯卡布斯·刀油",
+      "补水",
+      "鲨鱼之灵",
+      "暗影步（斯卡布斯·刀油1nd）",
+      "斯卡布斯·刀油",
+      "暗影施法者（斯卡布斯·刀油2nd）",
+      "斯卡布斯·刀油",
+      "乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜）->生命的缚誓者阿莱克丝塔萨）",
+      "晦鳞巢母",
+      "斯卡布斯·刀油",
+      "舞动全场（ft.迦罗娜）",
+      "鲨鱼之灵",
+      "晦鳞巢母",
+      "乐队经理精英牛头人酋长（幻觉药水）",
+      "斯卡布斯·刀油",
+      "斯卡布斯·刀油",
+      "生命的缚誓者阿莱克丝塔萨",
+      "舞动全场（ft.迦罗娜）[殒命暗影]",
+      "鲨鱼之灵",
+      "斯卡布斯·刀油",
+      "晦鳞巢母",
+      "行骗（狐人老千）",
+      "生命的缚誓者阿莱克丝塔萨",
+      "暗影施法者（生命的缚誓者阿莱克丝塔萨4nd）",
+      "生命的缚誓者阿莱克丝塔萨",
+      "生命的缚誓者阿莱克丝塔萨",
+      "垂钓时光（闪避）"
+    ],
+    "exchanges": [],
+    "wb": null
+  },
+  "task_id": "dab350b9-7520-444b-804a-30d6df4512cc",
+  "report_timestamp": 1786633892
+}

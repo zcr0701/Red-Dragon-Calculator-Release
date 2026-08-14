@@ -1,0 +1,68 @@
+{
+  "params": {
+    "crystal": 4,
+    "mana": 4
+  },
+  "initial_hand": [
+    "幸运币",
+    "斯卡布斯·刀油[4费]",
+    "狐人老千[2费]",
+    "乐队经理精英牛头人酋长[4费]",
+    "暗影施法者[5费]",
+    "鲨鱼之灵[4费]",
+    "伺机待发"
+  ],
+  "best_solution": {
+    "dragon_num": 0,
+    "damage": 0,
+    "remain_cost": 0,
+    "play_sequence": [],
+    "exchanges": [],
+    "draw_whatif": null,
+    "quickdraw_branches": null
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [
+      {
+        "card_id": "CS2_127",
+        "name": "银背族长",
+        "cost": 3,
+        "health": 4,
+        "health_max": 4,
+        "attack": 1,
+        "zone_position": 1,
+        "ghostly": false
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 1,
+      "attack": 0
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": {
+      "card_id": "ULD_715t",
+      "name": "灾祸狂刀",
+      "cost": 1,
+      "health": null,
+      "health_max": null,
+      "attack": 2,
+      "zone_position": null,
+      "ghostly": false
+    },
+    "secrets": [],
+    "deck_unknown_cards": 17
+  },
+  "task_id": "5e1d1eec-b582-4965-8df9-4400f5ed374d",
+  "report_timestamp": 1786445996
+}

@@ -1,0 +1,112 @@
+{
+ "此人乃天下绝响#5854": {
+  "original_deck": [
+   {
+    "card_id": "EX1_144",
+    "name": "暗影步",
+    "count": 2
+   },
+   {
+    "card_id": "OG_291",
+    "name": "暗影施法者",
+    "count": 1
+   },
+   {
+    "card_id": "CFM_630",
+    "name": "伪造的幸运币",
+    "count": 2
+   },
+   {
+    "card_id": "LOOT_214",
+    "name": "闪避",
+    "count": 1
+   },
+   {
+    "card_id": "TRL_092",
+    "name": "鲨鱼之灵",
+    "count": 1
+   },
+   {
+    "card_id": "ULD_715",
+    "name": "疯狂之灾祸",
+    "count": 1
+   },
+   {
+    "card_id": "DMF_511",
+    "name": "狐人老千",
+    "count": 1
+   },
+   {
+    "card_id": "DMF_515",
+    "name": "行骗",
+    "count": 2
+   },
+   {
+    "card_id": "WC_016",
+    "name": "潜伏帷幕",
+    "count": 2
+   },
+   {
+    "card_id": "BAR_552",
+    "name": "斯卡布斯·刀油",
+    "count": 1
+   },
+   {
+    "card_id": "DED_004",
+    "name": "黑水弯刀",
+    "count": 2
+   },
+   {
+    "card_id": "CORE_EX1_145",
+    "name": "伺机待发",
+    "count": 2
+   },
+   {
+    "card_id": "TSC_916",
+    "name": "垂钓时光",
+    "count": 2
+   },
+   {
+    "card_id": "REV_825",
+    "name": "双面生意",
+    "count": 2
+   },
+   {
+    "card_id": "REV_938",
+    "name": "暗影之门",
+    "count": 1
+   },
+   {
+    "card_id": "RLK_567",
+    "name": "殒命暗影",
+    "count": 1
+   },
+   {
+    "card_id": "ETC_080",
+    "name": "乐队经理精英牛头人酋长",
+    "count": 1
+   },
+   {
+    "card_id": "WW_411",
+    "name": "持枪要挟",
+    "count": 1
+   },
+   {
+    "card_id": "TOY_510",
+    "name": "挖掘宝藏",
+    "count": 1
+   },
+   {
+    "card_id": "TLC_515",
+    "name": "异教地图",
+    "count": 2
+   },
+   {
+    "card_id": "CATA_111",
+    "name": "晦鳞巢母",
+    "count": 1
+   }
+  ],
+  "updated": "2026-08-13 21:03:14"
+ }
+}

@@ -1,0 +1,80 @@
+{
+  "params": {
+    "crystal": 5,
+    "mana": 5
+  },
+  "initial_hand": [
+    "狐人老千[2费]",
+    "暗影施法者[5费]",
+    "乐队经理精英牛头人酋长[4费]",
+    "鲨鱼之灵[4费]",
+    "伺机待发",
+    "斯卡布斯·刀油[4费]",
+    "潜伏帷幕[3费]",
+    "晦鳞巢母[3费]",
+    "持枪要挟[1费]"
+  ],
+  "best_solution": {
+    "dragon_num": 0,
+    "damage": 0,
+    "remain_cost": 0,
+    "play_sequence": [],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [
+      {
+        "card_id": "CS2_189",
+        "name": "精灵弓箭手",
+        "cost": 1,
+        "health": 1,
+        "health_max": 1,
+        "attack": 1,
+        "zone_position": 1,
+        "ghostly": false
+      },
+      {
+        "card_id": "CS2_141",
+        "name": "铁炉堡火枪手",
+        "cost": 3,
+        "health": 2,
+        "health_max": 2,
+        "attack": 2,
+        "zone_position": 2,
+        "ghostly": false
+      },
+      {
+        "card_id": "EX1_015",
+        "name": "工程师学徒",
+        "cost": 2,
+        "health": 1,
+        "health_max": 1,
+        "attack": 1,
+        "zone_position": 3,
+        "ghostly": false
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_03",
+      "name": "瓦莉拉·萨古纳尔",
+      "health": 30,
+      "health_max": 30,
+      "armor": 0,
+      "attack": 0
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": null,
+    "secrets": [],
+    "deck_unknown_cards": 9
+  },
+  "task_id": "5768c0b7-bd80-4890-a9e4-43b2fad5b3a1",
+  "report_timestamp": 1786518201
+}

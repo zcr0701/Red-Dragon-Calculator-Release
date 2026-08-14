@@ -1,0 +1,59 @@
+{
+  "params": {
+    "crystal": 2,
+    "mana": 2
+  },
+  "initial_hand": [
+    "狐人老千[2费]",
+    "伪造的幸运币[0费]",
+    "潜伏帷幕[2费]",
+    "斯卡布斯·刀油[4费]",
+    "垂钓时光[1费]"
+  ],
+  "best_solution": {
+    "dragon_num": 0,
+    "damage": 0,
+    "remain_cost": 0,
+    "play_sequence": [],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [
+      {
+        "card_id": "CS2_189",
+        "name": "精灵弓箭手",
+        "cost": 1,
+        "health": 1,
+        "health_max": 1,
+        "attack": 1,
+        "zone_position": 1,
+        "ghostly": false,
+        "creator": false,
+        "summoned_this_turn": false,
+        "zone": "PLAY"
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 0,
+      "attack": null
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": null,
+    "secrets": [],
+    "deck_unknown_cards": 23
+  },
+  "task_id": "a33227e2-36d4-4cb4-af6d-12eb856066f0",
+  "report_timestamp": 1786619395
+}

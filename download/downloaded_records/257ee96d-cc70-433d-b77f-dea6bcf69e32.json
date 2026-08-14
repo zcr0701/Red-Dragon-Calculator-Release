@@ -1,0 +1,125 @@
+{
+  "params": {
+    "crystal": 5,
+    "mana": 5
+  },
+  "initial_hand": [
+    "斯卡布斯·刀油[4费]",
+    "伪造的幸运币",
+    "暗影施法者[5费]",
+    "狐人老千[2费]",
+    "垂钓时光[1费]",
+    "乐队经理精英牛头人酋长[4费]",
+    "殒命暗影"
+  ],
+  "best_solution": {
+    "dragon_num": 5,
+    "damage": 64,
+    "remain_cost": 4,
+    "play_sequence": [
+      "伪造的幸运币",
+      "斯卡布斯·刀油",
+      "乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜）->生命的缚誓者阿莱克丝塔萨）",
+      "暗影施法者（斯卡布斯·刀油2nd）",
+      "斯卡布斯·刀油",
+      "垂钓时光（晦鳞巢母）",
+      "晦鳞巢母",
+      "斯卡布斯·刀油",
+      "舞动全场（ft.迦罗娜）",
+      "晦鳞巢母",
+      "暗影施法者（晦鳞巢母1nd）",
+      "鲨鱼之灵",
+      "晦鳞巢母",
+      "斯卡布斯·刀油",
+      "斯卡布斯·刀油",
+      "生命的缚誓者阿莱克丝塔萨",
+      "舞动全场（ft.迦罗娜）[殒命暗影]",
+      "鲨鱼之灵",
+      "晦鳞巢母",
+      "生命的缚誓者阿莱克丝塔萨",
+      "暗影施法者（生命的缚誓者阿莱克丝塔萨3nd）",
+      "生命的缚誓者阿莱克丝塔萨",
+      "晦鳞巢母",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [
+      {
+        "card_id": "TRL_092",
+        "name": "鲨鱼之灵",
+        "cost": 4,
+        "health": 3,
+        "health_max": 3,
+        "attack": null,
+        "zone_position": 1,
+        "ghostly": false
+      }
+    ],
+    "enemy_board": [
+      {
+        "card_id": "CS2_120",
+        "name": "淡水鳄",
+        "cost": 2,
+        "health": 3,
+        "health_max": 3,
+        "attack": 2,
+        "zone_position": 1,
+        "ghostly": false
+      },
+      {
+        "card_id": "CS2_127",
+        "name": "银背族长",
+        "cost": 3,
+        "health": 4,
+        "health_max": 4,
+        "attack": 1,
+        "zone_position": 2,
+        "ghostly": false
+      },
+      {
+        "card_id": "CS2_189",
+        "name": "精灵弓箭手",
+        "cost": 1,
+        "health": 1,
+        "health_max": 1,
+        "attack": 1,
+        "zone_position": 3,
+        "ghostly": false
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 2,
+      "attack": null
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [
+      7
+    ],
+    "weapon": {
+      "card_id": "ULD_715t",
+      "name": "灾祸狂刀",
+      "cost": 1,
+      "health": null,
+      "health_max": null,
+      "attack": 2,
+      "zone_position": null,
+      "ghostly": false
+    },
+    "secrets": [],
+    "deck_unknown_cards": 17
+  },
+  "task_id": "257ee96d-cc70-433d-b77f-dea6bcf69e32",
+  "report_timestamp": 1786534838
+}

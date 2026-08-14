@@ -1,0 +1,105 @@
+{
+  "params": {
+    "crystal": 7,
+    "mana": 7
+  },
+  "initial_hand": [
+    "晦鳞巢母[3费]",
+    "持枪要挟[1费]",
+    "暗影施法者[5费]",
+    "伪造的幸运币",
+    "乐队经理精英牛头人酋长[4费]",
+    "伺机待发",
+    "鲨鱼之灵[2费]",
+    "潜伏帷幕[3费]"
+  ],
+  "best_solution": {
+    "dragon_num": 3,
+    "damage": 48,
+    "remain_cost": 1,
+    "play_sequence": [
+      "伪造的幸运币",
+      "伺机待发",
+      "潜伏帷幕（抽到斯卡布斯·刀油、狐人老千）",
+      "鲨鱼之灵",
+      "狐人老千",
+      "斯卡布斯·刀油",
+      "乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜）->生命的缚誓者阿莱克丝塔萨）",
+      "暗影施法者（斯卡布斯·刀油3nd）",
+      "斯卡布斯·刀油",
+      "晦鳞巢母",
+      "舞动全场（ft.迦罗娜）",
+      "乐队经理精英牛头人酋长（幻觉药水）",
+      "鲨鱼之灵",
+      "晦鳞巢母",
+      "斯卡布斯·刀油",
+      "斯卡布斯·刀油",
+      "生命的缚誓者阿莱克丝塔萨",
+      "幻觉药水",
+      "晦鳞巢母",
+      "持枪要挟（如果误炸）",
+      "误炸（斯卡布斯·刀油、斯卡布斯·刀油、晦鳞巢母）",
+      "暗影施法者（生命的缚誓者阿莱克丝塔萨4nd）",
+      "生命的缚誓者阿莱克丝塔萨",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [
+      {
+        "card_id": "CS2_189",
+        "name": "精灵弓箭手",
+        "cost": 1,
+        "health": 1,
+        "health_max": 1,
+        "attack": 1,
+        "zone_position": 1,
+        "ghostly": false
+      },
+      {
+        "card_id": "CS2_200",
+        "name": "石拳食人魔",
+        "cost": 6,
+        "health": 7,
+        "health_max": 7,
+        "attack": 6,
+        "zone_position": 2,
+        "ghostly": false
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 3,
+      "attack": null
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": null,
+    "secrets": [
+      {
+        "card_id": "REV_825",
+        "name": "双面生意",
+        "cost": 2,
+        "health": null,
+        "health_max": null,
+        "attack": null,
+        "zone_position": null,
+        "ghostly": false
+      }
+    ],
+    "deck_unknown_cards": 12
+  },
+  "task_id": "5b319af4-6ae9-415e-ae4f-5aa5e0be01a7",
+  "report_timestamp": 1786461414
+}

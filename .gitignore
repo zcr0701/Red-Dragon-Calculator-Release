@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller build artifacts (regeneratable via build_dist.py)
+build/
+dist/
+
+# Runtime logs
+logs/
+
+# Temporary files
+_tmp_cleanup/
+*.tmp
+
+# OS files
+Thumbs.db
+.DESKTOP

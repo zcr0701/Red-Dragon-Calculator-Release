@@ -1,0 +1,113 @@
+{
+  "params": {
+    "crystal": 6,
+    "mana": 6
+  },
+  "initial_hand": [
+    "晦鳞巢母[3费]",
+    "持枪要挟[1费]",
+    "斯卡布斯·刀油[4费]",
+    "双面生意[2费]",
+    "暗影施法者[5费]",
+    "伪造的幸运币",
+    "行骗[2费]",
+    "疯狂之灾祸[1费]",
+    "暗影步"
+  ],
+  "best_solution": {
+    "dragon_num": 3,
+    "damage": 48,
+    "remain_cost": 0,
+    "play_sequence": [
+      "伪造的幸运币",
+      "斯卡布斯·刀油",
+      "行骗（乐队经理精英牛头人酋长）",
+      "暗影施法者（斯卡布斯·刀油2nd）",
+      "暗影步（斯卡布斯·刀油2nd）",
+      "斯卡布斯·刀油",
+      "乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜）->生命的缚誓者阿莱克丝塔萨）",
+      "斯卡布斯·刀油",
+      "晦鳞巢母",
+      "斯卡布斯·刀油",
+      "疯狂之灾祸",
+      "舞动全场（ft.迦罗娜）",
+      "鲨鱼之灵",
+      "斯卡布斯·刀油",
+      "斯卡布斯·刀油",
+      "生命的缚誓者阿莱克丝塔萨",
+      "暗影施法者（生命的缚誓者阿莱克丝塔萨4nd）",
+      "生命的缚誓者阿莱克丝塔萨",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [
+      {
+        "card_id": "TRL_092",
+        "name": "鲨鱼之灵",
+        "cost": 4,
+        "health": 3,
+        "health_max": 3,
+        "attack": null,
+        "zone_position": 1,
+        "ghostly": false
+      }
+    ],
+    "enemy_board": [
+      {
+        "card_id": "CS2_120",
+        "name": "淡水鳄",
+        "cost": 2,
+        "health": 6,
+        "health_max": 6,
+        "attack": 4,
+        "zone_position": 1,
+        "ghostly": false
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 5,
+      "attack": null
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [
+      4
+    ],
+    "weapon": {
+      "card_id": "DED_004",
+      "name": "黑水弯刀",
+      "cost": 1,
+      "health": null,
+      "health_max": null,
+      "attack": 2,
+      "zone_position": null,
+      "ghostly": false
+    },
+    "secrets": [
+      {
+        "card_id": "REV_825",
+        "name": "双面生意",
+        "cost": 2,
+        "health": null,
+        "health_max": null,
+        "attack": null,
+        "zone_position": null,
+        "ghostly": false
+      }
+    ],
+    "deck_unknown_cards": 11
+  },
+  "task_id": "bafa5b7a-0d38-4866-896b-9bb30978e1d5",
+  "report_timestamp": 1786471600
+}

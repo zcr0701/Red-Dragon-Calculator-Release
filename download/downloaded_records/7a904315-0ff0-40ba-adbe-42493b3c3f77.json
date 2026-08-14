@@ -1,0 +1,66 @@
+{
+  "params": {
+    "crystal": 8,
+    "mana": 8
+  },
+  "initial_hand": [
+    "生命的缚誓者阿莱克丝塔萨[9费]",
+    "鲨鱼之灵[1费]",
+    "斯卡布斯·刀油[1费]",
+    "暗影施法者[1费]",
+    "斯卡布斯·刀油[1费]",
+    "晦鳞巢母[1费]",
+    "斯卡布斯·刀油[1费]",
+    "暗影步[0费]",
+    "舞动全场（ft.迦罗娜）[3费]",
+    "殒命暗影"
+  ],
+  "best_solution": {
+    "dragon_num": 8,
+    "damage": 112,
+    "remain_cost": 1,
+    "play_sequence": [
+      "鲨鱼之灵",
+      "斯卡布斯·刀油",
+      "斯卡布斯·刀油",
+      "生命的缚誓者阿莱克丝塔萨",
+      "暗影施法者（生命的缚誓者阿莱克丝塔萨4nd）",
+      "生命的缚誓者阿莱克丝塔萨",
+      "暗影步（斯卡布斯·刀油2nd）",
+      "生命的缚誓者阿莱克丝塔萨",
+      "斯卡布斯·刀油",
+      "舞动全场（ft.迦罗娜）",
+      "鲨鱼之灵",
+      "生命的缚誓者阿莱克丝塔萨",
+      "晦鳞巢母",
+      "生命的缚誓者阿莱克丝塔萨",
+      "斯卡布斯·刀油",
+      "生命的缚誓者阿莱克丝塔萨",
+      "斯卡布斯·刀油",
+      "舞动全场（ft.迦罗娜）[殒命暗影]",
+      "生命的缚誓者阿莱克丝塔萨",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "exchanges": [],
+    "draw_whatif": null,
+    "quickdraw_branches": null
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [],
+    "opponent_hero": {
+      "health": 30,
+      "armor": 0
+    },
+    "etc_band": [],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [
+      10
+    ],
+    "weapon": null,
+    "secrets": [],
+    "deck_unknown_cards": null
+  },
+  "task_id": "7a904315-0ff0-40ba-adbe-42493b3c3f77",
+  "report_timestamp": 1786440674
+}

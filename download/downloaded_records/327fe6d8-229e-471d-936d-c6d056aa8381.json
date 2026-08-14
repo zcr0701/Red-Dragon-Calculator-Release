@@ -1,0 +1,59 @@
+{
+  "params": {
+    "crystal": 4,
+    "mana": 4
+  },
+  "initial_hand": [
+    "狐人老千[2费]",
+    "暗影之门[1费]",
+    "暗影施法者[5费]",
+    "乐队经理精英牛头人酋长[4费]",
+    "鲨鱼之灵[4费]",
+    "垂钓时光[1费]",
+    "行骗[1费]",
+    "黑水弯刀[1费]"
+  ],
+  "best_solution": {
+    "dragon_num": 0,
+    "damage": 0,
+    "remain_cost": 0,
+    "play_sequence": [],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [
+      {
+        "card_id": "EX1_015",
+        "name": "工程师学徒",
+        "cost": 2,
+        "health": 1,
+        "health_max": 1,
+        "attack": 1,
+        "zone_position": 1,
+        "ghostly": false
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_03",
+      "name": "瓦莉拉·萨古纳尔",
+      "health": 30,
+      "health_max": 30,
+      "armor": 0,
+      "attack": 0
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": null,
+    "secrets": [],
+    "deck_unknown_cards": 16
+  },
+  "task_id": "327fe6d8-229e-471d-936d-c6d056aa8381",
+  "report_timestamp": 1786518159
+}

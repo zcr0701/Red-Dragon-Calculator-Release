@@ -1,0 +1,59 @@
+{
+  "params": {
+    "crystal": 1,
+    "mana": 0
+  },
+  "initial_hand": [
+    "双面生意[2费]",
+    "异教地图[2费]",
+    "幸运币[0费]",
+    "暗影步[0费]",
+    "暗影施法者[5费]",
+    "鲨鱼之灵[4费]"
+  ],
+  "best_solution": {
+    "dragon_num": 0,
+    "damage": 0,
+    "remain_cost": 0,
+    "play_sequence": [],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [
+      {
+        "card_id": "CS2_189",
+        "name": "精灵弓箭手",
+        "cost": 1,
+        "health": 1,
+        "health_max": 1,
+        "attack": 1,
+        "durability": null,
+        "summoned_this_turn": false,
+        "zone_position": 1,
+        "ghostly": false
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 0,
+      "attack": null
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": null,
+    "secrets": [],
+    "deck_unknown_cards": 20
+  },
+  "task_id": "3ecb2ac3-869f-4af4-b623-55f4fe058b6f",
+  "report_timestamp": 1786631537
+}

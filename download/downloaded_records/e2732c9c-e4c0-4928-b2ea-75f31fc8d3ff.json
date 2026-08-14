@@ -1,0 +1,4583 @@
+{
+  "params": {
+    "crystal": 7,
+    "mana": 7
+  },
+  "initial_hand": [
+    "晦鳞巢母[3费]",
+    "持枪要挟[1费]",
+    "暗影施法者[5费]",
+    "伪造的幸运币",
+    "乐队经理精英牛头人酋长[4费]",
+    "伺机待发",
+    "鲨鱼之灵[2费]",
+    "潜伏帷幕[3费]"
+  ],
+  "best_solution": {
+    "dragon_num": 0,
+    "damage": 0,
+    "remain_cost": 0,
+    "play_sequence": [],
+    "exchanges": [],
+    "wb": {
+      "kind": "wb",
+      "nodes": [
+        {
+          "card": "潜伏帷幕",
+          "kind": "draw",
+          "play": "伺机",
+          "path": [
+            "伺机待发",
+            "潜伏帷幕"
+          ],
+          "branches": [
+            {
+              "drawn": [
+                "斯卡布斯·刀油",
+                "狐人老千"
+              ],
+              "delta": 7.8,
+              "children": {
+                "kind": "wb",
+                "nodes": [
+                  {
+                    "card": "持枪要挟",
+                    "kind": "quickdraw",
+                    "play": "直接",
+                    "path": [
+                      "持枪要挟"
+                    ],
+                    "branches": [
+                      {
+                        "card": "补水",
+                        "delta": 3.0,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 5,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "补水"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      },
+                      {
+                        "card": "脱水",
+                        "delta": 2.5,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 5,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "脱水"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      },
+                      {
+                        "card": "误炸",
+                        "delta": 2.5,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 5,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "误炸"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      },
+                      {
+                        "card": "袋底藏沙",
+                        "delta": 2.5,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 5,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "袋底藏沙"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      },
+                      {
+                        "card": "不许乱动",
+                        "delta": 2.5,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 5,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "不许乱动"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      }
+                    ]
+                  }
+                ]
+              },
+              "damage": 48,
+              "dragons": 3,
+              "mana_left": 0,
+              "path": [
+                "潜伏帷幕",
+                "伪造的幸运币",
+                "鲨鱼之灵",
+                "狐人老千",
+                "斯卡布斯·刀油",
+                "乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜）->生命的缚誓者阿莱克丝塔萨）",
+                "暗影施法者（斯卡布斯·刀油3nd）",
+                "斯卡布斯·刀油",
+                "晦鳞巢母",
+                "舞动全场（ft.迦罗娜）",
+                "鲨鱼之灵",
+                "斯卡布斯·刀油",
+                "斯卡布斯·刀油",
+                "生命的缚誓者阿莱克丝塔萨",
+                "暗影施法者（生命的缚誓者阿莱克丝塔萨4nd）",
+                "生命的缚誓者阿莱克丝塔萨",
+                "生命的缚誓者阿莱克丝塔萨"
+              ]
+            }
+          ]
+        },
+        {
+          "card": "潜伏帷幕",
+          "kind": "draw",
+          "play": "直接",
+          "path": [
+            "潜伏帷幕"
+          ],
+          "branches": [
+            {
+              "drawn": [
+                "斯卡布斯·刀油",
+                "狐人老千"
+              ],
+              "delta": 7.2,
+              "children": {
+                "kind": "wb",
+                "nodes": [
+                  {
+                    "card": "持枪要挟",
+                    "kind": "quickdraw",
+                    "play": "伺机",
+                    "path": [
+                      "伺机待发",
+                      "持枪要挟"
+                    ],
+                    "branches": [
+                      {
+                        "card": "补水",
+                        "delta": 2.7,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 4,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "补水"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      },
+                      {
+                        "card": "脱水",
+                        "delta": 2.2,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 4,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "脱水"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      },
+                      {
+                        "card": "误炸",
+                        "delta": 2.2,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 4,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "误炸"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      },
+                      {
+                        "card": "袋底藏沙",
+                        "delta": 2.2,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 4,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "袋底藏沙"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      },
+                      {
+                        "card": "不许乱动",
+                        "delta": 2.2,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 4,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "不许乱动"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      }
+                    ]
+                  },
+                  {
+                    "card": "持枪要挟",
+                    "kind": "quickdraw",
+                    "play": "直接",
+                    "path": [
+                      "持枪要挟"
+                    ],
+                    "branches": [
+                      {
+                        "card": "补水",
+                        "delta": 2.4,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 3,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CORE_EX1_145",
+                              "name": "伺机待发",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 6,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "补水"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      },
+                      {
+                        "card": "脱水",
+                        "delta": 1.9,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 3,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CORE_EX1_145",
+                              "name": "伺机待发",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 6,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "脱水"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      },
+                      {
+                        "card": "误炸",
+                        "delta": 1.9,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 3,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CORE_EX1_145",
+                              "name": "伺机待发",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 6,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "误炸"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      },
+                      {
+                        "card": "袋底藏沙",
+                        "delta": 1.9,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 3,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CORE_EX1_145",
+                              "name": "伺机待发",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 6,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "袋底藏沙"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      },
+                      {
+                        "card": "不许乱动",
+                        "delta": 1.9,
+                        "recursive_variant": {
+                          "in_game": true,
+                          "reason": "对局进行中",
+                          "player_controller": 1,
+                          "player_name": "此人乃天下绝响#5854",
+                          "opponent_name": "旅店老板",
+                          "player_hero": {
+                            "card_id": "HERO_03b",
+                            "name": "瓦莉拉船长",
+                            "health": 7,
+                            "health_max": 30,
+                            "armor": 0,
+                            "attack": 2
+                          },
+                          "opponent_hero": {
+                            "card_id": "HERO_06",
+                            "name": "玛法里奥·怒风",
+                            "health": 30,
+                            "health_max": 30,
+                            "armor": 3,
+                            "attack": null
+                          },
+                          "game_state": "RUNNING",
+                          "game_over": false,
+                          "crystals": 7,
+                          "mana": 3,
+                          "cards_played_this_turn": 0,
+                          "hand": [
+                            {
+                              "card_id": "CATA_111",
+                              "name": "晦鳞巢母",
+                              "cost": 3,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": 4,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "OG_291",
+                              "name": "暗影施法者",
+                              "cost": 5,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 3,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CFM_630",
+                              "name": "伪造的幸运币",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 4,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "ETC_080",
+                              "name": "乐队经理精英牛头人酋长",
+                              "cost": 4,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 4,
+                              "zone_position": 5,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CORE_EX1_145",
+                              "name": "伺机待发",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": 6,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "TRL_092",
+                              "name": "鲨鱼之灵",
+                              "cost": 2,
+                              "health": 3,
+                              "health_max": 3,
+                              "attack": null,
+                              "zone_position": 7,
+                              "ghostly": false
+                            },
+                            {
+                              "name": "斯卡布斯·刀油"
+                            },
+                            {
+                              "name": "狐人老千"
+                            },
+                            {
+                              "name": "不许乱动"
+                            }
+                          ],
+                          "board": [],
+                          "enemy_board": [
+                            {
+                              "card_id": "CS2_127",
+                              "name": "银背族长",
+                              "cost": 3,
+                              "health": 4,
+                              "health_max": 4,
+                              "attack": 1,
+                              "zone_position": 1,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_189",
+                              "name": "精灵弓箭手",
+                              "cost": 1,
+                              "health": 1,
+                              "health_max": 1,
+                              "attack": 1,
+                              "zone_position": 2,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "CS2_200",
+                              "name": "石拳食人魔",
+                              "cost": 6,
+                              "health": 7,
+                              "health_max": 7,
+                              "attack": 6,
+                              "zone_position": 3,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck": [
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            },
+                            {
+                              "card_id": "",
+                              "name": "",
+                              "cost": null,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "deck_unknown_cards": 12,
+                          "secrets": [
+                            {
+                              "card_id": "REV_825",
+                              "name": "双面生意",
+                              "cost": 2,
+                              "health": null,
+                              "health_max": null,
+                              "attack": null,
+                              "zone_position": null,
+                              "ghostly": false
+                            }
+                          ],
+                          "weapon": {
+                            "card_id": "ULD_715t",
+                            "name": "灾祸狂刀",
+                            "cost": 1,
+                            "health": null,
+                            "health_max": null,
+                            "attack": 2,
+                            "zone_position": null,
+                            "ghostly": false
+                          },
+                          "etc_band": [
+                            "舞动全场（ft.迦罗娜）",
+                            "幻觉药水",
+                            "生命的缚誓者阿莱克丝塔萨"
+                          ],
+                          "current_effects": [],
+                          "deadly_shadow_hand_indexes": [],
+                          "parser": "hslog",
+                          "line_errors": 2,
+                          "log_path": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51\\Power.log",
+                          "session_dir": "D:\\Games\\Hearthstone\\Logs\\Hearthstone_2026_08_11_20_38_51"
+                        },
+                        "children": null,
+                        "damage": 0,
+                        "dragons": 0,
+                        "mana_left": 0,
+                        "path": []
+                      }
+                    ]
+                  }
+                ]
+              },
+              "damage": 48,
+              "dragons": 3,
+              "mana_left": 0,
+              "path": [
+                "潜伏帷幕",
+                "伪造的幸运币",
+                "伺机待发",
+                "鲨鱼之灵",
+                "狐人老千",
+                "斯卡布斯·刀油",
+                "暗影施法者（斯卡布斯·刀油3nd）",
+                "斯卡布斯·刀油",
+                "乐队经理精英牛头人酋长（舞动全场（ft.迦罗娜）->生命的缚誓者阿莱克丝塔萨）",
+                "晦鳞巢母",
+                "舞动全场（ft.迦罗娜）",
+                "鲨鱼之灵",
+                "晦鳞巢母",
+                "斯卡布斯·刀油",
+                "斯卡布斯·刀油",
+                "生命的缚誓者阿莱克丝塔萨",
+                "暗影施法者（生命的缚誓者阿莱克丝塔萨5nd）",
+                "持枪要挟（如果误炸）",
+                "斯卡布斯·刀油",
+                "误炸（斯卡布斯·刀油、斯卡布斯·刀油）",
+                "生命的缚誓者阿莱克丝塔萨",
+                "生命的缚誓者阿莱克丝塔萨"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [
+      {
+        "card_id": "CS2_127",
+        "name": "银背族长",
+        "cost": 3,
+        "health": 4,
+        "health_max": 4,
+        "attack": 1,
+        "zone_position": 1,
+        "ghostly": false
+      },
+      {
+        "card_id": "CS2_189",
+        "name": "精灵弓箭手",
+        "cost": 1,
+        "health": 1,
+        "health_max": 1,
+        "attack": 1,
+        "zone_position": 2,
+        "ghostly": false
+      },
+      {
+        "card_id": "CS2_200",
+        "name": "石拳食人魔",
+        "cost": 6,
+        "health": 7,
+        "health_max": 7,
+        "attack": 6,
+        "zone_position": 3,
+        "ghostly": false
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 3,
+      "attack": null
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": {
+      "card_id": "ULD_715t",
+      "name": "灾祸狂刀",
+      "cost": 1,
+      "health": null,
+      "health_max": null,
+      "attack": 2,
+      "zone_position": null,
+      "ghostly": false
+    },
+    "secrets": [
+      {
+        "card_id": "REV_825",
+        "name": "双面生意",
+        "cost": 2,
+        "health": null,
+        "health_max": null,
+        "attack": null,
+        "zone_position": null,
+        "ghostly": false
+      }
+    ],
+    "deck_unknown_cards": 12
+  },
+  "task_id": "e2732c9c-e4c0-4928-b2ea-75f31fc8d3ff",
+  "report_timestamp": 1786455631
+}

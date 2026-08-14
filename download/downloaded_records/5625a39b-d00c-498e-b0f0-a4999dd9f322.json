@@ -1,0 +1,81 @@
+{
+  "params": {
+    "crystal": 5,
+    "mana": 5
+  },
+  "initial_hand": [
+    "暗影施法者[5费]",
+    "斯卡布斯·刀油[4费]",
+    "狐人老千[0费]",
+    "持枪要挟[1费]",
+    "晦鳞巢母[3费]",
+    "乐队经理精英牛头人酋长[4费]",
+    "潜伏帷幕[2费]",
+    "双面生意[2费]",
+    "伪造的幸运币"
+  ],
+  "best_solution": {
+    "dragon_num": 0,
+    "damage": 0,
+    "remain_cost": 0,
+    "play_sequence": [],
+    "exchanges": [],
+    "wb": null
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [
+      {
+        "card_id": "CS2_127",
+        "name": "银背族长",
+        "cost": 3,
+        "health": 4,
+        "health_max": 4,
+        "attack": 1,
+        "zone_position": 1,
+        "ghostly": false
+      },
+      {
+        "card_id": "CS2_189",
+        "name": "精灵弓箭手",
+        "cost": 1,
+        "health": 4,
+        "health_max": 4,
+        "attack": 3,
+        "zone_position": 2,
+        "ghostly": false
+      }
+    ],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 2,
+      "attack": 0
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": null,
+    "secrets": [
+      {
+        "card_id": "REV_825",
+        "name": "双面生意",
+        "cost": 2,
+        "health": null,
+        "health_max": null,
+        "attack": null,
+        "zone_position": 0,
+        "ghostly": false
+      }
+    ],
+    "deck_unknown_cards": 12
+  },
+  "task_id": "5625a39b-d00c-498e-b0f0-a4999dd9f322",
+  "report_timestamp": 1786546988
+}

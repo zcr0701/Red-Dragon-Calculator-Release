@@ -1,0 +1,44 @@
+{
+  "params": {
+    "crystal": null,
+    "mana": null
+  },
+  "initial_hand": [
+    "黑水弯刀[1费]",
+    "潜伏帷幕[3费]",
+    "潜伏帷幕[3费]"
+  ],
+  "best_solution": {
+    "dragon_num": 0,
+    "damage": 0,
+    "remain_cost": 0,
+    "play_sequence": [],
+    "exchanges": [],
+    "draw_whatif": null,
+    "quickdraw_branches": null
+  },
+  "scene": {
+    "board": [],
+    "enemy_board": [],
+    "opponent_hero": {
+      "card_id": "HERO_06",
+      "name": "玛法里奥·怒风",
+      "health": 30,
+      "health_max": 30,
+      "armor": 0,
+      "attack": null
+    },
+    "etc_band": [
+      "舞动全场（ft.迦罗娜）",
+      "幻觉药水",
+      "生命的缚誓者阿莱克丝塔萨"
+    ],
+    "current_effects": [],
+    "deadly_shadow_hand_indexes": [],
+    "weapon": null,
+    "secrets": [],
+    "deck_unknown_cards": 27
+  },
+  "task_id": "a5f3b1b8-039f-402f-b63b-a963e4caf040",
+  "report_timestamp": 1786441120
+}
