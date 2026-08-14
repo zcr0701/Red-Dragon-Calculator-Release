@@ -2915,8 +2915,8 @@ static BeamResult run_beam_search(const State& start, const SearchParams& p, Pro
         Budget nb_budget;
         nb_budget.t0 = std::chrono::steady_clock::now();
         nb_budget.budget_sec = p.time_budget_sec <= 0
-            ? 4.0
-            : std::max(2.5, std::min(3.5, p.time_budget_sec));
+            ? 5.0
+            : std::min(4.0, std::max(3.0, p.time_budget_sec * 1.2));
         ThreadOut nout;
         wide_beam_pass(start, np, nb_budget, nout, nullptr);
         add_best_no_qd(nout.best_no_qd, res.best_no_qd);

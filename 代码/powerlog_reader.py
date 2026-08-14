@@ -343,6 +343,7 @@ class PowerLogParser:
         self._dredge_bottom: List[str] = []
         # 完整对局记录（云端上报）：换牌 + 每回合出牌/操作
         self._game_record: List[dict] = []
+        self._recorded_scene_turns: Set[int] = set()
         self._mulligan_choice: Optional[dict] = None
         self._turn_number: int = 0
 
@@ -860,6 +861,24 @@ class PowerLogParser:
                 if player.player_id == player_id:
                     return player.name
             return None
+
+        # 每回合场面数据（云端上报）：每个回合首次读到快照时记录
+        # 本机手牌/场面/法力/水晶（完整卡名，压缩在 cloud_report 层做）
+        if (
+            self._turn_number > 0
+            and self._turn_number not in self._recorded_scene_turns
+        ):
+            self._recorded_scene_turns.add(self._turn_number)
+            self._game_record.append(
+                {
+                    "type": "turn",
+                    "turn": self._turn_number,
+                    "hand": [str(item.get("name") or "") for item in hand],
+                    "board": [str(item.get("name") or "") for item in board],
+                    "mana": mana,
+                    "crystal": crystals,
+                }
+            )
 
         return {
             "in_game": game_state in ("RUNNING", "LOADING", "STARTING")

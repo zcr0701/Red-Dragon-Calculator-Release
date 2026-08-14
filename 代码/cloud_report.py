@@ -45,6 +45,59 @@ def _card_text(card: Dict[str, object]) -> str:
     return f"{name}[{cost}费]"
 
 
+# 上传数据压缩：卡名缩写（保持可读）+ 精简字段，降低 KB
+_CARD_ABBREV = {
+    "伪造的幸运币": "币", "幸运币": "币", "伺机待发": "伺", "暗影步": "步",
+    "殒命暗影": "殒", "狐人老千": "狐", "斯卡布斯·刀油": "刀",
+    "暗影施法者": "暗", "乐队经理精英牛头人酋长": "牛", "晦鳞巢母": "晦",
+    "鲨鱼之灵": "鱼", "生命的缚誓者阿莱克丝塔萨": "龙", "赤烟·腾武": "腾",
+    "幻觉药水": "幻", "舞动全场（ft.迦罗娜）": "舞", "战略转移": "转",
+    "锯齿骨刺": "骨", "持枪要挟": "持", "垂钓时光": "垂", "挖掘宝藏": "挖",
+    "潜伏帷幕": "幕", "行骗": "骗", "疯狂之灾祸": "疯", "暗影之门": "门",
+    "异教地图": "图", "双面生意": "双", "黑水弯刀": "弯", "闪避": "闪",
+    "补水": "水", "脱水": "脱", "误炸": "炸", "袋底藏沙": "袋",
+    "不许乱动": "乱", "其他快枪牌·随从": "随", "其他快枪牌·法术": "法",
+    "未知快枪牌随从": "随", "未知快枪牌法术": "法", "未知法术": "法?",
+    "未知抽牌": "抽?", "精灵弓箭手": "弓", "绿洲钳嘴龟": "龟",
+}
+
+
+def _abbrev(name: str) -> str:
+    """把已知卡名替换为缩写（未知卡保留原名）。"""
+    for full, ab in _CARD_ABBREV.items():
+        if full in name:
+            return name.replace(full, ab)
+    return name
+
+
+def _compact_card(card: Dict[str, object]) -> Dict[str, object]:
+    """场面卡压缩：只留 名(n)/费(c)/攻(a)/血(h)/耐久(d) 非空字段。"""
+    c: Dict[str, object] = {"n": _abbrev(str(card.get("name") or "?"))}
+    if card.get("cost") is not None:
+        c["c"] = card.get("cost")
+    if card.get("attack") is not None:
+        c["a"] = card.get("attack")
+    if card.get("health") is not None:
+        c["h"] = card.get("health")
+    if card.get("durability") is not None:
+        c["d"] = card.get("durability")
+    return c
+
+
+def _compact_hero(hero: Dict[str, object]) -> Dict[str, object]:
+    """英雄压缩：只留 职业/名字/血量/护甲。"""
+    c: Dict[str, object] = {}
+    if hero.get("card_id"):
+        c["cid"] = hero["card_id"]
+    if hero.get("name"):
+        c["n"] = hero["name"]
+    if hero.get("health") is not None:
+        c["hp"] = hero["health"]
+    if hero.get("armor") is not None:
+        c["ar"] = hero["armor"]
+    return c
+
+
 HERO_CLASS = {
     "HERO_01": "法师",
     "HERO_02": "猎人",
@@ -93,17 +146,53 @@ def build_payload(
         target = "敌方英雄" if ei == 0 else f"敌方随从{ei}"
         exchanges.append(f"我方随从{fi}->{target}")
 
+    # 压缩：场面卡/英雄/路径/对局记录全部缩写精简（保持可读）
+    compact_game_record = []
+    for ev in snapshot.get("game_record") or []:
+        etype = str(ev.get("type") or "")
+        if etype == "play":
+            compact_game_record.append(
+                {
+                    "t": "p",
+                    "r": int(ev.get("turn") or 0),
+                    "c": _abbrev(str(ev.get("card") or "")),
+                }
+            )
+        elif etype == "turn":
+            compact_game_record.append(
+                {
+                    "t": "s",
+                    "r": int(ev.get("turn") or 0),
+                    "h": [_abbrev(str(x)) for x in (ev.get("hand") or [])],
+                    "b": [_abbrev(str(x)) for x in (ev.get("board") or [])],
+                    "m": ev.get("mana"),
+                    "x": ev.get("crystal"),
+                }
+            )
+        elif etype == "mulligan":
+            compact_game_record.append(
+                {
+                    "t": "m",
+                    "h": [_abbrev(str(x)) for x in (ev.get("initial_hand") or [])],
+                    "r": [_abbrev(str(x)) for x in (ev.get("replaced") or [])],
+                }
+            )
+        else:
+            compact_game_record.append(ev)
+
     return {
         # 条件1：正常计算的伤害 > 0 时才上报（由调用方在构造前判断）
         "user_id": str(snapshot.get("player_name") or "?"),
-        # 场面信息：影响计算的全部因素
+        # 场面信息（压缩）：影响计算的全部因素
         "scene": {
             "enemy_class": _enemy_class(snapshot.get("opponent_hero") or {}),
-            "player_hero": snapshot.get("player_hero") or {},
-            "opponent_hero": snapshot.get("opponent_hero") or {},
-            "hand": hand,
-            "board": snapshot.get("board") or [],
-            "enemy_board": snapshot.get("enemy_board") or [],
+            "ph": _compact_hero(snapshot.get("player_hero") or {}),
+            "oh": _compact_hero(snapshot.get("opponent_hero") or {}),
+            "hand": [_compact_card(x) for x in hand],
+            "board": [_compact_card(x) for x in (snapshot.get("board") or [])],
+            "enemy_board": [
+                _compact_card(x) for x in (snapshot.get("enemy_board") or [])
+            ],
             "crystal": snapshot.get("crystals"),
             "mana": snapshot.get("mana"),
             "etc_band": snapshot.get("etc_band") or [],
@@ -111,20 +200,22 @@ def build_payload(
             "deadly_shadow_hand_indexes": (
                 snapshot.get("deadly_shadow_hand_indexes") or []
             ),
-            "weapon": snapshot.get("weapon"),
+            "weapon": (
+                _compact_card(snapshot["weapon"]) if snapshot.get("weapon") else None
+            ),
             "secrets": snapshot.get("secrets") or [],
             "deck_unknown_cards": snapshot.get("deck_unknown_cards"),
         },
         # 缩写公式（主窗口缩写格式，如 币-鱼-狐-刀-牛(舞龙)-…）
-        "abbr_formula": str(result.get("abbr_formula") or ""),
+        "formula": str(result.get("abbr_formula") or ""),
         # 数据内容：完整的对局出牌、操作记录
-        "play_record": {
+        "rec": {
             "dragon_num": int(result.get("max_dragons") or 0),
             "damage": int(result.get("max_damage") or 0),
             "remain_cost": int(best.get("mana") or 0),
-            "play_sequence": [str(step) for step in (best.get("path") or [])],
-            # 完整对局记录：起手牌/换牌 + 前几个回合的出牌操作（reader 自动追踪）
-            "game_record": snapshot.get("game_record") or [],
+            "play_seq": [_abbrev(str(step)) for step in (best.get("path") or [])],
+            # 完整对局记录：起手牌/换牌 + 每回合出牌 + 每回合场面（reader 自动追踪）
+            "game": compact_game_record,
             # 场面交换处理：最优解使用的交换计划（我方随从->敌方随从/英雄）
             "exchanges": exchanges,
             # 统一 W-B 机制分支树（抽随从卡/持枪要挟分支的完整记录）
