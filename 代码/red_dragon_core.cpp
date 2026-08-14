@@ -2217,6 +2217,14 @@ static int subchain_score(const State& s) {
     if (deadly && (dance > 0 || potion > 0)) score += 25;
     if (deadly && shadowstep > 0) score += 20;  // 殒命可复制暗影步（额外单体回手），
                                                 // 禁抽线(original)靠它把 48 提到 64
+    // 法力引擎深线：晦+鲨鱼（+8 法力）与 刀油+晦（减费）是 舞[殒] 后再铺一轮龙的
+    // 关键。分支续算在默认束宽下曾漏掉 舞[殒]-刀-鱼-晦-龙-龙 的 112 线（只续出 72），
+    // 这两项加分让“手里有晦可回费、有刀油可减费”的状态在窄束里存活。
+    if (mother > 0 && (shark_on > 0 || shark_in_hand > 0)) score += 15;
+    if (scabbs > 0 && mother > 0) score += 8;
+    // 完整重铺套件：鲨鱼+晦+刀油在手、鱼不在场 = 舞[殒]/舞后可直接 刀-鱼-晦-龙 重建
+    // 再铺一轮（112 线的关键状态）。
+    if (shark_in_hand > 0 && shark_on == 0 && mother > 0 && scabbs > 0) score += 20;
     if (shark && scabbs >= 2) score += 8;
     score += etc_count * 8;
     // 法力引擎：补水在手 = 持枪要挟(补水) 已发现（未来 +2 法力），是 6 水晶持枪深线

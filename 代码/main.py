@@ -2144,14 +2144,14 @@ class CalculationWorker(QThread):
                     qd0_kwargs["max_paths"] = max(
                         3000000, int(self.options.get("max_paths") or 0)
                     )
-                    # 分支续算用 6000×2（H6+H8）：默认四通道在 6水晶持枪局面
-                    # 只续出 72（舞[殒]-龙 少踩鱼），宽通道稳定续出 112。
-                    qd0_kwargs["wide_widths"] = [6000, 6000]
-                    qd0_kwargs["heuristics"] = [6, 8]
+                    # 分支续算束宽调回默认四通道（1100/1500/1100/3000），
+                    # 深线（舞[殒]后 刀-鱼-晦-龙-龙 到 112）靠启发函数保证。
+                    qd0_kwargs["wide_widths"] = None
+                    qd0_kwargs["heuristics"] = None
                     qd0_kwargs["threads"] = max(
                         2,
                         min(
-                            8,
+                            4,
                             int(qd0_kwargs.get("threads", 4)),
                         ),
                     )
@@ -2207,7 +2207,7 @@ class CalculationWorker(QThread):
                     qd_tree: List[Dict[str, object]] = []
 
                     with ThreadPoolExecutor(
-                        max_workers=2,
+                        max_workers=4,
                         thread_name_prefix="whatif-qd0",
                     ) as pool:
                         futs0 = [pool.submit(_qd_one0, c) for c in qd_pool0]
@@ -2594,13 +2594,13 @@ class CalculationWorker(QThread):
                         qd_kwargs["max_paths"] = max(
                             3000000, int(self.options.get("max_paths") or 0)
                         )
-                        # 分支续算用 6000×2（H6+H8）：稳定续出 112（72 分支修正）。
-                        qd_kwargs["wide_widths"] = [6000, 6000]
-                        qd_kwargs["heuristics"] = [6, 8]
+                        # 分支续算束宽调回默认四通道，深线靠启发函数保证。
+                        qd_kwargs["wide_widths"] = None
+                        qd_kwargs["heuristics"] = None
                         qd_kwargs["threads"] = max(
                             2,
                             min(
-                                8,
+                                4,
                                 int(qd_kwargs.get("threads", 4)),
                             ),
                         )
@@ -2663,7 +2663,7 @@ class CalculationWorker(QThread):
                         pruned = False
 
                         with ThreadPoolExecutor(
-                            max_workers=2,
+                            max_workers=4,
                             thread_name_prefix="whatif-qd",
                         ) as pool:
                             futs = {
