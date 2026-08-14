@@ -5902,7 +5902,7 @@ def _center_on_screen(window: QWidget) -> None:
 # ===================== 版本与更新检测 =====================
 
 # 当前程序版本（与已发布版本一致；发布新版时更新此值）
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.3"
 # 发布仓库：立即更新时跳转到此页面
 RELEASE_URL = "https://github.com/zcr0701/Red-Dragon-Calculator-Release"
 RELEASE_API = "https://api.github.com/repos/zcr0701/Red-Dragon-Calculator-Release/releases/latest"
