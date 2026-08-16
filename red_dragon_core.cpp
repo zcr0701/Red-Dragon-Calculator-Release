@@ -198,7 +198,7 @@ static const unordered_map<string, CardDef> DB = {
     {"黑水弯刀", {1, "weapon", "blackwater_cutlass", false, false, false, -1}},
     {"邪恶短刀", {1, "weapon", "", false, false, false, -1}},
     {"疯狂之灾祸", {1, "spell", "plague_of_madness", false, false, false, -1}},
-    {"致聋术", {1, "spell", "deafen", false, true, false, -1}},  // 连击：造成 1 点伤害（击杀 1 血随从腾格子）
+    {"致聋术", {1, "spell", "deafen", false, true, false, -1}},  // 沉默一个随从（还原原始身材），连击：造成 2 点伤害（启发同脱水，主打清洗随从栏）
     {"锯齿骨刺", {2, "spell", "serrated_bone_spike", false, false, false, -1}},
     {"疾速矿锄", {2, "weapon", "quick_pick", false, false, false, -1}},
     {"异教地图", {2, "spell", "cultist_map", false, false, false, -1}},
@@ -1054,31 +1054,23 @@ static vector<State> apply_search_effect(State base, const Card& card,
         }
         return states;
     }
-    // 致聋术：1 费连击，对目标造成 1 点伤害 → 可击杀 1 血随从腾格子。
-    // 只建模“击杀”分支：己方 1/1 复制（暗施/药水）腾随从栏、敌方 1 血随从清障碍；
-    // 无连击或打在 >1 血上 = 普通法术（连击触发器/殒命源）。
+    // 致聋术：沉默一个随从（消除其效果、还原为原始身材），连击：造成 2 点伤害。
+    // 沉默还原 + 2 伤可击杀“原始生命 <= 2”的己方随从腾随从栏（启发同脱水：花 1 费清格子）。
+    // 无连击或打在原始生命 >2 的随从上不致死 = 普通法术（连击触发器/殒命暗影变形源）。
     if (e == N_E_DEAFEN) {
         vector<State> states;
-        states.push_back(base.clone_reserved());  // 无击杀：普通法术
-        if (base.cards_played_this_turn > 0) {  // 连击已激活
+        states.push_back(base.clone_reserved());  // 无击杀：普通法术（沉默不致死，随从栏不变）
+        if (base.cards_played_this_turn > 0) {    // 连击已激活：沉默还原 + 2 伤
             const auto& fb = base.board;
             for (size_t i = 0; i < fb.size(); i++) {
-                if (fb[i].health >= 0 && fb[i].health <= 1) {
+                // 合法目标：原始身材（DB）生命 <= 2。1/1 复制（暗施/药水）的 name() 即原始卡名，
+                // make_card(name).health 即该随从的原始生命；沉默还原后吃 2 点伤害必死 → 腾格子。
+                int orig_health = make_card(fb[i].name()).health;
+                if (orig_health >= 0 && orig_health <= 2) {
                     State s = base.clone_reserved();
                     s.board.erase(s.board.begin() + i);
                     if (!s.path().empty())
                         s.path_mut().back() += "（" + fb[i].name()
-                                              + std::to_string(i + 1) + "）";
-                    states.push_back(std::move(s));
-                }
-            }
-            const auto& eb = base.enemy_board;
-            for (size_t i = 0; i < eb.size(); i++) {
-                if (eb[i].health >= 0 && eb[i].health <= 1) {
-                    State s = base.clone_reserved();
-                    s.enemy_board.erase(s.enemy_board.begin() + i);
-                    if (!s.path().empty())
-                        s.path_mut().back() += "（" + eb[i].name()
                                               + std::to_string(i + 1) + "）";
                     states.push_back(std::move(s));
                 }
