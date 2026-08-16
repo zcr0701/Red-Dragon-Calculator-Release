@@ -643,6 +643,27 @@ class PowerLogParser:
         ):
             self.pending_effects["锯齿骨刺"] = 0
 
+    # ---- 观战玩家检测 ----
+
+    def _detect_spectated(self, game) -> Optional[int]:
+        """在观战模式下通过手牌 card_id 可见性判断被观战玩家。
+
+        被观战方手牌实体有 card_id，对手手牌实体通常无 card_id（隐藏）。
+        返回 player_id 或 None（无法判断时回退到先手玩家）。
+        """
+        revealed: Dict[int, int] = {}
+        for player in game.players:
+            count = sum(1 for ent in player.in_zone(Zone.HAND) if ent.card_id)
+            revealed[player.player_id] = count
+
+        if not revealed:
+            return None
+
+        best = max(revealed, key=revealed.get)
+        if revealed[best] > 0:
+            return best
+        return None
+
     # ---- 快照：状态全部来自 hslog 官方导出 ----
 
     def snapshot(self) -> dict:
@@ -690,15 +711,19 @@ class PowerLogParser:
             else:
                 opponent_player = player
 
-        # 观战：本机账号不是对局双方（观战者），默认分析先手玩家，
-        # 双方手牌都解析（观战可见双方手牌）。
+        # 观战：本机账号不是对局双方（观战者），通过手牌 card_id 可见性
+        # 判断被观战玩家：被观战方手牌有 card_id，对手手牌通常无 card_id（隐藏）。
         if local_controller is None and len(game.players) >= 2:
             spectator_mode = True
-            local_controller = game.players[0].player_id
-            local_player = game.players[0]
-            opponent_player = (
-                game.players[1] if len(game.players) > 1 else None
-            )
+            local_controller = self._detect_spectated(game)
+            if local_controller is None:
+                local_controller = game.players[0].player_id
+
+            for player in game.players:
+                if player.player_id == local_controller:
+                    local_player = player
+                else:
+                    opponent_player = player
 
         self.local_controller = local_controller
         self.spectator_mode = spectator_mode

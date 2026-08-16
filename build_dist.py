@@ -3,17 +3,21 @@
 
 - 内嵌收款码（_embedded_assets.py，随代码一起被打入 PyInstaller 归档）；
 - 记录 计算核心/卡牌数据 的 SHA256，运行时校验，防篡改/替换；
-- PyInstaller onefile 打包，引擎 exe / 卡名映射 / 收款码全部打进单个 exe，源码编译进归档；
+- PyInstaller onefile 打包，引擎 exe / 卡名映射 / 收款码全部打进单个 exe；
+- 字节码 AES 加密（tinyaes），防止源码直接提取；
 - 计算核心仍是原生 C++ exe，计算性能不受影响。
 """
 import base64
 import hashlib
+import secrets
 import subprocess
 import sys
 from pathlib import Path
 
 PROJ = Path(__file__).resolve().parent
-ENV_PY = r"D:\Anaconda\python.exe"
+# 使用 pip 版 PyQt5 的干净环境打包（conda 的 Qt DLL 带 _conda 后缀，PyInstaller 收集不到导致缺 Qt 库）；
+# 环境必须放在无中文路径，否则 PyInstaller 的 Qt 插件钩子无法解析路径
+ENV_PY = r"D:\Anaconda\build_venv\Scripts\python.exe"
 NAME = "红龙贼计算器"
 
 
@@ -63,9 +67,22 @@ def main() -> int:
         "--onefile",
         "--name",
         NAME,
+        # 字节码 AES 加密（tinyaes），防止直接提取 .pyc 源码
+        "--key",
+        secrets.token_hex(16),
         # 引擎 exe 与卡名映射打进单文件，运行时解压到临时目录
         "--add-binary",
         f"{engine_exe};.",
+        # pyexpat 依赖 libexpat.dll，缺失会导致打包 exe 启动崩溃
+        # (ImportError: DLL load failed while importing pyexpat)
+        "--add-binary",
+        r"D:\Anaconda\Library\bin\libexpat.dll;.",
+        # pkg_resources 运行时钩子会拖入 platformdirs 等未打包依赖导致崩溃；
+        # 本应用不依赖 pkg_resources，直接排除以跳过该钩子
+        "--exclude-module",
+        "pkg_resources",
+        "--exclude-module",
+        "platformdirs",
         "--add-data",
         f"{card_map};.",
         "--add-data",

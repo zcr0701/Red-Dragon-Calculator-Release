@@ -1,25 +1,31 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 
+block_cipher = pyi_crypto.PyiBlockCipher(key='0b93149847b09854c5e98c28741307de')
+
+
 a = Analysis(
-    ['C:/Users/22501/PycharmProjects/pythonProject/机器学习/红龙贼计算器/main.py'],
+    ['C:\\Users\\22501\\PycharmProjects\\pythonProject\\机器学习\\红龙贼计算器\\main.py'],
     pathex=[],
-    binaries=[('C:/Users/22501/PycharmProjects/pythonProject/机器学习/红龙贼计算器/red_dragon_engine.exe', '.')],
-    datas=[('C:/Users/22501/PycharmProjects/pythonProject/机器学习/红龙贼计算器/card_id_map.json', '.'), ('C:/Users/22501/PycharmProjects/pythonProject/机器学习/红龙贼计算器/dbf_id_map.json', '.')],
+    binaries=[('C:\\Users\\22501\\PycharmProjects\\pythonProject\\机器学习\\红龙贼计算器\\red_dragon_engine.exe', '.'), ('D:\\Anaconda\\Library\\bin\\libexpat.dll', '.')],
+    datas=[('C:\\Users\\22501\\PycharmProjects\\pythonProject\\机器学习\\红龙贼计算器\\card_id_map.json', '.'), ('C:\\Users\\22501\\PycharmProjects\\pythonProject\\机器学习\\红龙贼计算器\\dbf_id_map.json', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['pkg_resources', 'platformdirs'],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
     noarchive=False,
-    optimize=0,
 )
-pyz = PYZ(a.pure)
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
+    a.zipfiles,
     a.datas,
     [],
     name='红龙贼计算器',
