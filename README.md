@@ -31,7 +31,7 @@
 ## 下载
 右侧 Releases → 红龙贼计算器V1.6.2版本（约 43MB，原生内存读取组件）
 - 主程序：RedDragon-Calculator-V1.6.2.exe
-- 更新报告：红龙贼计算器_v1_6_2_更新报告.html
+- 更新日志见下方「更新日志」；历史版本见 GitHub Releases
 
 ## 更新日志
 
