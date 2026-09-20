@@ -52,6 +52,9 @@
 - 现在内存卡组读取成功后自动在主线程重算剩余牌库并重跑预计算（`_rerun_mem_deck_reconstruct`），命中结果立即进入候选与伤害估计
 - 候选仍为空时状态栏明确提示原因（内存卡组未读取成功 / 牌库尚未重建 / 牌库已重建但无可预计算候选），不再静默空白
 
+**黑色弹窗修复**
+- 修复进对局自动读卡组时偶尔弹出的黑色控制台窗口：内存读取启动的 `tasklist` / `inject.exe` 子进程缺 `CREATE_NO_WINDOW`，GUI 主程序启动控制台子进程时 Windows 会闪现黑框；已补上该标志，读卡组完全静默
+
 ### V1.6.2（2026-09-20）
 **牛池自动读取**
 - 牛池（侧栏选牌）数据直接从炉石进程内存反射读取：`CollectionDeck.m_sideboardManager.m_sideboards`（Dictionary）中每个 `SideboardDeck` 的 `m_slots` 即牛池卡牌，JSON 输出新增 `sideboards` 字段，替代日志 SETASIDE 事件兜底
